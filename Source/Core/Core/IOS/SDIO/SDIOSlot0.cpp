@@ -20,7 +20,6 @@
 #include "Core/HW/Memmap.h"
 #include "Core/IOS/IOS.h"
 #include "Core/IOS/VersionInfo.h"
-#include "Core/Rollback/Cow.h"
 #include "Core/System.h"
 
 namespace IOS::HLE
@@ -290,8 +289,6 @@ s32 SDIOSlot0Device::ExecuteCommand(const Request& request, u32 buffer_in, u32 b
       ERROR_LOG_FMT(IOS_SD, "Seek failed");
 
     u8* const destination = memory.GetPointerForRange(req.addr, size);
-    // Guest RAM, which the read() under fread fills without faulting.
-    Rollback::Cow::PrepareHostWrite(destination, size);
     if (m_card.ReadBytes(destination, size))
     {
       DEBUG_LOG_FMT(IOS_SD, "Outbuffer size {} got {}", rw_buffer_size, size);
@@ -326,7 +323,7 @@ s32 SDIOSlot0Device::ExecuteCommand(const Request& request, u32 buffer_in, u32 b
       if (!m_card.Seek(address, File::SeekOrigin::Begin))
         ERROR_LOG_FMT(IOS_SD, "Seek failed");
 
-      if (!m_card.WriteBytes(memory.GetPointerForRange(req.addr, size), size))
+      if (!m_card.WriteBytes(memory.GetPointerForRangeReadOnly(req.addr, size), size))
       {
         ERROR_LOG_FMT(IOS_SD, "Write Failed - error: {}, eof: {}", std::ferror(m_card.GetHandle()),
                       std::feof(m_card.GetHandle()));

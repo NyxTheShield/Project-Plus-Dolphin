@@ -34,6 +34,7 @@
 #include "Core/HW/MMIO.h"
 #include "Core/HW/MemoryInterface.h"
 #include "Core/Rollback/Cow.h"
+#include "Core/Rollback/DirtyBitmap.h"
 #include "Core/Rollback/Rollback.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI.h"
@@ -516,34 +517,6 @@ void MemoryManager::RemoveAllPageTableMappings()
     Rollback::Cow::OnMappingsChanged(m_system);
 }
 
-std::vector<GuestRamView> MemoryManager::GetGuestRamViews() const
-{
-  std::vector<GuestRamView> views;
-  // MEM1 and MEM2 only: the locked L1 cache and fake VMEM are copied whole by snapshots.
-  const auto is_ram = [this](const PhysicalMemoryRegion& region) {
-    return region.active && (region.out_pointer == &m_ram || region.out_pointer == &m_exram);
-  };
-  for (const PhysicalMemoryRegion& region : m_physical_regions)
-  {
-    if (!is_ram(region))
-      continue;
-    views.push_back(GuestRamView{*region.out_pointer, region.physical_address, region.size, true});
-    if (m_is_fastmem_arena_initialized)
-    {
-      views.push_back(GuestRamView{m_physical_base + region.physical_address,
-                                   region.physical_address, region.size, true});
-    }
-  }
-  for (const auto* entries : {&m_dbat_mapped_entries, &m_page_table_mapped_entries})
-  {
-    for (const auto& [logical_address, entry] : *entries)
-    {
-      views.push_back(GuestRamView{static_cast<u8*>(entry.mapped_pointer), entry.physical_address,
-                                   entry.mapped_size, entry.writeable});
-    }
-  }
-  return views;
-}
 
 u8* MemoryManager::GetRollbackAlias(bool exram)
 {
@@ -554,6 +527,37 @@ u8* MemoryManager::GetRollbackAlias(bool exram)
   if (!alias)
     alias = static_cast<u8*>(m_arena.CreateView(region.shm_position, region.size));
   return alias;
+}
+
+bool MemoryManager::HasNonCanonicalMappingsForRollback() const
+{
+  const auto overlaps_tracked_ram = [this](const LogicalMemoryView& entry) {
+    const u64 start = entry.physical_address;
+    const u64 end = start + entry.mapped_size;
+    const bool overlaps_mem1 = start < GetRamSize() && end > 0;
+    const bool overlaps_mem2 =
+        m_exram && start < 0x1000'0000ULL + GetExRamSize() && end > 0x1000'0000ULL;
+    return entry.writeable && (overlaps_mem1 || overlaps_mem2);
+  };
+
+  for (const auto& [logical_address, entry] : m_page_table_mapped_entries)
+  {
+    if (overlaps_tracked_ram(entry) &&
+        (logical_address & 0x1FFF'FFFFu) != entry.physical_address)
+    {
+      return true;
+    }
+  }
+
+  for (const auto& [logical_address, entry] : m_dbat_mapped_entries)
+  {
+    if (overlaps_tracked_ram(entry) &&
+        (logical_address & 0x1FFF'FFFFu) != entry.physical_address)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 void MemoryManager::DoState(PointerWrap& p)
@@ -599,6 +603,7 @@ void MemoryManager::DoState(PointerWrap& p)
   if (!skip_ram)
   {
     p.DoArray(m_ram, current_ram_size);
+    Rollback::MarkPhysicalRangeDirty(0, current_ram_size);
     p.DoArray(m_l1_cache, current_l1_cache_size);
   }
   p.DoMarker("Memory RAM");
@@ -608,7 +613,10 @@ void MemoryManager::DoState(PointerWrap& p)
     p.DoArray(m_fake_vmem, current_fake_vmem_size);
   p.DoMarker("Memory FakeVMEM");
   if (current_have_exram && !skip_ram)
+  {
     p.DoArray(m_exram, current_exram_size);
+    Rollback::MarkPhysicalRangeDirty(0x1000'0000u, current_exram_size);  // MEM2's physical base
+  }
   p.DoMarker("Memory EXRAM");
 }
 
@@ -690,7 +698,7 @@ void MemoryManager::Clear()
     memset(m_exram, 0, GetExRamSize());
 }
 
-u8* MemoryManager::GetPointerForRange(u32 address, size_t size) const
+u8* MemoryManager::GetPointerForRangeReadOnly(u32 address, size_t size) const
 {
   std::span<u8> span = GetSpanForAddress(address);
 
@@ -711,12 +719,20 @@ u8* MemoryManager::GetPointerForRange(u32 address, size_t size) const
   return span.data();
 }
 
+u8* MemoryManager::GetPointerForRange(u32 address, size_t size) const
+{
+  u8* const pointer = GetPointerForRangeReadOnly(address, size);
+  if (pointer)
+    Rollback::MarkPhysicalRangeDirty(address, size);
+  return pointer;
+}
+
 void MemoryManager::CopyFromEmu(void* data, u32 address, size_t size) const
 {
   if (size == 0)
     return;
 
-  void* pointer = GetPointerForRange(address, size);
+  void* pointer = GetPointerForRangeReadOnly(address, size);
   if (!pointer)
   {
     PanicAlertFmt("Invalid range in CopyFromEmu. {:x} bytes from {:#010x}", size, address);
@@ -736,7 +752,6 @@ void MemoryManager::CopyToEmu(u32 address, const void* data, size_t size)
     PanicAlertFmt("Invalid range in CopyToEmu. {:x} bytes to {:#010x}", size, address);
     return;
   }
-  Rollback::Cow::PrepareHostWrite(pointer, size);
   memcpy(pointer, data, size);
 }
 
@@ -751,7 +766,6 @@ void MemoryManager::Memset(u32 address, u8 value, size_t size)
     PanicAlertFmt("Invalid range in Memset. {:x} bytes at {:#010x}", size, address);
     return;
   }
-  Rollback::Cow::PrepareHostWrite(pointer, size);
   memset(pointer, value, size);
 }
 
