@@ -444,6 +444,13 @@ void MainWindow::InitCoreCallbacks()
     if (state == Core::State::Uninitialized)
       OnStopComplete();
 
+    if (state == Core::State::Running && m_managed_session &&
+        !m_managed_session->started_reported)
+    {
+      m_managed_session->started_reported = true;
+      ReportManagedStatus("started");
+    }
+
     if (state == Core::State::Running && m_fullscreen_requested)
     {
       FullScreen();
@@ -1735,6 +1742,10 @@ void MainWindow::NetPlayInit()
 #endif
 
   connect(m_netplay_dialog, &NetPlayDialog::Stop, this, &MainWindow::ForceStop);
+  connect(m_netplay_dialog, &NetPlayDialog::ConnectionFailed, this,
+          [this](const QString& message) {
+            FailManagedSession(message.toStdString());
+          });
   connect(m_netplay_dialog, &NetPlayDialog::rejected, this, &MainWindow::NetPlayQuit);
   connect(m_netplay_setup_dialog, &NetPlaySetupDialog::Join, this, &MainWindow::NetPlayJoin);
   connect(m_netplay_setup_dialog, &NetPlaySetupDialog::Host, this, &MainWindow::NetPlayHost);
@@ -1750,6 +1761,24 @@ void MainWindow::NetPlayInit()
           &MainWindow::UpdateScreenSaverInhibition);
 }
 
+void MainWindow::ReportManagedStatus(const std::string& state, const std::string& reason)
+{
+  if (!m_managed_session || m_managed_session->status_path.empty())
+    return;
+
+  picojson::object status;
+  status["matchId"] = picojson::value(m_managed_session->match_id);
+  status["state"] = picojson::value(state);
+  status["reason"] = picojson::value(reason);
+  File::WriteStringToFile(m_managed_session->status_path, picojson::value(status).serialize());
+}
+
+void MainWindow::FailManagedSession(const std::string& reason)
+{
+  ReportManagedStatus("failed", reason);
+  QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
+}
+
 void MainWindow::StartManagedNetPlay()
 {
   if (!m_managed_session)
@@ -1760,11 +1789,7 @@ void MainWindow::StartManagedNetPlay()
   const std::string ticket_path = m_managed_session->ticket_path;
   if (!JsonFromFile(ticket_path, &root, &parse_error) || !root.is<picojson::object>())
   {
-    const QString detail = parse_error.empty() ? tr("File not found or unreadable") :
-                                                 QString::fromStdString(parse_error);
-    ModalMessageBox::critical(this, tr("Brawlback"),
-                              tr("Could not read the matchmaking ticket:\n%1\n\n%2")
-                                  .arg(QString::fromStdString(ticket_path), detail));
+    QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
     m_managed_session.reset();
     return;
   }
@@ -1784,14 +1809,19 @@ void MainWindow::StartManagedNetPlay()
   const auto rendezvous_token = read_string("rendezvous_token");
   const auto brawl_iso_path = read_string("brawl_iso_path");
   const auto project_plus_sd_path = read_string("project_plus_sd_path");
+  const auto status_path = read_string("status_path");
   const auto seat_it = ticket.find("seat");
   const auto players_it = ticket.find("players");
+  if (match_id)
+    m_managed_session->match_id = *match_id;
+  if (status_path)
+    m_managed_session->status_path = *status_path;
   if (!match_id || !player_id || !game || !rendezvous_address || !rendezvous_token ||
-      !brawl_iso_path ||
+      !brawl_iso_path || !status_path ||
       seat_it == ticket.end() || !seat_it->second.is<double>() || players_it == ticket.end() ||
       !players_it->second.is<picojson::array>())
   {
-    ModalMessageBox::critical(this, tr("Brawlback"), tr("The matchmaking ticket is incomplete."));
+    FailManagedSession("The matchmaking ticket is incomplete");
     m_managed_session.reset();
     return;
   }
@@ -1803,6 +1833,7 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->rendezvous_token = *rendezvous_token;
   m_managed_session->brawl_iso_path = *brawl_iso_path;
   m_managed_session->project_plus_sd_path = project_plus_sd_path.value_or("");
+  m_managed_session->status_path = *status_path;
   m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
   m_managed_session->player_count =
       static_cast<int>(players_it->second.get<picojson::array>().size());
@@ -1849,9 +1880,7 @@ void MainWindow::StartManagedNetPlay()
   if ((!valid_player_count && !valid_test_solo) || !complete_roster ||
       m_managed_session->display_name.empty())
   {
-    ModalMessageBox::critical(
-        this, tr("Brawlback"),
-        tr("The matchmaking ticket does not contain a valid one-to-four-player roster."));
+    FailManagedSession("The matchmaking ticket contains an invalid player roster");
     m_managed_session.reset();
     return;
   }
@@ -1865,8 +1894,7 @@ void MainWindow::StartManagedNetPlay()
                               brawl_game_id == "RSBJ01" || brawl_game_id == "RSBK01");
   if (!valid_brawl_iso)
   {
-    ModalMessageBox::critical(this, tr("Brawlback"),
-                              tr("The Brawl ISO selected in the client is invalid."));
+    FailManagedSession("The selected Brawl ISO is invalid");
     m_managed_session.reset();
     return;
   }
@@ -1880,8 +1908,7 @@ void MainWindow::StartManagedNetPlay()
     if (m_managed_session->project_plus_sd_path.empty() ||
         !File::Exists(m_managed_session->project_plus_sd_path))
     {
-      ModalMessageBox::critical(this, tr("Brawlback"),
-                                tr("The Project+ SD card selected in the client is missing."));
+      FailManagedSession("The selected Project+ SD card is missing");
       m_managed_session.reset();
       return;
     }
@@ -1894,7 +1921,7 @@ void MainWindow::StartManagedNetPlay()
   }
   else
   {
-    ModalMessageBox::critical(this, tr("Brawlback"), tr("The selected game is unsupported."));
+    FailManagedSession("The selected game is unsupported");
     m_managed_session.reset();
     return;
   }
@@ -1905,7 +1932,7 @@ void MainWindow::StartManagedNetPlay()
     const QString detail = m_managed_session->game == "brawl" ?
                                tr("The selected Brawl ISO could not be opened.") :
                                tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.");
-    ModalMessageBox::critical(this, tr("Brawlback"), detail);
+    FailManagedSession(detail.toStdString());
     m_managed_session.reset();
     return;
   }
@@ -1915,6 +1942,8 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
   File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
 
+  ReportManagedStatus("connecting");
+
   if (m_managed_session->seat == 1)
   {
     Settings::Instance().ResetNetPlayServer(new NetPlay::NetPlayServer(
@@ -1922,8 +1951,7 @@ void MainWindow::StartManagedNetPlay()
     const auto server = Settings::Instance().GetNetPlayServer();
     if (!server || !server->is_connected)
     {
-      ModalMessageBox::critical(this, tr("Brawlback"),
-                                tr("Could not create the managed NetPlay server."));
+      FailManagedSession("Could not create the game session");
       NetPlayQuit();
       return;
     }
@@ -1934,6 +1962,7 @@ void MainWindow::StartManagedNetPlay()
 
   if (!NetPlayJoin())
   {
+    FailManagedSession("Could not connect to the other players");
     m_managed_session.reset();
     return;
   }
@@ -1960,7 +1989,7 @@ void MainWindow::PollManagedNetPlayReady()
     m_managed_session->start_requested = true;
     if (!server->RequestStartGame())
     {
-      ModalMessageBox::critical(this, tr("Brawlback"), tr("The synchronized game start failed."));
+      FailManagedSession("The synchronized game start failed");
       NetPlayQuit();
     }
     return;

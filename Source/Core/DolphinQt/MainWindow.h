@@ -203,6 +203,8 @@ private:
   void NetPlayQuit();
   void StartManagedNetPlay();
   void PollManagedNetPlayReady();
+  void ReportManagedStatus(const std::string& state, const std::string& reason = {});
+  void FailManagedSession(const std::string& reason);
 
   void OnBootGameCubeIPL(DiscIO::Region region);
   void OnImportNANDBackup();
@@ -272,11 +274,13 @@ private:
     std::string game;
     std::string brawl_iso_path;
     std::string project_plus_sd_path;
+    std::string status_path;
     int seat = 0;
     int player_count = 0;
     std::vector<std::string> player_ids;
     bool test_solo = false;
     bool start_requested = false;
+    bool started_reported = false;
   };
   std::optional<ManagedSession> m_managed_session;
 

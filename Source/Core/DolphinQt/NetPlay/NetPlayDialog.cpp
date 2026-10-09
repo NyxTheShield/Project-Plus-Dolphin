@@ -1131,12 +1131,20 @@ void NetPlayDialog::OnDesync(u32 frame, const std::string& player)
 
 void NetPlayDialog::OnConnectionLost()
 {
+  if (!isVisible())
+  {
+    emit ConnectionFailed(tr("Lost connection to the other players"));
+    return;
+  }
   DisplayMessage(tr("Lost connection to NetPlay server..."), "red");
 }
 
 void NetPlayDialog::OnConnectionError(const std::string& message)
 {
   QueueOnObject(this, [this, message] {
+    emit ConnectionFailed(tr(message.c_str()));
+    if (!isVisible())
+      return;
     ModalMessageBox::critical(this, tr("Error"),
                               tr("Failed to connect to server: %1").arg(tr(message.c_str())));
   });

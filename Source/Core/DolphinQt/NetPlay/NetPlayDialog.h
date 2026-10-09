@@ -106,6 +106,7 @@ public:
 
 signals:
   void Stop();
+  void ConnectionFailed(const QString& message);
 
 private:
   void CreateChatLayout();

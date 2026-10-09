@@ -17,6 +17,7 @@
 #include <unordered_set>
 
 #include <picojson.h>
+#include <SFML/Network/IpAddress.hpp>
 
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
@@ -251,6 +252,14 @@ RunRendezvous(const std::string& server, const std::string& match_id, const std:
   registration["match_id"] = picojson::value(match_id);
   registration["player_id"] = picojson::value(player_id);
   registration["token"] = picojson::value(token);
+  ENetAddress local_address{};
+  const std::optional<sf::IpAddress> local_ip = sf::IpAddress::getLocalAddress();
+  if (local_ip && enet_socket_get_address(host->socket, &local_address) == 0 &&
+      local_address.port != 0)
+  {
+    registration["local_endpoint"] = picojson::value(
+        local_ip->toString() + ":" + std::to_string(local_address.port));
+  }
   const std::string payload = picojson::value(registration).serialize();
   ENetBuffer buffer{};
   buffer.data = const_cast<char*>(payload.data());
