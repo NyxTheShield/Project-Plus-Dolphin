@@ -278,9 +278,11 @@ private:
     int seat = 0;
     int player_count = 0;
     std::vector<std::string> player_ids;
+    std::vector<std::string> player_names;
     bool test_solo = false;
     bool start_requested = false;
     bool started_reported = false;
+    bool failure_reported = false;
   };
   std::optional<ManagedSession> m_managed_session;
 

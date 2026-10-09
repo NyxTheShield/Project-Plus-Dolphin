@@ -253,6 +253,13 @@ RunRendezvous(const std::string& server, const std::string& match_id, const std:
   registration["player_id"] = picojson::value(player_id);
   registration["token"] = picojson::value(token);
   ENetAddress local_address{};
+  if (enet_socket_get_address(host->socket, &local_address) != 0 || local_address.port == 0)
+  {
+    ENetAddress bind_address{};
+    bind_address.host = ENET_HOST_ANY;
+    bind_address.port = 0;
+    enet_socket_bind(host->socket, &bind_address);
+  }
   const std::optional<sf::IpAddress> local_ip = sf::IpAddress::getLocalAddress();
   if (local_ip && enet_socket_get_address(host->socket, &local_address) == 0 &&
       local_address.port != 0)

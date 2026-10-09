@@ -254,16 +254,121 @@ void ShutdownWiiRoot()
       strftime(buffer, sizeof(buffer), "%Y-%m-%d %H_%M_%S", timeinfo);
       std::string date(buffer);
 
-      const std::string replay_file = brawl_temp_save + "collect.vff " + date;
-      const std::string replay_file_backup = replay_data + "collect.vff " + date;
+      const std::string players = Config::Get(Config::MAIN_NETPLAY_REPLAY_PLAYERS);
+      const std::string vff_path = brawl_temp_save + "collect.vff";
 
-      File::Rename(brawl_temp_save + "collect.vff", replay_file);
-      File::Copy(replay_file, replay_file_backup);
+      // Extract individual .bin replays directly from the VFF FAT16 container
+      std::vector<u8> vff_bytes;
+      bool extracted_any = false;
+      if (File::ReadFileToString(vff_path, reinterpret_cast<std::string&>(vff_bytes)) ||
+          File::ReadBytes(vff_path, &vff_bytes))
+      {
+        if (vff_bytes.size() >= 32 && std::memcmp(vff_bytes.data(), "VFF ", 4) == 0)
+        {
+          constexpr u32 SYSECT = 233;
+          const auto cluster_offset = [](u32 c) -> u64 {
+            return static_cast<u64>(SYSECT + (c - 2)) * 512 - 480;
+          };
 
-      if (File::Exists(replay_file_backup))
-        WARN_LOG_FMT(IOS_FS, "Replay file was backed up");
-      else
-        ERROR_LOG_FMT(IOS_FS, "Could not backup replay save file");
+          // /rp (replays) directory is cluster 3
+          const u64 rp_offset = cluster_offset(3);
+          if (rp_offset + 512 <= vff_bytes.size())
+          {
+            const u8* rp_dir = vff_bytes.data() + rp_offset;
+            std::u16string lfn_parts;
+
+            for (size_t i = 0; i < 512; i += 32)
+            {
+              const u8* entry = rp_dir + i;
+              if (entry[0] == 0)
+                break;
+
+              const u8 attr = entry[11];
+              if (attr == 0x0F)
+              {
+                // LFN entry
+                std::u16string part;
+                const auto append_u16 = [&](size_t offset, size_t count) {
+                  for (size_t c = 0; c < count; ++c)
+                  {
+                    const u16 ch = static_cast<u16>(entry[offset + c * 2]) |
+                                   (static_cast<u16>(entry[offset + c * 2 + 1]) << 8);
+                    if (ch == 0 || ch == 0xFFFF)
+                      return;
+                    part.push_back(static_cast<char16_t>(ch));
+                  }
+                };
+                append_u16(1, 5);
+                append_u16(14, 6);
+                append_u16(28, 2);
+                lfn_parts = part + lfn_parts;
+              }
+              else
+              {
+                std::string entry_name;
+                if (!lfn_parts.empty())
+                {
+                  for (char16_t ch : lfn_parts)
+                    entry_name.push_back(static_cast<char>(ch));
+                  lfn_parts.clear();
+                }
+                else
+                {
+                  for (size_t c = 0; c < 11; ++c)
+                  {
+                    if (entry[c] != ' ' && entry[c] != 0)
+                      entry_name.push_back(static_cast<char>(entry[c]));
+                  }
+                }
+
+                const u16 start_clst = static_cast<u16>(entry[26]) |
+                                       (static_cast<u16>(entry[27]) << 8);
+                const u32 size = static_cast<u32>(entry[28]) |
+                                 (static_cast<u32>(entry[29]) << 8) |
+                                 (static_cast<u32>(entry[30]) << 16) |
+                                 (static_cast<u32>(entry[31]) << 24);
+
+                if ((attr & 0x10) == 0 && size > 0 && start_clst >= 2)
+                {
+                  const u64 file_offset = cluster_offset(start_clst);
+                  if (file_offset + size <= vff_bytes.size())
+                  {
+                    std::string out_name;
+                    if (!players.empty())
+                      out_name = fmt::format("{} {} {}", players, date, entry_name);
+                    else
+                      out_name = fmt::format("{} {}", date, entry_name);
+
+                    if (!StringEndsWith(out_name, ".bin"))
+                      out_name += ".bin";
+
+                    const std::string out_path = replay_data + out_name;
+                    if (File::WriteBytes(out_path, vff_bytes.data() + file_offset, size))
+                    {
+                      INFO_LOG_FMT(IOS_FS, "Extracted replay save file to {}", out_path);
+                      extracted_any = true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (!extracted_any)
+      {
+        // Fallback: copy the raw collect.vff if extraction found no replay entries
+        std::string fallback_name = !players.empty() ?
+                                        fmt::format("{} collect.vff {}", players, date) :
+                                        fmt::format("collect.vff {}", date);
+        const std::string replay_file_backup = replay_data + fallback_name;
+        File::Copy(vff_path, replay_file_backup);
+        if (File::Exists(replay_file_backup))
+          WARN_LOG_FMT(IOS_FS, "Replay container was backed up as fallback");
+        else
+          ERROR_LOG_FMT(IOS_FS, "Could not backup replay save file");
+      }
     }
   }
   

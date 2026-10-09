@@ -1775,6 +1775,9 @@ void MainWindow::ReportManagedStatus(const std::string& state, const std::string
 
 void MainWindow::FailManagedSession(const std::string& reason)
 {
+  if (!m_managed_session || m_managed_session->failure_reported)
+    return;
+  m_managed_session->failure_reported = true;
   ReportManagedStatus("failed", reason);
   QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
 }
@@ -1838,6 +1841,7 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->player_count =
       static_cast<int>(players_it->second.get<picojson::array>().size());
   m_managed_session->player_ids.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
+  m_managed_session->player_names.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
   const auto test_solo_it = ticket.find("test_solo");
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
@@ -1856,7 +1860,11 @@ void MainWindow::StartManagedNetPlay()
     }
     const int parsed_seat = static_cast<int>(roster_seat->second.get<double>());
     if (parsed_seat >= 1 && parsed_seat <= m_managed_session->player_count)
+    {
       m_managed_session->player_ids[parsed_seat] = id->second.get<std::string>();
+      if (name != player.end() && name->second.is<std::string>())
+        m_managed_session->player_names[parsed_seat] = name->second.get<std::string>();
+    }
     if (id != player.end() && id->second.is<std::string>() &&
         id->second.get<std::string>() == *player_id && name != player.end() &&
         name->second.is<std::string>())
@@ -1864,6 +1872,21 @@ void MainWindow::StartManagedNetPlay()
       m_managed_session->display_name = name->second.get<std::string>();
     }
   }
+
+  std::string players_formatted;
+  for (size_t s = 1; s <= static_cast<size_t>(m_managed_session->player_count); ++s)
+  {
+    const std::string& p_name = m_managed_session->player_names[s].empty() ?
+                                    m_managed_session->player_ids[s] :
+                                    m_managed_session->player_names[s];
+    if (!p_name.empty())
+    {
+      if (!players_formatted.empty())
+        players_formatted += "_vs_";
+      players_formatted += p_name;
+    }
+  }
+  Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_PLAYERS, players_formatted);
 
   const bool valid_player_count = m_managed_session->player_count >= 2 &&
                                   m_managed_session->player_count <= 4 &&

@@ -1141,8 +1141,8 @@ void NetPlayDialog::OnConnectionLost()
 
 void NetPlayDialog::OnConnectionError(const std::string& message)
 {
+  emit ConnectionFailed(tr(message.c_str()));
   QueueOnObject(this, [this, message] {
-    emit ConnectionFailed(tr(message.c_str()));
     if (!isVisible())
       return;
     ModalMessageBox::critical(this, tr("Error"),
