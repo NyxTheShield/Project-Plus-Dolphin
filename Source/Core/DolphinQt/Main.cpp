@@ -13,7 +13,9 @@
 #include <cstdlib>
 #endif
 
+#include <algorithm>
 #include <atomic>
+#include <list>
 
 #include <OptionParser.h>
 #include <picojson.h>
@@ -55,9 +57,18 @@
 #include "UICommon/GameFileCache.h"
 #include "UICommon/UICommon.h"
 
-static bool ExportBrawlbackGameList(const std::string& output_path)
+static bool ExportBrawlbackGameList(const std::string& output_path,
+                                    const std::list<std::string>& additional_directories)
 {
-  const std::vector<std::string> directories = Config::GetIsoPaths();
+  std::vector<std::string> directories = Config::GetIsoPaths();
+  for (const std::string& directory : additional_directories)
+  {
+    if (!directory.empty() &&
+        std::ranges::find(directories, directory) == directories.end())
+    {
+      directories.emplace_back(directory);
+    }
+  }
   std::vector<std::string_view> directory_views;
   directory_views.reserve(directories.size());
   for (const std::string& directory : directories)
@@ -241,8 +252,11 @@ int main(int argc, char* argv[])
 
   if (options.is_set("brawlback_game_list"))
   {
+    const std::list<std::string> additional_directories =
+        options.is_set_by_user("brawlback_game_path") ? options.all("brawlback_game_path") :
+                                                        std::list<std::string>{};
     const bool exported = ExportBrawlbackGameList(
-        static_cast<const char*>(options.get("brawlback_game_list")));
+        static_cast<const char*>(options.get("brawlback_game_list")), additional_directories);
     UICommon::Shutdown();
     return exported ? 0 : 1;
   }

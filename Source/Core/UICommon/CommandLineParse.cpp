@@ -94,6 +94,11 @@ std::unique_ptr<optparse::OptionParser> CreateParser(ParserOptions options)
       .metavar("<file>")
       .type("string")
       .help("Refresh Dolphin's game list, export it as JSON, and exit");
+  parser->add_option("--brawlback-game-path")
+      .action("append")
+      .metavar("<directory>")
+      .type("string")
+      .help("Include an additional directory in a Brawlback game-list refresh");
   parser->add_option("-e", "--exec")
       .action("append")
       .metavar("<file>")
