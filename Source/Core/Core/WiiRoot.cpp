@@ -236,13 +236,19 @@ void InitializeWiiRoot(bool use_temporary)
         replay_bytes.resize(static_cast<size_t>(source.GetSize()));
         if (source.ReadBytes(replay_bytes.data(), replay_bytes.size()))
         {
-          const std::string replay_name = "/rp/" +
-                                          std::filesystem::path(replay_file).filename().string();
+          std::string replay_name = std::filesystem::path(replay_file).filename().string();
+          const size_t native_name = replay_name.rfind("rp_");
+          if (native_name != std::string::npos)
+            replay_name.erase(0, native_name);
+          replay_name = "/rp/" + replay_name;
           const auto fs = std::make_shared<FS::HostFileSystem>(s_temp_wii_root);
           const auto result = IOS::HLE::NWC24::WriteToVFF(
               "/title/00010000/52534245/data/collect.vff", replay_name, fs, replay_bytes);
           if (result != IOS::HLE::NWC24::WC24_OK)
             ERROR_LOG_FMT(IOS_FS, "Could not insert replay {} into the temporary NAND", replay_file);
+          else
+            INFO_LOG_FMT(IOS_FS, "Inserted replay {} into temporary NAND as {}", replay_file,
+                         replay_name);
         }
       }
     }

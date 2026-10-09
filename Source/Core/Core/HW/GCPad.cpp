@@ -60,14 +60,19 @@ bool IsInitialized()
 GCPadStatus GetStatus(int pad_num)
 {
   GCPadStatus status = static_cast<GCPad*>(s_config.GetController(pad_num))->GetInput();
+  ApplyReplayBootInput(pad_num, &status);
+  return status;
+}
+
+void ApplyReplayBootInput(int pad_num, GCPadStatus* status)
+{
   if (pad_num == 0 && Config::Get(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS))
   {
     auto& system = Core::System::GetInstance();
     const u64 hold_ticks = static_cast<u64>(system.GetSystemTimers().GetTicksPerSecond()) * 10;
     if (system.GetCoreTiming().GetTicks() < hold_ticks)
-      status.button |= PAD_TRIGGER_Z;
+      status->button |= PAD_TRIGGER_Z;
   }
-  return status;
 }
 
 ControllerEmu::ControlGroup* GetGroup(int pad_num, PadGroup group)

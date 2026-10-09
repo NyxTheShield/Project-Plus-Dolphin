@@ -45,6 +45,8 @@ GCPadStatus CSIDevice_GCAdapter::GetPadStatus()
   if (const auto rb_pad = Rollback::GetRollbackPad(m_device_number))
     pad_status = *rb_pad;
 
+  Pad::ApplyReplayBootInput(m_device_number, &pad_status);
+
   // Our GCAdapter code sets PAD_GET_ORIGIN when a new device has been connected.
   // Watch for this to calibrate real controllers on connection.
   if (pad_status.button & PAD_GET_ORIGIN)
