@@ -212,6 +212,12 @@ const Info<std::string> MAIN_NETPLAY_REPLAY_GAME{
     {System::Main, "Core", "NetplayReplayGame"}, "Brawl"};
 const Info<std::string> MAIN_NETPLAY_REPLAY_PLAYERS{
     {System::Main, "Core", "NetplayReplayPlayers"}, ""};
+const Info<std::string> MAIN_NETPLAY_REPLAY_DIRECTORY{
+    {System::Main, "Core", "NetplayReplayDirectory"}, ""};
+const Info<std::string> MAIN_REPLAY_PLAYBACK_FILE{
+    {System::Main, "Core", "ReplayPlaybackFile"}, ""};
+const Info<bool> MAIN_REPLAY_PLAYBACK_PROJECT_PLUS{
+    {System::Main, "Core", "ReplayPlaybackProjectPlus"}, false};
 const Info<bool> MAIN_WII_KEYBOARD{{System::Main, "Core", "WiiKeyboard"}, false};
 const Info<bool> MAIN_WIIMOTE_CONTINUOUS_SCANNING{
     {System::Main, "Core", "WiimoteContinuousScanning"}, false};

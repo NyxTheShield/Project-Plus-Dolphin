@@ -391,6 +391,8 @@ MainWindow::~MainWindow()
 
   settings.setValue(QStringLiteral("renderwidget/geometry"), m_render_widget_geometry);
 
+  Config::SetCurrent(Config::MAIN_REPLAY_PLAYBACK_FILE, "");
+  Config::SetCurrent(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS, false);
   Config::Save();
 }
 
@@ -1787,6 +1789,9 @@ void MainWindow::StartManagedNetPlay()
   if (!m_managed_session)
     return;
 
+  Config::SetCurrent(Config::MAIN_REPLAY_PLAYBACK_FILE, "");
+  Config::SetCurrent(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS, false);
+
   picojson::value root;
   std::string parse_error;
   const std::string ticket_path = m_managed_session->ticket_path;
@@ -1813,6 +1818,64 @@ void MainWindow::StartManagedNetPlay()
   const auto brawl_iso_path = read_string("brawl_iso_path");
   const auto project_plus_sd_path = read_string("project_plus_sd_path");
   const auto status_path = read_string("status_path");
+  const auto mode = read_string("mode");
+  const auto replay_path = read_string("replay_path");
+  const auto replay_output_path = read_string("replay_output_path");
+
+  if (mode == "replay")
+  {
+    if (match_id)
+      m_managed_session->match_id = *match_id;
+    if (status_path)
+      m_managed_session->status_path = *status_path;
+    if (!match_id || !game || !brawl_iso_path || !status_path || !replay_path ||
+        !File::Exists(*replay_path))
+    {
+      FailManagedSession("The replay launch ticket is incomplete");
+      return;
+    }
+
+    const UICommon::GameFile brawl_iso(*brawl_iso_path);
+    const std::string& game_id = brawl_iso.GetGameID();
+    if (!brawl_iso.IsValid() ||
+        (game_id != "RSBE01" && game_id != "RSBP01" && game_id != "RSBJ01" &&
+         game_id != "RSBK01"))
+    {
+      FailManagedSession("The selected Brawl ISO is invalid");
+      return;
+    }
+
+    std::string launch_path = *brawl_iso_path;
+    std::optional<std::string> sd_card_path;
+    const bool project_plus = *game == "Project+";
+    if (project_plus)
+    {
+      if (!project_plus_sd_path || !File::Exists(*project_plus_sd_path))
+      {
+        FailManagedSession("The selected Project+ SD card is missing");
+        return;
+      }
+      launch_path =
+          File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Offline Launcher.dol";
+      sd_card_path = *project_plus_sd_path;
+    }
+    else if (*game != "Brawl")
+    {
+      FailManagedSession("The replay game is unsupported");
+      return;
+    }
+
+    Config::SetCurrent(Config::MAIN_DEFAULT_ISO, *brawl_iso_path);
+    Config::SetCurrent(Config::MAIN_WII_SD_CARD, sd_card_path.has_value());
+    Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
+    Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
+    Config::SetCurrent(Config::MAIN_REPLAY_PLAYBACK_FILE, *replay_path);
+    Config::SetCurrent(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS, project_plus);
+    File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
+    ReportManagedStatus("preparing");
+    StartGame(launch_path, ScanForSecondDisc::Yes);
+    return;
+  }
   const auto seat_it = ticket.find("seat");
   const auto players_it = ticket.find("players");
   if (match_id)
@@ -1887,6 +1950,7 @@ void MainWindow::StartManagedNetPlay()
     }
   }
   Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_PLAYERS, players_formatted);
+  Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_DIRECTORY, replay_output_path.value_or(""));
 
   const bool valid_player_count = m_managed_session->player_count >= 2 &&
                                   m_managed_session->player_count <= 4 &&
