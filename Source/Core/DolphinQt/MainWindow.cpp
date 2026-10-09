@@ -1817,6 +1817,8 @@ void MainWindow::StartManagedNetPlay()
   const auto rendezvous_token = read_string("rendezvous_token");
   const auto brawl_iso_path = read_string("brawl_iso_path");
   const auto project_plus_sd_path = read_string("project_plus_sd_path");
+  const auto custom_game_path = read_string("game_path");
+  const auto custom_game_id = read_string("game_id");
   const auto status_path = read_string("status_path");
   const auto mode = read_string("mode");
   const auto replay_path = read_string("replay_path");
@@ -1836,10 +1838,10 @@ void MainWindow::StartManagedNetPlay()
     }
 
     const UICommon::GameFile brawl_iso(*brawl_iso_path);
-    const std::string& game_id = brawl_iso.GetGameID();
+    const std::string& brawl_game_id = brawl_iso.GetGameID();
     if (!brawl_iso.IsValid() ||
-        (game_id != "RSBE01" && game_id != "RSBP01" && game_id != "RSBJ01" &&
-         game_id != "RSBK01"))
+        (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
+         brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
     {
       FailManagedSession("The selected Brawl ISO is invalid");
       return;
@@ -1878,12 +1880,13 @@ void MainWindow::StartManagedNetPlay()
   }
   const auto seat_it = ticket.find("seat");
   const auto players_it = ticket.find("players");
+  const auto game_revision_it = ticket.find("game_revision");
   if (match_id)
     m_managed_session->match_id = *match_id;
   if (status_path)
     m_managed_session->status_path = *status_path;
   if (!match_id || !player_id || !game || !rendezvous_address || !rendezvous_token ||
-      !brawl_iso_path || !status_path ||
+      !status_path ||
       seat_it == ticket.end() || !seat_it->second.is<double>() || players_it == ticket.end() ||
       !players_it->second.is<picojson::array>())
   {
@@ -1897,8 +1900,12 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->game = *game;
   m_managed_session->rendezvous_address = *rendezvous_address;
   m_managed_session->rendezvous_token = *rendezvous_token;
-  m_managed_session->brawl_iso_path = *brawl_iso_path;
+  m_managed_session->brawl_iso_path = brawl_iso_path.value_or("");
   m_managed_session->project_plus_sd_path = project_plus_sd_path.value_or("");
+  m_managed_session->game_path = custom_game_path.value_or("");
+  m_managed_session->game_id = custom_game_id.value_or("");
+  if (game_revision_it != ticket.end() && game_revision_it->second.is<double>())
+    m_managed_session->game_revision = static_cast<u16>(game_revision_it->second.get<double>());
   m_managed_session->status_path = *status_path;
   m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
   m_managed_session->player_count =
@@ -1974,21 +1981,19 @@ void MainWindow::StartManagedNetPlay()
 
   std::string game_path;
   std::optional<std::string> sd_card_path;
-  const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
-  const std::string& brawl_game_id = brawl_iso.GetGameID();
-  const bool valid_brawl_iso =
-      brawl_iso.IsValid() && (brawl_game_id == "RSBE01" || brawl_game_id == "RSBP01" ||
-                              brawl_game_id == "RSBJ01" || brawl_game_id == "RSBK01");
-  if (!valid_brawl_iso)
-  {
-    FailManagedSession("The selected Brawl ISO is invalid");
-    m_managed_session.reset();
-    return;
-  }
-
-  Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
   if (m_managed_session->game == "project-plus")
   {
+    const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
+    const std::string& brawl_game_id = brawl_iso.GetGameID();
+    if (!brawl_iso.IsValid() ||
+        (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
+         brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
+    {
+      FailManagedSession("The selected Brawl ISO is invalid");
+      m_managed_session.reset();
+      return;
+    }
+    Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Project+");
     game_path =
         File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
@@ -2003,8 +2008,33 @@ void MainWindow::StartManagedNetPlay()
   }
   else if (m_managed_session->game == "brawl")
   {
+    const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
+    const std::string& brawl_game_id = brawl_iso.GetGameID();
+    if (!brawl_iso.IsValid() ||
+        (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
+         brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
+    {
+      FailManagedSession("The selected Brawl ISO is invalid");
+      m_managed_session.reset();
+      return;
+    }
+    Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Brawl");
     game_path = m_managed_session->brawl_iso_path;
+  }
+  else if (m_managed_session->game.rfind("dolphin:", 0) == 0)
+  {
+    const UICommon::GameFile custom_game(m_managed_session->game_path);
+    if (!custom_game.IsValid() || custom_game.GetGameID() != m_managed_session->game_id ||
+        custom_game.GetRevision() != m_managed_session->game_revision)
+    {
+      FailManagedSession("The selected custom game does not match the lobby game ID and revision");
+      m_managed_session.reset();
+      return;
+    }
+    Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME,
+                       custom_game.GetName(UICommon::GameFile::Variant::LongAndPossiblyCustom));
+    game_path = m_managed_session->game_path;
   }
   else
   {
@@ -2018,7 +2048,9 @@ void MainWindow::StartManagedNetPlay()
   {
     const QString detail = m_managed_session->game == "brawl" ?
                                tr("The selected Brawl ISO could not be opened.") :
-                               tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.");
+                           m_managed_session->game == "project-plus" ?
+                               tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.") :
+                               tr("The selected custom game could not be opened.");
     FailManagedSession(detail.toStdString());
     m_managed_session.reset();
     return;

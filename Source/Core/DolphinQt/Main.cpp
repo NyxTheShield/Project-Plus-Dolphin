@@ -13,7 +13,10 @@
 #include <cstdlib>
 #endif
 
+#include <atomic>
+
 #include <OptionParser.h>
+#include <picojson.h>
 #include <QAbstractEventDispatcher>
 #include <QApplication>
 #include <QObject>
@@ -21,12 +24,14 @@
 #include <QWidget>
 
 #include "Common/Config/Config.h"
+#include "Common/FileUtil.h"
 #include "Common/MsgHandler.h"
 #include "Common/ScopeGuard.h"
 #include "Common/StringUtil.h"
 
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/Config/UISettings.h"
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/System.h"
@@ -46,7 +51,44 @@
 #include "DolphinQt/Updater.h"
 
 #include "UICommon/CommandLineParse.h"
+#include "UICommon/GameFile.h"
+#include "UICommon/GameFileCache.h"
 #include "UICommon/UICommon.h"
+
+static bool ExportBrawlbackGameList(const std::string& output_path)
+{
+  const std::vector<std::string> directories = Config::GetIsoPaths();
+  std::vector<std::string_view> directory_views;
+  directory_views.reserve(directories.size());
+  for (const std::string& directory : directories)
+    directory_views.emplace_back(directory);
+
+  const std::vector<std::string> paths = UICommon::FindAllGamePaths(
+      directory_views, Config::Get(Config::MAIN_RECURSIVE_ISO_PATHS));
+  UICommon::GameFileCache cache;
+  cache.Load();
+  const std::atomic_bool processing_halted = false;
+  cache.Update(paths, {}, {}, processing_halted);
+  cache.Save();
+
+  picojson::array games;
+  cache.ForEach([&games](const std::shared_ptr<const UICommon::GameFile>& game) {
+    if (!game->IsValid() || game->GetGameID().empty())
+      return;
+
+    picojson::object value;
+    value["name"] = picojson::value(
+        game->GetName(UICommon::GameFile::Variant::LongAndPossiblyCustom));
+    value["path"] = picojson::value(game->GetFilePath());
+    value["gameId"] = picojson::value(game->GetGameID());
+    value["revision"] = picojson::value(static_cast<double>(game->GetRevision()));
+    value["discNumber"] = picojson::value(static_cast<double>(game->GetDiscNumber()));
+    value["platform"] = picojson::value(static_cast<double>(game->GetPlatform()));
+    games.emplace_back(std::move(value));
+  });
+
+  return File::WriteStringToFile(output_path, picojson::value(games).serialize(true));
+}
 
 static bool QtMsgAlertHandler(const char* caption, const char* text, bool yes_no,
                               Common::MsgType style)
@@ -196,6 +238,15 @@ int main(int argc, char* argv[])
   UICommon::SetUserDirectory(static_cast<const char*>(options.get("user")));
   UICommon::CreateDirectories();
   UICommon::Init();
+
+  if (options.is_set("brawlback_game_list"))
+  {
+    const bool exported = ExportBrawlbackGameList(
+        static_cast<const char*>(options.get("brawlback_game_list")));
+    UICommon::Shutdown();
+    return exported ? 0 : 1;
+  }
+
   Resources::Init();
   Settings::Instance().SetBatchModeEnabled(options.is_set("batch"));
 

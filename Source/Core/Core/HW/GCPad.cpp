@@ -66,13 +66,28 @@ GCPadStatus GetStatus(int pad_num)
 
 void ApplyReplayBootInput(int pad_num, GCPadStatus* status)
 {
-  if (pad_num == 0 && Config::Get(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS))
-  {
-    auto& system = Core::System::GetInstance();
-    const u64 hold_ticks = static_cast<u64>(system.GetSystemTimers().GetTicksPerSecond()) * 10;
-    if (system.GetCoreTiming().GetTicks() < hold_ticks)
-      status->button |= PAD_TRIGGER_Z;
-  }
+  if (!IsReplayBootInputActive(pad_num))
+    return;
+
+  auto& system = Core::System::GetInstance();
+  const u64 ticks_per_second = system.GetSystemTimers().GetTicksPerSecond();
+  const u64 press_a_at = ticks_per_second * 13 / 2;
+
+  // Replay startup must not depend on a physical adapter being available. Present a neutral,
+  // connected controller while holding Z, then release Z and hold A for one second.
+  *status = {};
+  status->button = system.GetCoreTiming().GetTicks() < press_a_at ? PAD_TRIGGER_Z : PAD_BUTTON_A;
+}
+
+bool IsReplayBootInputActive(int pad_num)
+{
+  if (pad_num != 0 || !Config::Get(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS))
+    return false;
+
+  auto& system = Core::System::GetInstance();
+  const u64 sequence_ticks =
+      static_cast<u64>(system.GetSystemTimers().GetTicksPerSecond()) * 15 / 2;
+  return system.GetCoreTiming().GetTicks() < sequence_ticks;
 }
 
 ControllerEmu::ControlGroup* GetGroup(int pad_num, PadGroup group)

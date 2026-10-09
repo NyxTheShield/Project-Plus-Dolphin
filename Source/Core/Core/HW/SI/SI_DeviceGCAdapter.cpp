@@ -65,7 +65,8 @@ int CSIDevice_GCAdapter::RunBuffer(u8* buffer, int request_length)
 
     // This returns an error value if there is no controller plugged
     // into this port on the hardware gc adapter, exposing it to the game.
-    if (!GCAdapter::DeviceConnected(m_device_number))
+    if (!GCAdapter::DeviceConnected(m_device_number) &&
+        !Pad::IsReplayBootInputActive(m_device_number))
     {
       const u32 device = Common::swap32(SI_NONE);
       memcpy(buffer, &device, sizeof(device));
