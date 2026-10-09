@@ -44,8 +44,8 @@ const Info<u32> NETPLAY_CHUNKED_UPLOAD_LIMIT{{System::Main, "NetPlay", "ChunkedU
 const Info<u32> NETPLAY_MINIMUM_BUFFER_SIZE{{System::Main, "NetPlay", "MinimumBufferSize"}, 3};
 const Info<u32> NETPLAY_PLAYER_BUFFER_SIZE{{System::Main, "NetPlay", "PlayerBufferSize"}, 3};
 const Info<u32> NETPLAY_CLIENT_BUFFER_SIZE{{System::Main, "NetPlay", "BufferSizeClient"}, 1};
-const Info<u32> NETPLAY_ROLLBACK_FRAMES{{System::Main, "NetPlay", "RollbackFrames"}, 7};
-const Info<u32> NETPLAY_ROLLBACK_INPUT_DELAY{{System::Main, "NetPlay", "RollbackInputDelay"}, 2};
+const Info<u32> NETPLAY_ROLLBACK_FRAMES{{System::Main, "NetPlay", "RollbackFrames"}, 5};
+const Info<u32> NETPLAY_ROLLBACK_INPUT_DELAY{{System::Main, "NetPlay", "RollbackInputDelay"}, 1};
 const Info<u32> NETPLAY_ROLLBACK_FRAME_BOUNDARY{
     {System::Main, "NetPlay", "RollbackFrameBoundary"}, 3};
 

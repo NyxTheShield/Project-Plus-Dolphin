@@ -78,6 +78,16 @@ namespace NetPlay
 {
 using namespace WiimoteCommon;
 
+u32 GetGekkoInputDelayForPing(const u32 ping_ms)
+{
+  if (ping_ms < 100)
+    return 1;
+
+  const u64 frame_pairs = (static_cast<u64>(ping_ms) * 3 + 99) / 100;
+  const int delay = static_cast<int>(frame_pairs) - 2;
+  return static_cast<u32>(std::clamp(delay, 0, 60));
+}
+
 static std::mutex crit_netplay_client;
 NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;

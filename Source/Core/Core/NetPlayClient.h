@@ -42,6 +42,8 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
+u32 GetGekkoInputDelayForPing(u32 ping_ms);
+
 struct ManagedNetPlayConfig
 {
   std::string rendezvous_address;

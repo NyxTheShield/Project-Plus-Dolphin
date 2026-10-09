@@ -23,7 +23,6 @@
 #include <QTextBrowser>
 
 #include <algorithm>
-#include <cmath>
 #include <utility>
 
 #ifdef HAS_LIBMGBA
@@ -145,8 +144,8 @@ void NetPlayDialog::CreateMainLayout()
   m_auto_delay_button = new QPushButton(tr("Auto"));
   m_auto_delay_button->setAutoDefault(false);
   m_auto_delay_button->setToolTip(
-      tr("Set Input Delay to round(ping / 33.3333333 ms - 2). The host also sets Rollback "
-         "Frames to 7."));
+      tr("Use 1 frame below 100 ms; otherwise use ceil(ping / 33.33333 ms) - 2. The host "
+         "also sets Rollback Frames to 5."));
   m_frame_boundary_label = new QLabel(tr("Frame Boundary:"));
   m_frame_boundary_combo = new QComboBox;
   m_frame_boundary_combo->addItem(tr("Brawl Hook (0x80017504)"), 0);
@@ -458,15 +457,14 @@ void NetPlayDialog::ConnectWidgets()
     if (!client)
       return;
 
-    constexpr double FRAME_PAIR_MS = 1000.0 / 60.0 * 2.0;
-    const int delay = std::clamp(
-        static_cast<int>(std::lround(client->GetPlayersMaxPing() / FRAME_PAIR_MS - 2.0)), 0, 60);
+    const int delay =
+        static_cast<int>(NetPlay::GetGekkoInputDelayForPing(client->GetPlayersMaxPing()));
     m_player_buffer_size_box->setValue(delay);
 
     if (const auto server = Settings::Instance().GetNetPlayServer())
     {
       server->SetGekkoInputDelay(static_cast<unsigned int>(delay));
-      m_minimum_buffer_size_box->setValue(7);
+      m_minimum_buffer_size_box->setValue(5);
     }
   });
   const auto hia_function = [this](bool enable) {

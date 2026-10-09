@@ -283,6 +283,7 @@ private:
     std::vector<std::string> player_ids;
     std::vector<std::string> player_names;
     bool test_solo = false;
+    bool latency_sampling_started = false;
     bool start_requested = false;
     bool started_reported = false;
     bool failure_reported = false;

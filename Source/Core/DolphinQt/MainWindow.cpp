@@ -2105,6 +2105,24 @@ void MainWindow::PollManagedNetPlayReady()
   if (static_cast<int>(client->GetPlayers().size()) == m_managed_session->player_count &&
       client->DoAllPlayersHaveGame())
   {
+    if (!m_managed_session->test_solo && !m_managed_session->latency_sampling_started)
+    {
+      // NetPlay publishes its first RTT sample once per second. Do not derive the session delay
+      // from the initial zero-valued player records.
+      m_managed_session->latency_sampling_started = true;
+      QTimer::singleShot(1250, this, &MainWindow::PollManagedNetPlayReady);
+      return;
+    }
+
+    constexpr unsigned int ROLLBACK_WINDOW = 5;
+    const u32 ping = client->GetPlayersMaxPing();
+    const u32 delay = NetPlay::GetGekkoInputDelayForPing(ping);
+    server->AdjustMinimumPadBufferSize(ROLLBACK_WINDOW);
+    server->SetGekkoInputDelay(delay);
+    INFO_LOG_FMT(NETPLAY,
+                 "Managed session latency settings: ping={} ms, input_delay={}, rollback_window={}",
+                 ping, delay, ROLLBACK_WINDOW);
+
     m_managed_session->start_requested = true;
     if (!server->RequestStartGame())
     {
