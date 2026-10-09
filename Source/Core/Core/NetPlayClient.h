@@ -42,6 +42,17 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
+struct ManagedNetPlayConfig
+{
+  std::string rendezvous_address;
+  std::string match_id;
+  std::string player_id;
+  std::string rendezvous_token;
+  int seat = 0;
+  int player_count = 0;
+  bool coordinator = false;
+};
+
 class NetPlayUI
 {
 public:
@@ -117,12 +128,17 @@ public:
   void SendAsync(sf::Packet&& packet, u8 channel_id = DEFAULT_CHANNEL);
 
   NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog, std::string name,
-                const NetTraversalConfig& traversal_config);
+                const NetTraversalConfig& traversal_config,
+                const ManagedNetPlayConfig* managed_config = nullptr);
   ~NetPlayClient() override;
 
   std::vector<const Player*> GetPlayers();
   u32 GetPlayersMaxPing();
   const NetSettings& GetNetSettings() const;
+  const std::vector<std::string>& GetManagedRollbackEndpoints() const
+  {
+    return m_managed_rollback_endpoints;
+  }
 
   // Called from the GUI thread.
   bool IsConnected() const { return m_is_connected; }
@@ -170,7 +186,7 @@ public:
 
   static void SendTimeBase();
   bool DoAllPlayersHaveGame();
-  
+
   void AdjustPlayerPadBufferSize(u32 buffer);
 
   // the number of ticks in-between frames
@@ -243,6 +259,7 @@ protected:
   ENetHost* m_client = nullptr;
   ENetPeer* m_server = nullptr;
   std::thread m_thread;
+  std::vector<std::string> m_managed_rollback_endpoints;
 
   SyncIdentifier m_selected_game;
   Common::Flag m_is_running{false};

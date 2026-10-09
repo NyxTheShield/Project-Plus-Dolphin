@@ -84,6 +84,11 @@ std::unique_ptr<optparse::OptionParser> CreateParser(ParserOptions options)
 
   parser->add_option("-u", "--user").action("store").help("User folder path");
   parser->add_option("-m", "--movie").action("store").help("Play a movie file");
+  parser->add_option("--brawlback-ticket")
+      .action("store")
+      .metavar("<file>")
+      .type("string")
+      .help("Start a managed Brawlback matchmaking session");
   parser->add_option("-e", "--exec")
       .action("append")
       .metavar("<file>")

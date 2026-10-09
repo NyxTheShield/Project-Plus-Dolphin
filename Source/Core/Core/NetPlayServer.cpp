@@ -500,8 +500,8 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
     SendResponseToPlayer(new_player, MessageID::GameStatus, existing_player.pid,
                          static_cast<u8>(existing_player.game_status));
-						 
-	SendResponseToPlayer(new_player, MessageID::PadBufferPlayer, existing_player.pid,
+
+    SendResponseToPlayer(new_player, MessageID::PadBufferPlayer, existing_player.pid,
                          static_cast<u8>(existing_player.buffer));
   }
 
@@ -624,6 +624,11 @@ void NetPlayServer::SetPadMapping(const PadMappingArray& mappings)
 {
   m_pad_map = mappings;
   UpdatePadMapping();
+}
+
+void NetPlayServer::SetManagedRollbackEndpoints(std::vector<std::string> endpoints)
+{
+  m_managed_rollback_endpoints = std::move(endpoints);
 }
 
 // called from ---GUI--- thread
@@ -803,21 +808,21 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     SendToClients(spac, player.pid);
   }
   break;
-  
+
   case MessageID::PadBufferPlayer:
   {
-	u32 buffer;
-	packet >> buffer;
+    u32 buffer;
+    packet >> buffer;
 
-	player.buffer = buffer;
+    player.buffer = buffer;
 
-	sf::Packet spac;
-	spac << MessageID::PadBufferPlayer;
-	spac << player.pid;
-	spac << buffer;
+    sf::Packet spac;
+    spac << MessageID::PadBufferPlayer;
+    spac << player.pid;
+    spac << buffer;
 
-	SendToClients(spac, player.pid);
-	}
+    SendToClients(spac, player.pid);
+  }
   break;
 
   case MessageID::ChunkedDataProgress:
@@ -850,7 +855,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     packet >> spectator;
 
     auto padmap = GetPadMapping();
-  
+
     int player_port = -1;
     for (int i = 0; i < (int)padmap.size(); i++)
     {
@@ -883,7 +888,6 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     this->SetPadMapping(padmap);
   }
   break;
-
 
   case MessageID::PadData:
   {
@@ -1775,10 +1779,23 @@ bool NetPlayServer::StartGame()
   spac << static_cast<u8>(m_players.size());
   for (const Client& client : std::views::values(m_players))
   {
+    if (client.pid < m_managed_rollback_endpoints.size() &&
+        !m_managed_rollback_endpoints[client.pid].empty())
+    {
+      const std::string& endpoint = m_managed_rollback_endpoints[client.pid];
+      const size_t separator = endpoint.rfind(':');
+      if (separator != std::string::npos)
+      {
+        spac << client.pid << endpoint.substr(0, separator)
+             << static_cast<u16>(std::stoul(endpoint.substr(separator + 1)));
+        continue;
+      }
+    }
     std::array<char, 64> address{};
     if (enet_address_get_host_ip(&client.socket->address, address.data(), address.size()) != 0)
     {
-      ERROR_LOG_FMT(NETPLAY, "GekkoNet: failed to resolve native address for player {}", client.pid);
+      ERROR_LOG_FMT(NETPLAY, "GekkoNet: failed to resolve native address for player {}",
+                    client.pid);
     }
     spac << client.pid << std::string(address.data()) << client.socket->address.port;
   }
@@ -1850,9 +1867,8 @@ std::optional<SaveSyncInfo> NetPlayServer::CollectSaveSyncInfo()
     // A launcher ELF/DOL does not identify the Wii title it will eventually boot. Synchronizing no
     // titles makes the client use an empty temporary NAND while the host uses its configured NAND.
     // In that case the only deterministic general solution is to collect all installed Wii saves.
-    const bool sync_all_wii =
-        m_settings.savedata_sync_all_wii ||
-        sync_info.game->GetPlatform() == DiscIO::Platform::ELFOrDOL;
+    const bool sync_all_wii = m_settings.savedata_sync_all_wii ||
+                              sync_info.game->GetPlatform() == DiscIO::Platform::ELFOrDOL;
     if (sync_all_wii)
     {
       if (!m_settings.savedata_sync_all_wii)

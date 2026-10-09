@@ -7,9 +7,9 @@
 #include <memory>
 #include <string>
 
+#include <QCheckBox>
 #include <QDialog>
 #include <QMenuBar>
-#include <QCheckBox>
 
 #include "Common/Lazy.h"
 #include "Core/NetPlayClient.h"
@@ -44,7 +44,8 @@ public:
                          StartGameCallback start_game_callback, QWidget* parent = nullptr);
   ~NetPlayDialog() override;
 
-  void show(std::string nickname, bool use_traversal);
+  void show(std::string nickname, bool use_traversal, bool visible = true);
+  bool SetManagedGamePath(const std::string& path);
   void reject() override;
 
   // NetPlayUI methods
@@ -186,6 +187,7 @@ private:
   PadMappingDialog* m_pad_mapping;
   NetPlay::SyncIdentifier m_current_game_identifier;
   std::string m_current_game_name;
+  std::shared_ptr<const UICommon::GameFile> m_managed_game;
   Common::Lazy<std::string> m_external_ip_address;
   std::string m_nickname;
   const GameListModel& m_game_list_model;

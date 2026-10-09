@@ -56,6 +56,7 @@ public:
 
   PadMappingArray GetPadMapping() const;
   void SetPadMapping(const PadMappingArray& mappings);
+  void SetManagedRollbackEndpoints(std::vector<std::string> endpoints);
 
   GBAConfigArray GetGBAConfig() const;
   void SetGBAConfig(const GBAConfigArray& configs, bool update_rom);
@@ -171,6 +172,7 @@ private:
   u32 m_current_game = 0;
   unsigned int m_minimum_buffer_size = 0;
   PadMappingArray m_pad_map;
+  std::vector<std::string> m_managed_rollback_endpoints;
   GBAConfigArray m_gba_config;
   PadMappingArray m_wiimote_map;
   unsigned int m_save_data_synced_players = 0;

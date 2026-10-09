@@ -3,8 +3,11 @@
 //
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include <SFML/Network/Packet.hpp>
@@ -14,6 +17,19 @@
 
 namespace Common::ENet
 {
+struct RendezvousPlayer
+{
+  std::string player_id;
+  int seat = 0;
+  ENetAddress endpoint{};
+};
+
+struct RendezvousManifest
+{
+  std::string match_id;
+  std::vector<RendezvousPlayer> players;
+};
+
 struct ENetHostDeleter
 {
   void operator()(ENetHost* host) const noexcept { enet_host_destroy(host); }
@@ -47,6 +63,15 @@ bool SendRollbackDatagram(const ENetAddress& address, const void* payload, size_
 std::vector<RollbackDatagram> DrainRollbackDatagrams();
 RollbackDatagramStats GetRollbackDatagramStats();
 bool InterceptRollbackDatagram(ENetHost* host, ENetEvent* event);
+
+// Registers the currently selected NetPlay UDP socket with the Brawlback rendezvous service and
+// returns the public endpoints observed for every player. When service_socket is true, this call
+// services an otherwise idle client ENet host while waiting. NetPlayServer sockets are already
+// serviced by their network thread and must pass false.
+std::optional<RendezvousManifest>
+RunRendezvous(const std::string& server, const std::string& match_id, const std::string& player_id,
+              const std::string& token, int expected_players, bool service_socket,
+              std::chrono::milliseconds timeout, std::string* error);
 
 // used for traversal packets and wake-up packets
 constexpr int SKIPPABLE_EVENT = 42;

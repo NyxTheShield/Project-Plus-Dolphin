@@ -126,7 +126,8 @@ NetPlayClient::~NetPlayClient()
 
 // called from ---GUI--- thread
 NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog,
-                             std::string name, const NetTraversalConfig& traversal_config)
+                             std::string name, const NetTraversalConfig& traversal_config,
+                             const ManagedNetPlayConfig* managed_config)
     : m_dialog(dialog), m_player_name(std::move(name))
 {
   m_host_spec = address;
@@ -144,10 +145,56 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
     }
 
     m_client->mtu = std::min(m_client->mtu, NetPlay::MAX_ENET_MTU);
+    m_client->intercept = Common::ENet::InterceptCallback;
+    Common::ENet::RegisterRollbackSocket(m_client, false);
+
+    std::string connect_address = address;
+    u16 connect_port = port;
+    if (managed_config)
+    {
+      std::string rendezvous_error;
+      const auto manifest = Common::ENet::RunRendezvous(
+          managed_config->rendezvous_address, managed_config->match_id, managed_config->player_id,
+          managed_config->rendezvous_token, managed_config->player_count,
+          !managed_config->coordinator, std::chrono::seconds(30), &rendezvous_error);
+      if (!manifest)
+      {
+        m_dialog->OnConnectionError(
+            fmt::format("Brawlback rendezvous failed: {}", rendezvous_error));
+        return;
+      }
+
+      m_managed_rollback_endpoints.resize(static_cast<size_t>(managed_config->player_count) + 1);
+      for (const Common::ENet::RendezvousPlayer& player : manifest->players)
+      {
+        std::array<char, 64> endpoint_host{};
+        if (player.seat < 1 || player.seat > managed_config->player_count ||
+            enet_address_get_host_ip(&player.endpoint, endpoint_host.data(),
+                                     endpoint_host.size()) != 0)
+        {
+          m_dialog->OnConnectionError(_trans("The matchmaking server returned an invalid peer."));
+          return;
+        }
+        m_managed_rollback_endpoints[player.seat] =
+            fmt::format("{}:{}", endpoint_host.data(), player.endpoint.port);
+        if (player.seat == 1 && !managed_config->coordinator)
+        {
+          connect_address = endpoint_host.data();
+          connect_port = player.endpoint.port;
+        }
+      }
+      if (m_managed_rollback_endpoints[1].empty())
+      {
+        m_dialog->OnConnectionError(_trans("The matchmaking manifest has no coordinator."));
+        return;
+      }
+      INFO_LOG_FMT(NETPLAY, "Brawlback rendezvous completed for match {} as seat {}",
+                   managed_config->match_id, managed_config->seat);
+    }
 
     ENetAddress addr;
-    enet_address_set_host(&addr, address.c_str());
-    addr.port = port;
+    enet_address_set_host(&addr, connect_address.c_str());
+    addr.port = connect_port;
 
     m_server = enet_host_connect(m_client, &addr, CHANNEL_COUNT, 0);
 
@@ -167,6 +214,14 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
     {
       if (Connect())
       {
+        if (managed_config && m_pid != managed_config->seat)
+        {
+          m_dialog->OnConnectionError(
+              fmt::format("The managed lobby assigned seat {}, but matchmaking assigned seat {}.",
+                          m_pid, managed_config->seat));
+          Disconnect();
+          return;
+        }
         m_client->intercept = Common::ENet::InterceptCallback;
         m_thread = std::thread(&NetPlayClient::ThreadFunc, this);
       }
@@ -335,7 +390,7 @@ void NetPlayClient::AdjustPlayerPadBufferSize(u32 buffer)
   spac << MessageID::PadBufferPlayer;
   spac << m_local_player->buffer;
   SendAsync(std::move(spac));
-  
+
   m_dialog->OnPlayerPadBufferChanged(m_local_player->buffer);
 }
 
@@ -426,7 +481,7 @@ void NetPlayClient::OnData(sf::Packet& packet)
   case MessageID::PadBufferMinimum:
     OnPadBufferMinimum(packet);
     break;
-    
+
   case MessageID::PadBufferPlayer:
     OnPadBufferPlayer(packet);
     break;
@@ -789,21 +844,20 @@ void NetPlayClient::OnPadBufferMinimum(sf::Packet& packet)
 {
   u32 size = 0;
   packet >> size;
-  
+
   m_minimum_buffer_size = size;
   m_dialog->OnMinimumPadBufferChanged(size);
 }
 
-
 void NetPlayClient::OnPadBufferPlayer(sf::Packet& packet)
 {
-    PlayerId pid;
-    packet >> pid;
+  PlayerId pid;
+  packet >> pid;
 
-    {
-      std::lock_guard<std::recursive_mutex> lkp(m_crit.players);
-      packet >> m_players[pid].buffer;
-    }
+  {
+    std::lock_guard<std::recursive_mutex> lkp(m_crit.players);
+    packet >> m_players[pid].buffer;
+  }
 }
 
 void NetPlayClient::OnGekkoInputDelay(sf::Packet& packet)
@@ -1703,7 +1757,8 @@ void NetPlayClient::ThreadFunc()
     if (qos_session.Successful())
     {
       m_dialog->AppendChat(
-          Common::GetStringT("Quality of Service (QoS) was successfully enabled.\nBuffer should be set to your ping divided by 16, at a minimum of 3."));
+          Common::GetStringT("Quality of Service (QoS) was successfully enabled.\nBuffer should be "
+                             "set to your ping divided by 16, at a minimum of 3."));
     }
     else
     {
@@ -1928,19 +1983,18 @@ bool NetPlayClient::StartGame(const std::string& path)
                                     });
   m_wii_sync_data_ready = false;
 
-  const bool rollback_stress_test =
-      m_local_player->IsHost() && m_players.size() == 1 &&
-      Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
+  const bool rollback_stress_test = m_local_player->IsHost() && m_players.size() == 1 &&
+                                    Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
   const bool simulate_remote_p2 =
       m_local_player->IsHost() && m_players.size() == 1 &&
       (Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2) || rollback_stress_test);
 
   m_net_settings.local_player_id = m_local_player->pid;
   NetPlay::NetSettings boot_net_settings = m_net_settings;
-  // GekkoNet synchronizes GC pads only. Any lobby Wii Remote mapping makes NetPlayConfigLoader force
-  // WiimoteSource::Emulated, which routes every Bluetooth poll through Dolphin's legacy lockstep
-  // WiimoteUpdate(). That blocks the CPU thread until the remote's Wiimote packet arrives (outside
-  // GekkoNet's prediction) and pops extra buffered states during rollback replays.
+  // GekkoNet synchronizes GC pads only. Any lobby Wii Remote mapping makes NetPlayConfigLoader
+  // force WiimoteSource::Emulated, which routes every Bluetooth poll through Dolphin's legacy
+  // lockstep WiimoteUpdate(). That blocks the CPU thread until the remote's Wiimote packet arrives
+  // (outside GekkoNet's prediction) and pops extra buffered states during rollback replays.
   boot_net_settings.wiimote_map.fill(0);
   if (simulate_remote_p2)
   {
@@ -1962,8 +2016,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   const int local_delay = static_cast<int>(m_local_player->buffer);
   const int prediction_window = static_cast<int>(m_minimum_buffer_size);
   const bool debug_p2_cstick = Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
-  const bool compare_confirmed_ram =
-      Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
+  const bool compare_confirmed_ram = Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
 
   if (!Rollback::StartGekkoSession("Project+", m_current_game, num_players, local_seat,
                                    m_rollback_player_endpoints, local_delay, prediction_window,
@@ -2700,7 +2753,8 @@ void NetPlayClient::ComputeGameDigest(const SyncIdentifier& sync_identifier)
   else if (auto game = m_dialog->FindGameFile(sync_identifier))
     file = game->GetFilePath();
   else if (sync_identifier == GetBrawlFileIdentifier())
-    file = File::GetSysDirectory() + "Wii" + DIR_SEP + "title" + DIR_SEP + "00010000" + DIR_SEP + "52534245" + DIR_SEP + "data" + DIR_SEP + BRAWL_SAVE_FILE;
+    file = File::GetSysDirectory() + "Wii" + DIR_SEP + "title" + DIR_SEP + "00010000" + DIR_SEP +
+           "52534245" + DIR_SEP + "data" + DIR_SEP + BRAWL_SAVE_FILE;
 
   if (file.empty() || !File::Exists(file))
   {

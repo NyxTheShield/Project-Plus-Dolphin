@@ -256,7 +256,7 @@ void NetPlayDialog::CreateMainLayout()
     Settings::Instance().GetNetPlayServer()->ComputeGameDigest(
         NetPlay::NetPlayClient::GetBrawlFileIdentifier());
   });
-  
+
   m_other_menu = m_menu_bar->addMenu(tr("Other"));
   m_record_input_action = m_other_menu->addAction(tr("Record Inputs"));
   m_record_input_action->setCheckable(true);
@@ -375,7 +375,7 @@ void NetPlayDialog::CreatePlayersLayout()
   m_players_list = new QTableWidget;
   m_kick_button = new QPushButton(tr("Kick Player"));
   m_assign_ports_button = new QPushButton(tr("Assign Controller Ports"));
-  
+
   copyCode = false;
 
   m_players_list->setTabKeyNavigation(false);
@@ -486,7 +486,7 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_start_button, &QPushButton::clicked, this, &NetPlayDialog::OnStart);
   connect(m_quit_button, &QPushButton::clicked, this, &NetPlayDialog::reject);
 
-  connect(m_spectator_mode, &QCheckBox::toggled, this, &NetPlayDialog::IsSpectatorEnabled); 
+  connect(m_spectator_mode, &QCheckBox::toggled, this, &NetPlayDialog::IsSpectatorEnabled);
 
   connect(m_game_button, &QPushButton::clicked, [this] {
     GameListDialog gld(m_game_list_model, this);
@@ -535,12 +535,10 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_golf_mode_overlay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_fixed_delay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_hide_remote_gbas_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
-  connect(m_rollback_debug_p2_cstick_action, &QAction::toggled, this,
-          &NetPlayDialog::SaveSettings);
+  connect(m_rollback_debug_p2_cstick_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_rollback_simulate_remote_p2_action, &QAction::toggled, this,
           &NetPlayDialog::SaveSettings);
-  connect(m_rollback_stress_test_action, &QAction::toggled, this,
-          &NetPlayDialog::SaveSettings);
+  connect(m_rollback_stress_test_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_rollback_tracked_bitmap_clear_action, &QAction::toggled, this,
           &NetPlayDialog::SaveSettings);
   connect(m_rollback_full_scan_benchmark_action, &QAction::toggled, this,
@@ -645,7 +643,7 @@ void NetPlayDialog::reject()
   }
 }
 
-void NetPlayDialog::show(std::string nickname, bool use_traversal)
+void NetPlayDialog::show(std::string nickname, bool use_traversal, bool visible)
 {
   m_nickname = std::move(nickname);
   m_use_traversal = use_traversal;
@@ -693,8 +691,18 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
 
   SetOptionsEnabled(true);
 
-  QDialog::show();
+  if (visible)
+    QDialog::show();
   UpdateGUI();
+}
+
+bool NetPlayDialog::SetManagedGamePath(const std::string& path)
+{
+  auto game = std::make_shared<UICommon::GameFile>(path);
+  if (!game->IsValid())
+    return false;
+  m_managed_game = std::move(game);
+  return true;
 }
 
 void NetPlayDialog::ResetExternalIP()
@@ -868,12 +876,12 @@ void NetPlayDialog::UpdateGUI()
         m_hostcode_label->setText(
             InetAddressToString(Common::g_TraversalClient->GetExternalAddress()));
       }
-	  
-	  if (copyCode == false)
-	  {
-		QApplication::clipboard()->setText(m_hostcode_label->text());
-		copyCode = true;
-	  }
+
+      if (copyCode == false)
+      {
+        QApplication::clipboard()->setText(m_hostcode_label->text());
+        copyCode = true;
+      }
       m_hostcode_action_button->setEnabled(true);
       m_hostcode_action_button->setText(tr("Copy"));
       m_is_copy_button_retry = false;
@@ -1213,6 +1221,13 @@ NetPlayDialog::FindGameFile(const NetPlay::SyncIdentifier& sync_identifier,
 
   *found = NetPlay::SyncIdentifierComparison::DifferentGame;
 
+  if (m_managed_game)
+  {
+    *found = m_managed_game->CompareSyncIdentifier(sync_identifier);
+    if (*found == NetPlay::SyncIdentifierComparison::SameGame)
+      return m_managed_game;
+  }
+
   const std::optional<std::shared_ptr<const UICommon::GameFile>> game_file =
       RunOnObject(this, [this, &sync_identifier, found] {
         for (int i = 0; i < m_game_list_model.rowCount(QModelIndex()); i++)
@@ -1289,10 +1304,8 @@ void NetPlayDialog::LoadSettings()
   const bool hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
   const bool brawlmusic_off = Config::Get(Config::NETPLAY_BRAWL_MUSIC_OFF);
   const bool spectator_mode = Config::Get(Config::NETPLAY_SPECTATOR_MODE);
-  const bool rollback_debug_p2_cstick =
-      Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
-  const bool rollback_simulate_remote_p2 =
-      Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
+  const bool rollback_debug_p2_cstick = Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
+  const bool rollback_simulate_remote_p2 = Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
   const bool rollback_stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
   const bool rollback_tracked_bitmap_clear =
       Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
@@ -1306,8 +1319,8 @@ void NetPlayDialog::LoadSettings()
   const int frame_boundary_index =
       m_frame_boundary_combo->findData(static_cast<int>(rollback_frame_boundary));
   const int default_frame_boundary_index = m_frame_boundary_combo->findData(3);
-  m_frame_boundary_combo->setCurrentIndex(
-      frame_boundary_index >= 0 ? frame_boundary_index : default_frame_boundary_index);
+  m_frame_boundary_combo->setCurrentIndex(frame_boundary_index >= 0 ? frame_boundary_index :
+                                                                      default_frame_boundary_index);
 
   if (!savedata_load)
     m_savedata_none_action->setChecked(true);

@@ -185,6 +185,7 @@ int main(int argc, char* argv[])
   auto parser = CommandLineParse::CreateParser(CommandLineParse::ParserOptions::IncludeGUIOptions);
   const optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   const std::vector<std::string> args = parser->args();
+  const bool managed_session = options.is_set("brawlback_ticket");
 
 #ifdef _WIN32
   QtUtils::InstallWindowDecorationFilter(&app);
@@ -256,14 +257,15 @@ int main(int argc, char* argv[])
         QObject::tr("A save state cannot be loaded without specifying a game to launch."));
     retval = 1;
   }
-  else if (Settings::Instance().IsBatchModeEnabled() && !game_specified)
+  else if (Settings::Instance().IsBatchModeEnabled() && !game_specified && !managed_session)
   {
     ModalMessageBox::critical(
         nullptr, QObject::tr("Error"),
         QObject::tr("Batch mode cannot be used without specifying a game to launch."));
     retval = 1;
   }
-  else if (!boot && (Settings::Instance().IsBatchModeEnabled() || save_state_path))
+  else if (!boot && (Settings::Instance().IsBatchModeEnabled() || save_state_path) &&
+           !managed_session)
   {
     // A game to launch was specified, but it was invalid.
     // An error has already been shown by code above, so exit without showing another error.
@@ -277,38 +279,39 @@ int main(int argc, char* argv[])
     Settings::Instance().ApplyStyle();
 
     MainWindow win{Core::System::GetInstance(), std::move(boot),
-                   static_cast<const char*>(options.get("movie"))};
+                   static_cast<const char*>(options.get("movie")),
+                   static_cast<const char*>(options.get("brawlback_ticket"))};
 
 #if defined(USE_ANALYTICS) && USE_ANALYTICS
-    if (!Config::Get(Config::MAIN_ANALYTICS_PERMISSION_ASKED))
+    if (!managed_session && !Config::Get(Config::MAIN_ANALYTICS_PERMISSION_ASKED))
+    {
+      QMessageBox firstboot_prompt(&win);
+      firstboot_prompt.setIcon(QMessageBox::Information);
+      firstboot_prompt.setWindowTitle(QObject::tr("First Boot Prompt"));
+      firstboot_prompt.setText(
+          QObject::tr("New installation detected; read below for setup tips!"));
+      firstboot_prompt.setInformativeText(QObject::tr(
+          "If you are on modern hardware, we recommend setting Ubershaders "
+          "to either Hybrid or Exclusive mode in Graphics > General for a "
+          "stutter-free experience while playing. \n\n"
+          "Select your Brawl ISO using the button below to allow the mod to load properly. \n"
+          "You can also set this path later in Config > Paths.\n\n"
+          "Thank you for playing!"));
+      QAbstractButton* pButtonYes =
+          firstboot_prompt.addButton(QObject::tr("Select ISO"), QMessageBox::YesRole);
+      firstboot_prompt.addButton(QObject::tr("Skip"), QMessageBox::NoRole);
+
+      firstboot_prompt.exec();
+
+      if (firstboot_prompt.clickedButton() == pButtonYes)
       {
-        QMessageBox firstboot_prompt(&win);
-        firstboot_prompt.setIcon(QMessageBox::Information);
-        firstboot_prompt.setWindowTitle(QObject::tr("First Boot Prompt"));
-        firstboot_prompt.setText(
-            QObject::tr("New installation detected; read below for setup tips!"));
-        firstboot_prompt.setInformativeText(QObject::tr(
-            "If you are on modern hardware, we recommend setting Ubershaders "
-            "to either Hybrid or Exclusive mode in Graphics > General for a "
-            "stutter-free experience while playing. \n\n"
-            "Select your Brawl ISO using the button below to allow the mod to load properly. \n"
-            "You can also set this path later in Config > Paths.\n\n"
-            "Thank you for playing!"));
-        QAbstractButton* pButtonYes = firstboot_prompt.addButton(QObject::tr("Select ISO"), QMessageBox::YesRole);
-        firstboot_prompt.addButton(QObject::tr("Skip"), QMessageBox::NoRole);
-
-        firstboot_prompt.exec();
-
-        if (firstboot_prompt.clickedButton() == pButtonYes)
-        {
-          PathPane path_pane;
-          path_pane.BrowseDefaultGame();
-        }
-
+        PathPane path_pane;
+        path_pane.BrowseDefaultGame();
+      }
     }
 #endif
 #if defined(USE_ANALYTICS) && USE_ANALYTICS
-      if (!Config::Get(Config::MAIN_ANALYTICS_PERMISSION_ASKED))
+    if (!managed_session && !Config::Get(Config::MAIN_ANALYTICS_PERMISSION_ASKED))
     {
       // To ensure that the analytics prompt appears aligned with the center of the main window,
       // the dialog is only shown after the application is ready, as only then it is guaranteed that

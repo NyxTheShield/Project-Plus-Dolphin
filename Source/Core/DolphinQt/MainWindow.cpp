@@ -4,6 +4,7 @@
 #include "DolphinQt/MainWindow.h"
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -12,16 +13,17 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QIcon>
+#include <QJsonDocument>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QStackedWidget>
 #include <QStyleHints>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWindow>
-#include <QMessageBox>
-#include <QByteArray>
-#include <QJsonDocument>
 
 #include <fmt/format.h>
+#include <picojson.h>
 
 #include <future>
 #include <optional>
@@ -38,15 +40,16 @@
 #include <qpa/qplatformnativeinterface.h>
 #endif
 
+#include "Common/CommonPaths.h"
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
-#include "Common/ScopeGuard.h"
-#include "Common/Version.h"
-#include "Common/WindowSystemInfo.h"
 #include "Common/HttpRequest.h"
-#include "Common/scmrev.h"
+#include "Common/JsonUtil.h"
 #include "Common/ScopeGuard.h"
 #include "Common/StringUtil.h"
+#include "Common/Version.h"
+#include "Common/WindowSystemInfo.h"
+#include "Common/scmrev.h"
 
 #include "Core/AchievementManager.h"
 #include "Core/Boot/Boot.h"
@@ -224,7 +227,7 @@ static std::vector<std::string> StringListToStdVector(const QStringList& list)
 }
 
 MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boot_parameters,
-                       const std::string& movie_path)
+                       const std::string& movie_path, const std::string& brawlback_ticket_path)
     : QMainWindow(nullptr), m_system(system)
 {
   setWindowTitle(QString::fromStdString(Common::GetScmRevStr()));
@@ -271,8 +274,16 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
 
   NetPlayInit();
 
+  if (!brawlback_ticket_path.empty())
+  {
+    m_managed_session.emplace();
+    m_managed_session->ticket_path = brawlback_ticket_path;
+    QTimer::singleShot(0, this, &MainWindow::StartManagedNetPlay);
+  }
+
 #ifdef SHOW_UPDATER
-  CheckForUpdatesAuto();
+  if (brawlback_ticket_path.empty())
+    CheckForUpdatesAuto();
 #endif  // SHOW_UPDATER
 
 #ifdef USE_RETRO_ACHIEVEMENTS
@@ -713,11 +724,12 @@ void MainWindow::ConnectToolBar()
   connect(m_tool_bar, &ToolBar::StopPressed, this, &MainWindow::RequestStop);
   connect(m_tool_bar, &ToolBar::FullScreenPressed, this, &MainWindow::FullScreen);
   connect(m_tool_bar, &ToolBar::ScreenShotPressed, this, &MainWindow::ScreenShot);
-  connect(m_tool_bar, &ToolBar::NetPlaySetupDialogPressed, this, &MainWindow::ShowNetPlaySetupDialog);
+  connect(m_tool_bar, &ToolBar::NetPlaySetupDialogPressed, this,
+          &MainWindow::ShowNetPlaySetupDialog);
   connect(m_tool_bar, &ToolBar::SettingsPressed, this, &MainWindow::ShowSettingsWindow);
   connect(m_tool_bar, &ToolBar::ControllersPressed, this, &MainWindow::ShowControllersWindow);
   connect(m_tool_bar, &ToolBar::GraphicsPressed, this, &MainWindow::ShowGraphicsWindow);
-  #ifdef SHOW_UPDATER
+#ifdef SHOW_UPDATER
   connect(m_tool_bar, &ToolBar::InstallUpdateManuallyPressed, this, &MainWindow::ShowUpdateDialog);
 #endif  // SHOW_UPDATER
 
@@ -1432,77 +1444,82 @@ void MainWindow::ShowAboutDialog()
   about.exec();
 }
 
-// P+ change: New updater; credit to RainbowTabitha and the Mario Party Netplay team for the base code!
+// P+ change: New updater; credit to RainbowTabitha and the Mario Party Netplay team for the base
+// code!
 
 #ifdef SHOW_UPDATER
 void MainWindow::ShowUpdateDialog()
 {
-    Common::HttpRequest httpRequest;
+  Common::HttpRequest httpRequest;
 
-    // Make the GET request
-    auto response = httpRequest.Get("https://api.github.com/repos/Project-Plus-Development-Team/Project-Plus-Dolphin/releases/latest");
+  // Make the GET request
+  auto response = httpRequest.Get("https://api.github.com/repos/Project-Plus-Development-Team/"
+                                  "Project-Plus-Dolphin/releases/latest");
 
-    if (response)
+  if (response)
+  {
+    // Access the underlying vector and convert it to QByteArray
+    QByteArray responseData(reinterpret_cast<const char*>(response->data()), response->size());
+
+    // Parse the JSON response
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
+    QJsonObject jsonObject = jsonDoc.object();
+
+    QString currentVersion = QString::fromStdString(SCM_DESC_STR);
+    QString latestVersion = jsonObject.value(QStringLiteral("tag_name")).toString();
+
+    if (currentVersion != latestVersion)
     {
-        // Access the underlying vector and convert it to QByteArray
-        QByteArray responseData(reinterpret_cast<const char*>(response->data()), response->size());
-
-        // Parse the JSON response
-        QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
-        QJsonObject jsonObject = jsonDoc.object();
-      
-        QString currentVersion = QString::fromStdString(SCM_DESC_STR);
-        QString latestVersion = jsonObject.value(QStringLiteral("tag_name")).toString();
-
-        if (currentVersion != latestVersion)
-        {
-          // Create and show the UpdateDialog with the fetched data
-          bool forced = false; // Set this based on your logic
-          UserInterface::Dialog::UpdateDialog updater(this, jsonObject, forced);
-          updater.exec();
-        } else {
-          QMessageBox::information(this, tr("Info"), tr("You are already up to date."));
-        }
+      // Create and show the UpdateDialog with the fetched data
+      bool forced = false;  // Set this based on your logic
+      UserInterface::Dialog::UpdateDialog updater(this, jsonObject, forced);
+      updater.exec();
     }
     else
     {
-        // Handle error
-        QMessageBox::critical(this, tr("Error"), tr("Failed to fetch update information."));
+      QMessageBox::information(this, tr("Info"), tr("You are already up to date."));
     }
+  }
+  else
+  {
+    // Handle error
+    QMessageBox::critical(this, tr("Error"), tr("Failed to fetch update information."));
+  }
 }
 
 void MainWindow::CheckForUpdatesAuto()
 {
-    Common::HttpRequest httpRequest;
+  Common::HttpRequest httpRequest;
 
-    // Make the GET request
-    auto response = httpRequest.Get("https://api.github.com/repos/Project-Plus-Development-Team/Project-Plus-Dolphin/releases/latest");
+  // Make the GET request
+  auto response = httpRequest.Get("https://api.github.com/repos/Project-Plus-Development-Team/"
+                                  "Project-Plus-Dolphin/releases/latest");
 
-    if (response)
+  if (response)
+  {
+    // Access the underlying vector and convert it to QByteArray
+    QByteArray responseData(reinterpret_cast<const char*>(response->data()), response->size());
+
+    // Parse the JSON response
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
+    QJsonObject jsonObject = jsonDoc.object();
+
+    QString currentVersion = QString::fromStdString(SCM_DESC_STR);
+    QString latestVersion = jsonObject.value(QStringLiteral("tag_name")).toString();
+
+    if (currentVersion != latestVersion)
     {
-        // Access the underlying vector and convert it to QByteArray
-        QByteArray responseData(reinterpret_cast<const char*>(response->data()), response->size());
-
-        // Parse the JSON response
-        QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
-        QJsonObject jsonObject = jsonDoc.object();
-      
-        QString currentVersion = QString::fromStdString(SCM_DESC_STR);
-        QString latestVersion = jsonObject.value(QStringLiteral("tag_name")).toString();
-
-        if (currentVersion != latestVersion)
-        {
-          // Create and show the UpdateDialog with the fetched data
-          bool forced = false; // Set this based on your logic
-          UserInterface::Dialog::UpdateDialog updater(this, jsonObject, forced);
-          updater.exec();
-        }
+      // Create and show the UpdateDialog with the fetched data
+      bool forced = false;  // Set this based on your logic
+      UserInterface::Dialog::UpdateDialog updater(this, jsonObject, forced);
+      updater.exec();
     }
-    else
-    {
-        // Handle error
-        QMessageBox::critical(this, tr("Error"), tr("Failed to fetch update information."));
-    }
+  }
+  else
+  {
+    // Handle error
+    QMessageBox::critical(this, tr("Error"), tr("Failed to fetch update information."));
+  }
 }
 #endif  // SHOW_UPDATER
 
@@ -1733,6 +1750,184 @@ void MainWindow::NetPlayInit()
           &MainWindow::UpdateScreenSaverInhibition);
 }
 
+void MainWindow::StartManagedNetPlay()
+{
+  if (!m_managed_session)
+    return;
+
+  picojson::value root;
+  std::string parse_error;
+  const std::string ticket_path = m_managed_session->ticket_path;
+  if (!JsonFromFile(ticket_path, &root, &parse_error) || !root.is<picojson::object>())
+  {
+    const QString detail = parse_error.empty() ? tr("File not found or unreadable") :
+                                                 QString::fromStdString(parse_error);
+    ModalMessageBox::critical(this, tr("Brawlback"),
+                              tr("Could not read the matchmaking ticket:\n%1\n\n%2")
+                                  .arg(QString::fromStdString(ticket_path), detail));
+    m_managed_session.reset();
+    return;
+  }
+  File::Delete(ticket_path);
+
+  const picojson::object& ticket = root.get<picojson::object>();
+  const auto read_string = [&ticket](const char* name) -> std::optional<std::string> {
+    const auto it = ticket.find(name);
+    if (it == ticket.end() || !it->second.is<std::string>())
+      return std::nullopt;
+    return it->second.get<std::string>();
+  };
+  const auto match_id = read_string("match_id");
+  const auto player_id = read_string("player_id");
+  const auto game = read_string("game");
+  const auto rendezvous_address = read_string("rendezvous_addr");
+  const auto rendezvous_token = read_string("rendezvous_token");
+  const auto seat_it = ticket.find("seat");
+  const auto players_it = ticket.find("players");
+  if (!match_id || !player_id || !game || !rendezvous_address || !rendezvous_token ||
+      seat_it == ticket.end() || !seat_it->second.is<double>() || players_it == ticket.end() ||
+      !players_it->second.is<picojson::array>())
+  {
+    ModalMessageBox::critical(this, tr("Brawlback"), tr("The matchmaking ticket is incomplete."));
+    m_managed_session.reset();
+    return;
+  }
+
+  m_managed_session->match_id = *match_id;
+  m_managed_session->player_id = *player_id;
+  m_managed_session->game = *game;
+  m_managed_session->rendezvous_address = *rendezvous_address;
+  m_managed_session->rendezvous_token = *rendezvous_token;
+  m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
+  m_managed_session->player_count =
+      static_cast<int>(players_it->second.get<picojson::array>().size());
+  const auto test_solo_it = ticket.find("test_solo");
+  m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
+                                 test_solo_it->second.get<bool>();
+  for (const picojson::value& player_value : players_it->second.get<picojson::array>())
+  {
+    if (!player_value.is<picojson::object>())
+      continue;
+    const picojson::object& player = player_value.get<picojson::object>();
+    const auto id = player.find("player_id");
+    const auto name = player.find("display_name");
+    if (id != player.end() && id->second.is<std::string>() &&
+        id->second.get<std::string>() == *player_id && name != player.end() &&
+        name->second.is<std::string>())
+    {
+      m_managed_session->display_name = name->second.get<std::string>();
+    }
+  }
+
+  // NetPlay currently assigns protocol player IDs in connection order. A two-player match is
+  // unambiguous (the coordinator is always P1); four-player managed sessions require explicit
+  // seat negotiation in the NetPlay handshake before they can be admitted safely.
+  const bool valid_two_player = m_managed_session->player_count == 2 &&
+                                m_managed_session->seat >= 1 && m_managed_session->seat <= 2;
+  const bool valid_test_solo = m_managed_session->test_solo &&
+                               m_managed_session->player_count == 1 &&
+                               m_managed_session->seat == 1;
+  if ((!valid_two_player && !valid_test_solo) || m_managed_session->display_name.empty())
+  {
+    ModalMessageBox::critical(
+        this, tr("Brawlback"),
+        tr("This Dolphin build requires a two-player match or an explicit solo test ticket."));
+    m_managed_session.reset();
+    return;
+  }
+
+  std::string game_path;
+  std::optional<std::string> sd_card_path;
+  if (m_managed_session->game == "project-plus")
+  {
+    game_path =
+        File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
+    sd_card_path = File::GetUserPath(D_WIIROOT_IDX) + WII_SD_CARD_IMAGE;
+  }
+  else if (m_managed_session->game == "brawl")
+  {
+    game_path = Config::Get(Config::MAIN_DEFAULT_ISO);
+  }
+  else
+  {
+    ModalMessageBox::critical(this, tr("Brawlback"), tr("The selected game is unsupported."));
+    m_managed_session.reset();
+    return;
+  }
+
+  const UICommon::GameFile selected_game(game_path);
+  const std::string& game_id = selected_game.GetGameID();
+  const bool is_brawl = game_id == "RSBE01" || game_id == "RSBP01" || game_id == "RSBJ01" ||
+                        game_id == "RSBK01";
+  if (!selected_game.IsValid() || (m_managed_session->game == "brawl" && !is_brawl) ||
+      !m_netplay_dialog->SetManagedGamePath(game_path))
+  {
+    const QString detail = m_managed_session->game == "brawl" ?
+                               tr("Set Super Smash Bros. Brawl as Dolphin's default ISO first.") :
+                               tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.");
+    ModalMessageBox::critical(this, tr("Brawlback"), detail);
+    m_managed_session.reset();
+    return;
+  }
+
+  Config::SetCurrent(Config::MAIN_WII_SD_CARD, sd_card_path.has_value());
+  Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
+  Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
+  File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
+
+  if (m_managed_session->seat == 1)
+  {
+    Settings::Instance().ResetNetPlayServer(new NetPlay::NetPlayServer(
+        0, false, m_netplay_dialog, NetPlay::NetTraversalConfig{false, {}, 0, 0}));
+    const auto server = Settings::Instance().GetNetPlayServer();
+    if (!server || !server->is_connected)
+    {
+      ModalMessageBox::critical(this, tr("Brawlback"),
+                                tr("Could not create the managed NetPlay server."));
+      NetPlayQuit();
+      return;
+    }
+    server->ChangeGame(selected_game.GetSyncIdentifier(),
+                       m_game_list->GetNetPlayName(selected_game));
+  }
+
+  if (!NetPlayJoin())
+  {
+    m_managed_session.reset();
+    return;
+  }
+
+  if (m_managed_session->seat == 1)
+    QTimer::singleShot(100, this, &MainWindow::PollManagedNetPlayReady);
+}
+
+void MainWindow::PollManagedNetPlayReady()
+{
+  if (!m_managed_session || m_managed_session->seat != 1 || m_managed_session->start_requested)
+  {
+    return;
+  }
+
+  const auto client = Settings::Instance().GetNetPlayClient();
+  const auto server = Settings::Instance().GetNetPlayServer();
+  if (!client || !server)
+    return;
+
+  if (static_cast<int>(client->GetPlayers().size()) == m_managed_session->player_count &&
+      client->DoAllPlayersHaveGame())
+  {
+    m_managed_session->start_requested = true;
+    if (!server->RequestStartGame())
+    {
+      ModalMessageBox::critical(this, tr("Brawlback"), tr("The synchronized game start failed."));
+      NetPlayQuit();
+    }
+    return;
+  }
+
+  QTimer::singleShot(100, this, &MainWindow::PollManagedNetPlayReady);
+}
+
 bool MainWindow::NetPlayJoin()
 {
   if (!Core::IsUninitialized(m_system))
@@ -1753,7 +1948,8 @@ bool MainWindow::NetPlayJoin()
 
   // Settings
   const std::string traversal_choice = Config::Get(Config::NETPLAY_TRAVERSAL_CHOICE);
-  const bool is_traversal = traversal_choice == "traversal";
+  const bool is_managed = m_managed_session.has_value();
+  const bool is_traversal = !is_managed && traversal_choice == "traversal";
 
   std::string host_ip;
   u16 host_port;
@@ -1771,7 +1967,8 @@ bool MainWindow::NetPlayJoin()
 
   const std::string traversal_host = Config::Get(Config::NETPLAY_TRAVERSAL_SERVER);
   const u16 traversal_port = Config::Get(Config::NETPLAY_TRAVERSAL_PORT);
-  const std::string nickname = Config::Get(Config::NETPLAY_NICKNAME);
+  const std::string nickname =
+      is_managed ? m_managed_session->display_name : Config::Get(Config::NETPLAY_NICKNAME);
   const std::string network_mode = Config::Get(Config::NETPLAY_NETWORK_MODE);
   const bool host_input_authority = network_mode == "hostinputauthority" || network_mode == "golf";
 
@@ -1783,10 +1980,23 @@ bool MainWindow::NetPlayJoin()
 
   // Create Client
   const bool is_hosting_netplay = server != nullptr;
+  std::optional<NetPlay::ManagedNetPlayConfig> managed_config;
+  if (is_managed)
+  {
+    managed_config.emplace();
+    managed_config->rendezvous_address = m_managed_session->rendezvous_address;
+    managed_config->match_id = m_managed_session->match_id;
+    managed_config->player_id = m_managed_session->player_id;
+    managed_config->rendezvous_token = m_managed_session->rendezvous_token;
+    managed_config->seat = m_managed_session->seat;
+    managed_config->player_count = m_managed_session->player_count;
+    managed_config->coordinator = m_managed_session->seat == 1;
+  }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
       host_ip, host_port, m_netplay_dialog, nickname,
       NetPlay::NetTraversalConfig{is_hosting_netplay ? false : is_traversal, traversal_host,
-                                  traversal_port}));
+                                  traversal_port},
+      managed_config ? &*managed_config : nullptr));
 
   if (!Settings::Instance().GetNetPlayClient()->IsConnected())
   {
@@ -1799,8 +2009,12 @@ bool MainWindow::NetPlayJoin()
   Settings::Instance().GetNetPlayClient()->AdjustPlayerPadBufferSize(
       Config::Get(Config::NETPLAY_ROLLBACK_INPUT_DELAY));
 
+  if (is_managed && server)
+    server->SetManagedRollbackEndpoints(
+        Settings::Instance().GetNetPlayClient()->GetManagedRollbackEndpoints());
+
   m_netplay_setup_dialog->close();
-  m_netplay_dialog->show(nickname, is_traversal);
+  m_netplay_dialog->show(nickname, is_traversal, !is_managed);
 
   return true;
 }

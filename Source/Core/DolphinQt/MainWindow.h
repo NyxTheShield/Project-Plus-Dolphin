@@ -85,7 +85,7 @@ class MainWindow final : public QMainWindow
 
 public:
   explicit MainWindow(Core::System& system, std::unique_ptr<BootParameters> boot_parameters,
-                      const std::string& movie_path);
+                      const std::string& movie_path, const std::string& brawlback_ticket_path);
   ~MainWindow() override;
 
   WindowSystemInfo GetWindowSystemInfo() const;
@@ -174,7 +174,7 @@ private:
   void ShowGraphicsWindow();
   void ShowFreeLookWindow();
   void ShowAboutDialog();
-  #ifdef SHOW_UPDATER
+#ifdef SHOW_UPDATER
   void ShowUpdateDialog();
   void CheckForUpdatesAuto();
 #endif  // SHOW_UPDATER
@@ -201,6 +201,8 @@ private:
   bool NetPlayJoin();
   bool NetPlayHost(const UICommon::GameFile& game);
   void NetPlayQuit();
+  void StartManagedNetPlay();
+  void PollManagedNetPlayReady();
 
   void OnBootGameCubeIPL(DiscIO::Region region);
   void OnImportNANDBackup();
@@ -258,6 +260,22 @@ private:
   bool m_is_screensaver_inhibited = false;
   u32 m_state_slot = 1;
   std::unique_ptr<BootParameters> m_pending_boot;
+
+  struct ManagedSession
+  {
+    std::string ticket_path;
+    std::string match_id;
+    std::string player_id;
+    std::string display_name;
+    std::string rendezvous_address;
+    std::string rendezvous_token;
+    std::string game;
+    int seat = 0;
+    int player_count = 0;
+    bool test_solo = false;
+    bool start_requested = false;
+  };
+  std::optional<ManagedSession> m_managed_session;
 
   SettingsWindow* m_settings_window = nullptr;
   // m_fifo_window doesn't set MainWindow as its parent so that the fifo can be focused without

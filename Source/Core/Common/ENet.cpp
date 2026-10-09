@@ -5,9 +5,16 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+
+#include <picojson.h>
 
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
@@ -28,6 +35,10 @@ u32 s_rollback_session_id = 0;
 std::deque<RollbackDatagram> s_rollback_datagrams;
 RollbackDatagramStats s_rollback_stats;
 
+bool s_rendezvous_active = false;
+std::string s_rendezvous_match_id;
+std::optional<RendezvousManifest> s_rendezvous_manifest;
+
 void WriteSessionId(u8* header, u32 session_id)
 {
   header[8] = static_cast<u8>(session_id >> 24);
@@ -40,6 +51,85 @@ u32 ReadSessionId(const u8* header)
 {
   return static_cast<u32>(header[8]) << 24 | static_cast<u32>(header[9]) << 16 |
          static_cast<u32>(header[10]) << 8 | static_cast<u32>(header[11]);
+}
+
+bool ParseHostPort(const std::string& value, ENetAddress* address)
+{
+  const size_t separator = value.rfind(':');
+  if (separator == std::string::npos || separator == 0 || separator + 1 == value.size())
+    return false;
+
+  const std::string host = value.substr(0, separator);
+  const std::string port = value.substr(separator + 1);
+  char* end = nullptr;
+  const unsigned long parsed_port = std::strtoul(port.c_str(), &end, 10);
+  if (!end || *end != '\0' || parsed_port == 0 || parsed_port > 65535)
+    return false;
+
+  address->port = static_cast<enet_uint16>(parsed_port);
+  return enet_address_set_host(address, host.c_str()) == 0;
+}
+
+bool InterceptRendezvousDatagram(ENetHost* host, ENetEvent* event)
+{
+  std::string match_id;
+  {
+    std::lock_guard lk(s_rollback_mutex);
+    if (!s_rendezvous_active || host != s_rollback_host)
+      return false;
+    match_id = s_rendezvous_match_id;
+  }
+
+  const auto* bytes = reinterpret_cast<const char*>(host->receivedData);
+  const std::string payload(bytes, bytes + host->receivedDataLength);
+  picojson::value root;
+  if (!picojson::parse(root, payload).empty() || !root.is<picojson::object>())
+    return false;
+
+  const auto& object = root.get<picojson::object>();
+  const auto type_it = object.find("type");
+  const auto match_it = object.find("match_id");
+  const auto players_it = object.find("players");
+  if (type_it == object.end() || !type_it->second.is<std::string>() ||
+      type_it->second.get<std::string>() != "manifest" || match_it == object.end() ||
+      !match_it->second.is<std::string>() || match_it->second.get<std::string>() != match_id ||
+      players_it == object.end() || !players_it->second.is<picojson::array>())
+  {
+    return false;
+  }
+
+  RendezvousManifest manifest;
+  manifest.match_id = match_id;
+  for (const picojson::value& entry : players_it->second.get<picojson::array>())
+  {
+    if (!entry.is<picojson::object>())
+      return false;
+    const auto& player = entry.get<picojson::object>();
+    const auto id = player.find("player_id");
+    const auto seat = player.find("seat");
+    const auto endpoint = player.find("endpoint");
+    if (id == player.end() || !id->second.is<std::string>() || seat == player.end() ||
+        !seat->second.is<double>() || endpoint == player.end() ||
+        !endpoint->second.is<std::string>())
+    {
+      return false;
+    }
+
+    RendezvousPlayer parsed;
+    parsed.player_id = id->second.get<std::string>();
+    parsed.seat = static_cast<int>(seat->second.get<double>());
+    if (!ParseHostPort(endpoint->second.get<std::string>(), &parsed.endpoint))
+      return false;
+    manifest.players.emplace_back(std::move(parsed));
+  }
+
+  {
+    std::lock_guard lk(s_rollback_mutex);
+    if (s_rendezvous_active && s_rendezvous_match_id == match_id)
+      s_rendezvous_manifest = std::move(manifest);
+  }
+  event->type = static_cast<ENetEventType>(SKIPPABLE_EVENT);
+  return true;
 }
 }  // namespace
 
@@ -63,6 +153,8 @@ void WakeupThread(ENetHost* host)
 
 int ENET_CALLBACK InterceptCallback(ENetHost* host, ENetEvent* event)
 {
+  if (InterceptRendezvousDatagram(host, event))
+    return 1;
   if (InterceptRollbackDatagram(host, event))
     return 1;
 
@@ -73,6 +165,92 @@ int ENET_CALLBACK InterceptCallback(ENetHost* host, ENetEvent* event)
     return 1;
   }
   return 0;
+}
+
+std::optional<RendezvousManifest>
+RunRendezvous(const std::string& server, const std::string& match_id, const std::string& player_id,
+              const std::string& token, int expected_players, bool service_socket,
+              std::chrono::milliseconds timeout, std::string* error)
+{
+  ENetAddress server_address{};
+  if (!ParseHostPort(server, &server_address))
+  {
+    if (error)
+      *error = "Invalid rendezvous server address";
+    return std::nullopt;
+  }
+
+  ENetHost* host = nullptr;
+  {
+    std::lock_guard lk(s_rollback_mutex);
+    host = s_rollback_host;
+    if (!host)
+    {
+      if (error)
+        *error = "No NetPlay UDP socket is registered";
+      return std::nullopt;
+    }
+    s_rendezvous_active = true;
+    s_rendezvous_match_id = match_id;
+    s_rendezvous_manifest.reset();
+  }
+
+  picojson::object registration;
+  registration["type"] = picojson::value("register");
+  registration["match_id"] = picojson::value(match_id);
+  registration["player_id"] = picojson::value(player_id);
+  registration["token"] = picojson::value(token);
+  const std::string payload = picojson::value(registration).serialize();
+  ENetBuffer buffer{};
+  buffer.data = const_cast<char*>(payload.data());
+  buffer.dataLength = payload.size();
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  auto next_send = std::chrono::steady_clock::time_point{};
+  std::optional<RendezvousManifest> result;
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_send)
+    {
+      enet_socket_send(host->socket, &server_address, &buffer, 1);
+      next_send = now + std::chrono::milliseconds(250);
+    }
+
+    if (service_socket)
+    {
+      ENetEvent event{};
+      while (enet_host_service(host, &event, 5) > 0)
+      {
+        if (event.type == ENET_EVENT_TYPE_RECEIVE)
+          enet_packet_destroy(event.packet);
+      }
+    }
+    else
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    {
+      std::lock_guard lk(s_rollback_mutex);
+      if (s_rendezvous_manifest &&
+          static_cast<int>(s_rendezvous_manifest->players.size()) == expected_players)
+      {
+        result = std::move(s_rendezvous_manifest);
+        break;
+      }
+    }
+  }
+
+  {
+    std::lock_guard lk(s_rollback_mutex);
+    s_rendezvous_active = false;
+    s_rendezvous_match_id.clear();
+    s_rendezvous_manifest.reset();
+  }
+  if (!result && error)
+    *error = "Timed out waiting for every matched player to open Dolphin";
+  return result;
 }
 
 void RegisterRollbackSocket(ENetHost* host, bool server_socket)
