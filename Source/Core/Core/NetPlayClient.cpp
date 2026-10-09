@@ -130,6 +130,8 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
                              const ManagedNetPlayConfig* managed_config)
     : m_dialog(dialog), m_player_name(std::move(name))
 {
+  if (managed_config)
+    m_managed_config = *managed_config;
   m_host_spec = address;
   ClearBuffers();
 
@@ -304,6 +306,13 @@ bool NetPlayClient::Connect()
   packet << Common::GetScmRevGitStr();
   packet << Common::GetNetplayDolphinVer();
   packet << m_player_name;
+  packet << m_managed_config.has_value();
+  if (m_managed_config)
+  {
+    packet << m_managed_config->match_id;
+    packet << m_managed_config->player_id;
+    packet << static_cast<u8>(m_managed_config->seat);
+  }
   Send(packet);
   enet_host_flush(m_client);
   sf::Packet rpac;
@@ -345,6 +354,12 @@ bool NetPlayClient::Connect()
       break;
     case ConnectionError::NameTooLong:
       m_dialog->OnConnectionError(_trans("Nickname is too long."));
+      break;
+    case ConnectionError::ManagedSessionMismatch:
+      m_dialog->OnConnectionError(_trans("This player is not part of the managed match roster."));
+      break;
+    case ConnectionError::ManagedSeatUnavailable:
+      m_dialog->OnConnectionError(_trans("The assigned managed match seat is already occupied."));
       break;
     default:
       m_dialog->OnConnectionError(_trans("The server sent an unknown error message."));

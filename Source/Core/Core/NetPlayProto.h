@@ -222,7 +222,9 @@ enum class ConnectionError : u8
   ServerFull = 1,
   GameRunning = 2,
   VersionMismatch = 3,
-  NameTooLong = 4
+  NameTooLong = 4,
+  ManagedSessionMismatch = 5,
+  ManagedSeatUnavailable = 6
 };
 
 enum class SyncSaveDataID : u8

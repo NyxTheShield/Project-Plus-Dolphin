@@ -1782,9 +1782,12 @@ void MainWindow::StartManagedNetPlay()
   const auto game = read_string("game");
   const auto rendezvous_address = read_string("rendezvous_addr");
   const auto rendezvous_token = read_string("rendezvous_token");
+  const auto brawl_iso_path = read_string("brawl_iso_path");
+  const auto project_plus_sd_path = read_string("project_plus_sd_path");
   const auto seat_it = ticket.find("seat");
   const auto players_it = ticket.find("players");
   if (!match_id || !player_id || !game || !rendezvous_address || !rendezvous_token ||
+      !brawl_iso_path ||
       seat_it == ticket.end() || !seat_it->second.is<double>() || players_it == ticket.end() ||
       !players_it->second.is<picojson::array>())
   {
@@ -1798,9 +1801,12 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->game = *game;
   m_managed_session->rendezvous_address = *rendezvous_address;
   m_managed_session->rendezvous_token = *rendezvous_token;
+  m_managed_session->brawl_iso_path = *brawl_iso_path;
+  m_managed_session->project_plus_sd_path = project_plus_sd_path.value_or("");
   m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
   m_managed_session->player_count =
       static_cast<int>(players_it->second.get<picojson::array>().size());
+  m_managed_session->player_ids.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
   const auto test_solo_it = ticket.find("test_solo");
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
@@ -1811,6 +1817,15 @@ void MainWindow::StartManagedNetPlay()
     const picojson::object& player = player_value.get<picojson::object>();
     const auto id = player.find("player_id");
     const auto name = player.find("display_name");
+    const auto roster_seat = player.find("seat");
+    if (id == player.end() || !id->second.is<std::string>() ||
+        roster_seat == player.end() || !roster_seat->second.is<double>())
+    {
+      continue;
+    }
+    const int parsed_seat = static_cast<int>(roster_seat->second.get<double>());
+    if (parsed_seat >= 1 && parsed_seat <= m_managed_session->player_count)
+      m_managed_session->player_ids[parsed_seat] = id->second.get<std::string>();
     if (id != player.end() && id->second.is<std::string>() &&
         id->second.get<std::string>() == *player_id && name != player.end() &&
         name->second.is<std::string>())
@@ -1819,34 +1834,63 @@ void MainWindow::StartManagedNetPlay()
     }
   }
 
-  // NetPlay currently assigns protocol player IDs in connection order. A two-player match is
-  // unambiguous (the coordinator is always P1); four-player managed sessions require explicit
-  // seat negotiation in the NetPlay handshake before they can be admitted safely.
-  const bool valid_two_player = m_managed_session->player_count == 2 &&
-                                m_managed_session->seat >= 1 && m_managed_session->seat <= 2;
+  const bool valid_player_count = m_managed_session->player_count >= 2 &&
+                                  m_managed_session->player_count <= 4 &&
+                                  m_managed_session->seat >= 1 &&
+                                  m_managed_session->seat <= m_managed_session->player_count;
   const bool valid_test_solo = m_managed_session->test_solo &&
                                m_managed_session->player_count == 1 &&
                                m_managed_session->seat == 1;
-  if ((!valid_two_player && !valid_test_solo) || m_managed_session->display_name.empty())
+  const bool complete_roster =
+      std::all_of(m_managed_session->player_ids.begin() + 1,
+                  m_managed_session->player_ids.end(), [](const std::string& id) {
+                    return !id.empty();
+                  });
+  if ((!valid_player_count && !valid_test_solo) || !complete_roster ||
+      m_managed_session->display_name.empty())
   {
     ModalMessageBox::critical(
         this, tr("Brawlback"),
-        tr("This Dolphin build requires a two-player match or an explicit solo test ticket."));
+        tr("The matchmaking ticket does not contain a valid one-to-four-player roster."));
     m_managed_session.reset();
     return;
   }
 
   std::string game_path;
   std::optional<std::string> sd_card_path;
+  const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
+  const std::string& brawl_game_id = brawl_iso.GetGameID();
+  const bool valid_brawl_iso =
+      brawl_iso.IsValid() && (brawl_game_id == "RSBE01" || brawl_game_id == "RSBP01" ||
+                              brawl_game_id == "RSBJ01" || brawl_game_id == "RSBK01");
+  if (!valid_brawl_iso)
+  {
+    ModalMessageBox::critical(this, tr("Brawlback"),
+                              tr("The Brawl ISO selected in the client is invalid."));
+    m_managed_session.reset();
+    return;
+  }
+
+  Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
   if (m_managed_session->game == "project-plus")
   {
+    Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Project+");
     game_path =
         File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
-    sd_card_path = File::GetUserPath(D_WIIROOT_IDX) + WII_SD_CARD_IMAGE;
+    if (m_managed_session->project_plus_sd_path.empty() ||
+        !File::Exists(m_managed_session->project_plus_sd_path))
+    {
+      ModalMessageBox::critical(this, tr("Brawlback"),
+                                tr("The Project+ SD card selected in the client is missing."));
+      m_managed_session.reset();
+      return;
+    }
+    sd_card_path = m_managed_session->project_plus_sd_path;
   }
   else if (m_managed_session->game == "brawl")
   {
-    game_path = Config::Get(Config::MAIN_DEFAULT_ISO);
+    Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Brawl");
+    game_path = m_managed_session->brawl_iso_path;
   }
   else
   {
@@ -1856,14 +1900,10 @@ void MainWindow::StartManagedNetPlay()
   }
 
   const UICommon::GameFile selected_game(game_path);
-  const std::string& game_id = selected_game.GetGameID();
-  const bool is_brawl = game_id == "RSBE01" || game_id == "RSBP01" || game_id == "RSBJ01" ||
-                        game_id == "RSBK01";
-  if (!selected_game.IsValid() || (m_managed_session->game == "brawl" && !is_brawl) ||
-      !m_netplay_dialog->SetManagedGamePath(game_path))
+  if (!selected_game.IsValid() || !m_netplay_dialog->SetManagedGamePath(game_path))
   {
     const QString detail = m_managed_session->game == "brawl" ?
-                               tr("Set Super Smash Bros. Brawl as Dolphin's default ISO first.") :
+                               tr("The selected Brawl ISO could not be opened.") :
                                tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.");
     ModalMessageBox::critical(this, tr("Brawlback"), detail);
     m_managed_session.reset();
@@ -1887,6 +1927,7 @@ void MainWindow::StartManagedNetPlay()
       NetPlayQuit();
       return;
     }
+    server->SetManagedPlayers(m_managed_session->match_id, m_managed_session->player_ids);
     server->ChangeGame(selected_game.GetSyncIdentifier(),
                        m_game_list->GetNetPlayName(selected_game));
   }

@@ -117,7 +117,8 @@ void WiiPane::CreateMisc()
       new ConfigBool(tr("Enable WiiConnect24 via WiiLink"), Config::MAIN_WII_WIILINK_ENABLE);
   m_connect_keyboard_checkbox =
       new ConfigBool(tr("Connect USB Keyboard"), Config::MAIN_WII_KEYBOARD);
-  m_save_replays_checkbox = new ConfigBool(tr("Save Netplay Replays"), Config::SYSCONF_SAVE_REPLAYS);
+  m_save_replays_checkbox =
+      new ConfigBool(tr("Save Netplay Replays"), Config::MAIN_SAVE_NETPLAY_REPLAYS);
 
   m_aspect_ratio_choice_label = new QLabel(tr("Aspect Ratio:"));
   m_aspect_ratio_choice = new ConfigChoiceMap<bool>({{tr("4:3"), false}, {tr("16:9"), true}},

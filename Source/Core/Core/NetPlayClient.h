@@ -364,6 +364,7 @@ private:
   void OnGameDigestAbort();
 
   bool m_is_connected = false;
+  std::optional<ManagedNetPlayConfig> m_managed_config;
   ConnectionState m_connection_state = ConnectionState::Failure;
 
   PlayerId m_pid = 0;

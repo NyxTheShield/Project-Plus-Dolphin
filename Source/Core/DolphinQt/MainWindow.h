@@ -270,8 +270,11 @@ private:
     std::string rendezvous_address;
     std::string rendezvous_token;
     std::string game;
+    std::string brawl_iso_path;
+    std::string project_plus_sd_path;
     int seat = 0;
     int player_count = 0;
+    std::vector<std::string> player_ids;
     bool test_solo = false;
     bool start_requested = false;
   };

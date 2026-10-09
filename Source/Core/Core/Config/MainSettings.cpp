@@ -207,6 +207,9 @@ const Info<bool> MAIN_WII_SD_CARD{{System::Main, "Core", "WiiSDCard"}, true};
 const Info<bool> MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC{
     {System::Main, "Core", "WiiSDCardEnableFolderSync"}, false};
 const Info<u64> MAIN_WII_SD_CARD_FILESIZE{{System::Main, "Core", "WiiSDCardFilesize"}, 0};
+const Info<bool> MAIN_SAVE_NETPLAY_REPLAYS{{System::Main, "Core", "SaveNetplayReplays"}, true};
+const Info<std::string> MAIN_NETPLAY_REPLAY_GAME{
+    {System::Main, "Core", "NetplayReplayGame"}, "Brawl"};
 const Info<bool> MAIN_WII_KEYBOARD{{System::Main, "Core", "WiiKeyboard"}, false};
 const Info<bool> MAIN_WIIMOTE_CONTINUOUS_SCANNING{
     {System::Main, "Core", "WiimoteContinuousScanning"}, false};

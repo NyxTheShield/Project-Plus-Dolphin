@@ -451,7 +451,6 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     return ConnectionError::ServerFull;
 
   Client new_player{};
-  new_player.pid = GiveFirstAvailableIDTo(incoming_connection);
   new_player.socket = incoming_connection;
   // Input delay is per player and independent of the shared rollback window. The player sends its
   // configured value through PadBufferPlayer after joining.
@@ -459,6 +458,34 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
   received_packet >> new_player.revision;
   received_packet >> new_player.name;
+
+  bool managed = false;
+  received_packet >> managed;
+  if (!m_managed_match_id.empty())
+  {
+    std::string match_id;
+    std::string player_id;
+    u8 requested_seat = 0;
+    if (!managed)
+      return ConnectionError::ManagedSessionMismatch;
+    received_packet >> match_id >> player_id >> requested_seat;
+    if (match_id != m_managed_match_id || requested_seat == 0 ||
+        requested_seat >= m_managed_player_ids.size() ||
+        m_managed_player_ids[requested_seat] != player_id)
+    {
+      return ConnectionError::ManagedSessionMismatch;
+    }
+    if (m_players.contains(requested_seat))
+      return ConnectionError::ManagedSeatUnavailable;
+    new_player.pid = requested_seat;
+    incoming_connection->data = new PlayerId(new_player.pid);
+  }
+  else
+  {
+    if (managed)
+      return ConnectionError::ManagedSessionMismatch;
+    new_player.pid = GiveFirstAvailableIDTo(incoming_connection);
+  }
 
   if (StringUTF8CodePointCount(new_player.name) > MAX_NAME_LENGTH)
     return ConnectionError::NameTooLong;
@@ -2384,6 +2411,11 @@ bool NetPlayServer::PlayerHasControllerMapped(const PlayerId pid) const
 
 void NetPlayServer::AssignNewUserAPad(const Client& player)
 {
+  if (!m_managed_match_id.empty() && player.pid >= 1 && player.pid <= m_pad_map.size())
+  {
+    m_pad_map[player.pid - 1] = player.pid;
+    return;
+  }
   for (PlayerId& mapping : m_pad_map)
   {
     // 0 means unmapped
@@ -2395,6 +2427,13 @@ void NetPlayServer::AssignNewUserAPad(const Client& player)
   }
   // Do not auto-assign a Wii Remote slot. Rollback carries GC pads only, and an implicit Wiimote
   // mapping forced emulated Wii Remotes on even when the user's input config had none.
+}
+
+void NetPlayServer::SetManagedPlayers(std::string match_id, std::vector<std::string> player_ids)
+{
+  std::lock_guard lkp(m_crit.players);
+  m_managed_match_id = std::move(match_id);
+  m_managed_player_ids = std::move(player_ids);
 }
 
 PlayerId NetPlayServer::GiveFirstAvailableIDTo(ENetPeer* player)

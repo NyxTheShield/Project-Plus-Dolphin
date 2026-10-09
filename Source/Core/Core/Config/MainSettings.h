@@ -112,6 +112,8 @@ const Info<bool>& GetInfoForSimulateKonga(int channel);
 extern const Info<bool> MAIN_WII_SD_CARD;
 extern const Info<bool> MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC;
 extern const Info<u64> MAIN_WII_SD_CARD_FILESIZE;
+extern const Info<bool> MAIN_SAVE_NETPLAY_REPLAYS;
+extern const Info<std::string> MAIN_NETPLAY_REPLAY_GAME;
 extern const Info<bool> MAIN_WII_KEYBOARD;
 extern const Info<bool> MAIN_WIIMOTE_CONTINUOUS_SCANNING;
 extern const Info<std::string> MAIN_WIIMOTE_AUTO_CONNECT_ADDRESSES;
