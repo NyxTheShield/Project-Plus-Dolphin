@@ -60,6 +60,7 @@
 #include "Core/System.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/GCAdapter.h"
+#include "VideoCommon/OnScreenDisplay.h"
 
 namespace Rollback
 {
@@ -73,7 +74,10 @@ constexpr int MAX_PORTS = 4;
 constexpr int RING_SNAPSHOT_SLOTS = 12;
 constexpr int WAIT_SLEEP_US = 100;
 constexpr auto SIMULATED_P2_LATENCY = std::chrono::milliseconds(40);
-constexpr u64 STRESS_INPUT_PERIOD_FRAMES = 3;
+constexpr u64 STRESS_INPUT_PERIOD_FRAMES = 1;
+// GekkoNet's serialized MsgHeader starts with its u8 PacketType. Artificial rollback stress must
+// delay only Inputs packets; delaying InputAck/session-health traffic can stall the remote peer.
+constexpr u8 GEKKO_INPUT_PACKET_TYPE = 1;
 constexpr std::string_view SIMULATED_P1_ADDRESS = "in-process-p1";
 constexpr std::string_view SIMULATED_P2_ADDRESS = "in-process-p2";
 constexpr u32 BRAWL_FRAME_HOOK_ADDR = 0x80017504;
@@ -156,6 +160,12 @@ struct SimulatedPacket
   std::vector<char> data;
 };
 
+struct DelayedNativePacket
+{
+  u64 delivery_frame = 0;
+  Common::ENet::RollbackDatagram datagram;
+};
+
 struct SampledLocalInput
 {
   s64 frame = 0;
@@ -167,6 +177,7 @@ std::deque<SimulatedPacket> s_packets_to_fake;
 std::vector<GekkoNetResult*> s_main_results;
 std::vector<GekkoNetResult*> s_fake_results;
 std::vector<GekkoNetResult*> s_shared_results;
+std::deque<DelayedNativePacket> s_delayed_native_packets;
 u64 s_simulated_link_frame = 0;
 u64 s_last_stress_peer_update_frame = 0;
 u64 s_stress_packet_delay_frames = 0;
@@ -209,6 +220,32 @@ GekkoNetResult** SharedAdapterReceive(int* length)
   {
     if (HandleRamDiagnosticDatagram(datagram))
       continue;
+
+    const bool is_input_packet = !datagram.payload.empty() &&
+                                 datagram.payload.front() == GEKKO_INPUT_PACKET_TYPE;
+    if (s_stress_mode && s_stress_frame_delay_active && is_input_packet)
+    {
+      s_delayed_native_packets.push_back(
+          {s_simulated_link_frame + s_stress_packet_delay_frames, std::move(datagram)});
+      continue;
+    }
+
+    auto* result = static_cast<GekkoNetResult*>(std::malloc(sizeof(GekkoNetResult)));
+    result->addr.size = sizeof(ENetAddress);
+    result->addr.data = std::malloc(sizeof(ENetAddress));
+    std::memcpy(result->addr.data, &datagram.address, sizeof(ENetAddress));
+    result->data_len = static_cast<unsigned int>(datagram.payload.size());
+    result->data = std::malloc(datagram.payload.size());
+    std::memcpy(result->data, datagram.payload.data(), datagram.payload.size());
+    s_shared_results.push_back(result);
+  }
+
+  while (!s_delayed_native_packets.empty() &&
+         s_delayed_native_packets.front().delivery_frame <= s_simulated_link_frame)
+  {
+    Common::ENet::RollbackDatagram datagram =
+        std::move(s_delayed_native_packets.front().datagram);
+    s_delayed_native_packets.pop_front();
     auto* result = static_cast<GekkoNetResult*>(std::malloc(sizeof(GekkoNetResult)));
     result->addr.size = sizeof(ENetAddress);
     result->addr.data = std::malloc(sizeof(ENetAddress));
@@ -311,6 +348,7 @@ void ResetSimulatedLink()
   s_packets_to_fake.clear();
   s_main_results.clear();
   s_fake_results.clear();
+  s_delayed_native_packets.clear();
   s_simulated_link_frame = 0;
   s_last_stress_peer_update_frame = 0;
   s_stress_packet_delay_frames = 0;
@@ -349,6 +387,18 @@ struct DiagnosticEvent
   u64 nand_mark = 0;
 };
 
+struct HostMemoryWriteEvent
+{
+  std::string_view source;
+  u32 address = 0;
+  std::size_t size = 0;
+  int frame = -1;
+  bool resimulating = false;
+  u64 ticks = 0;
+  u64 data_hash = 0;
+  u64 source_offset = 0;
+};
+
 struct GekkoManager
 {
   std::recursive_mutex mutex;
@@ -366,9 +416,12 @@ struct GekkoManager
   bool debug_p2_cstick = false;
   bool simulate_remote_p2 = false;
   bool stress_test = false;
+  bool stress_inputs = false;
   bool tracked_bitmap_clear = false;
   bool full_scan_benchmark = false;
+  bool full_scan_keep_tracking = false;
   bool compare_confirmed_ram = false;
+  bool stop_ram_compare_on_mismatch = false;
   bool ram_diagnostic_dumped = false;
   FrameBoundary frame_boundary = FrameBoundary::VINewField;
   std::atomic<bool> vi_boundary_pending{false};
@@ -388,10 +441,12 @@ struct GekkoManager
   std::map<std::pair<int, int>, RamDigest> remote_ram_digests;
   std::optional<int> first_ram_mismatch_frame;
   std::optional<int> ram_mismatch_details_frame;
+  std::optional<int> first_powerpc_mismatch_frame;
   u64 last_advance_input_hash = 0;
   bool last_advance_has_start = false;
   bool last_sampled_start = false;
   std::deque<DiagnosticEvent> diagnostic_events;
+  std::deque<HostMemoryWriteEvent> host_memory_writes;
   bool restore_mismatch_reported = false;
   u64 perf_restore_checks = 0;
   u64 perf_restore_mismatches = 0;
@@ -479,7 +534,7 @@ GekkoManager g_manager;
 
 void LogStartFrameStateDigest(Core::System& system, int frame)
 {
-  if (!g_manager.compare_confirmed_ram || !g_manager.last_advance_has_start || !g_manager.ring)
+  if (!g_manager.compare_confirmed_ram || !g_manager.ring)
     return;
 
   const std::span<const u8> state = g_manager.ring->LastState();
@@ -495,15 +550,57 @@ void LogStartFrameStateDigest(Core::System& system, int frame)
     section_start = section_end;
   }
 
-  const auto& ppc = system.GetPPCState();
-  NOTICE_LOG_FMT(
-      CORE,
-      "GekkoNet state trace: START save frame {} state={:016x} sections "
-      "Movie={:016x},Video={:016x},CoreTiming={:016x},HW={:016x},PowerPC={:016x},"
-      "Wiimote={:016x},Gecko={:016x}; ticks={}, timebase={}, pc={:08x}, npc={:08x}",
-      frame, XXH3_64bits(state.data(), state.size()), sections[0], sections[1], sections[2],
-      sections[3], sections[4], sections[5], sections[6], system.GetCoreTiming().GetTicks(),
-      system.GetPowerPC().ReadFullTimeBaseValue(), ppc.pc, ppc.npc);
+  if (g_manager.last_advance_has_start)
+  {
+    const auto& ppc = system.GetPPCState();
+    NOTICE_LOG_FMT(
+        CORE,
+        "GekkoNet state trace: START save frame {} state={:016x} sections "
+        "Movie={:016x},Video={:016x},CoreTiming={:016x},HW={:016x},PowerPC={:016x},"
+        "Wiimote={:016x},Gecko={:016x}; ticks={}, timebase={}, pc={:08x}, npc={:08x}",
+        frame, XXH3_64bits(state.data(), state.size()), sections[0], sections[1], sections[2],
+        sections[3], sections[4], sections[5], sections[6], system.GetCoreTiming().GetTicks(),
+        system.GetPowerPC().ReadFullTimeBaseValue(), ppc.pc, ppc.npc);
+  }
+
+  if (frame >= 278 && frame <= 281)
+  {
+    static constexpr std::array<std::string_view, State::ROLLBACK_HW_SECTION_COUNT> names{
+        "Memory", "MemoryInterface", "VideoInterface", "SerialInterface",
+        "ProcessorInterface", "DSP", "DVDInterface", "GPFifo", "ExpansionInterface",
+        "AudioInterface", "HSP", "WiiIPC", "IOSHLE", "WIIHW"};
+    std::string hashes;
+    std::size_t start = layout.section_ends[2];
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+      const std::size_t end = std::min(layout.hw_section_ends[i], state.size());
+      if (end < start)
+        break;
+      hashes += fmt::format("{}{}={:016x}[{}..{}]", hashes.empty() ? "" : ",", names[i],
+                            XXH3_64bits(state.data() + start, end - start), start, end);
+      start = end;
+    }
+    NOTICE_LOG_FMT(CORE, "Rollback HW state trace: frame {} {}", frame, hashes);
+  }
+
+  if ((frame >= 0 && frame <= 10) || (frame >= 278 && frame <= 281))
+  {
+    static constexpr std::array<std::string_view, State::ROLLBACK_PPC_SECTION_COUNT> names{
+        "GPR", "PC", "CR", "Scalar", "FPR", "SR", "SPR", "TLB", "PageTable",
+        "Reserve", "ICache", "DCache", "MMU", "JIT"};
+    std::string hashes;
+    std::size_t start = layout.section_ends[3];
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+      const std::size_t end = std::min(layout.ppc_section_ends[i], state.size());
+      if (end < start)
+        break;
+      hashes += fmt::format("{}{}={:016x}[{}..{}]", hashes.empty() ? "" : ",", names[i],
+                            XXH3_64bits(state.data() + start, end - start), start, end);
+      start = end;
+    }
+    NOTICE_LOG_FMT(CORE, "Rollback PowerPC state trace: frame {} {}", frame, hashes);
+  }
 }
 
 IOS::HLE::FS::HostFileSystem* HostNand(Core::System& system)
@@ -558,6 +655,23 @@ void LogDiagnosticEventHistory()
                            event.running_ahead, event.inputs, event.ticks, event.nand_mark);
   }
   NOTICE_LOG_FMT(CORE, "Rollback restore diagnostic: preceding events [{}]", history);
+
+  std::string writes;
+  for (const HostMemoryWriteEvent& write : g_manager.host_memory_writes)
+  {
+    if (g_manager.ram_mismatch_details_frame &&
+        (write.frame < *g_manager.ram_mismatch_details_frame - 2 ||
+         write.frame > *g_manager.ram_mismatch_details_frame + 2))
+    {
+      continue;
+    }
+    if (!writes.empty())
+      writes += ", ";
+    writes += fmt::format("{}(f={},rb={},src=0x{:x},addr=0x{:08x},size={},ticks={},data={:016x})",
+                          write.source, write.frame, write.resimulating, write.source_offset,
+                          write.address, write.size, write.ticks, write.data_hash);
+  }
+  NOTICE_LOG_FMT(CORE, "Rollback host-write diagnostic: preceding writes [{}]", writes);
 }
 
 void WriteU32(u8* out, u32 value)
@@ -623,11 +737,29 @@ void SendRamDiagnosticPacket(const ENetAddress& endpoint, u8 type, const RamDige
 
 void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDigest& remote)
 {
+  if (!g_manager.compare_confirmed_ram)
+    return;
+
   const auto local_it = g_manager.ram_digests.find(remote.frame);
   if (local_it == g_manager.ram_digests.end())
     return;
 
   const RamDigest& local = local_it->second;
+  constexpr std::size_t POWERPC_SECTION = 4;
+  if (local.state_sections[POWERPC_SECTION] != remote.state_sections[POWERPC_SECTION] &&
+      local.inputs == remote.inputs && local.core_ticks == remote.core_ticks &&
+      local.fake_tb_start_value == remote.fake_tb_start_value &&
+      local.fake_tb_start_ticks == remote.fake_tb_start_ticks &&
+      !g_manager.first_powerpc_mismatch_frame)
+  {
+    g_manager.first_powerpc_mismatch_frame = remote.frame;
+    NOTICE_LOG_FMT(CORE,
+                   "Rollback CPU diagnostic: first PowerPC mismatch at frame {} versus player {}: "
+                   "section {:016x}/{:016x}; TB {:#x}/{:#x}; DEC {:#x}/{:#x}; inputs match",
+                   remote.frame, remote_player, local.state_sections[POWERPC_SECTION],
+                   remote.state_sections[POWERPC_SECTION], local.timebase, remote.timebase,
+                   local.decrementer, remote.decrementer);
+  }
   const bool ram_matches = local.root == remote.root;
   const bool timing_matches =
       local.core_ticks == remote.core_ticks && local.timebase == remote.timebase &&
@@ -694,6 +826,19 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
         SendRamDiagnosticPacket(endpoint, RAM_DIAGNOSTIC_MISMATCH, local);
     }
   }
+
+  if (g_manager.stop_ram_compare_on_mismatch)
+  {
+    g_manager.compare_confirmed_ram = false;
+    OSD::AddTypedMessage(OSD::MessageType::RollbackVerification,
+                         fmt::format("RAM mismatch at frame {} - verification disabled",
+                                     remote.frame),
+                         std::numeric_limits<u32>::max(), OSD::Color::RED);
+    NOTICE_LOG_FMT(CORE,
+                   "Rollback RAM diagnostic: mismatch recorded at frame {}; verification "
+                   "disabled and live emulation will continue",
+                   remote.frame);
+  }
 }
 
 bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
@@ -710,6 +855,8 @@ bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
     return true;
   if (!g_manager.compare_confirmed_ram)
   {
+    if (g_manager.stop_ram_compare_on_mismatch)
+      return true;
     g_manager.compare_confirmed_ram = true;
     NOTICE_LOG_FMT(CORE,
                    "Rollback RAM diagnostic: enabled by peer; confirmed snapshots will now be "
@@ -724,9 +871,24 @@ bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
   {
     if (!g_manager.first_ram_mismatch_frame || remote.frame < *g_manager.first_ram_mismatch_frame)
       g_manager.first_ram_mismatch_frame = remote.frame;
-    NOTICE_LOG_FMT(CORE, "Rollback RAM diagnostic: player {} reported mismatch frame {}; pausing "
-                         "to restore and dump it",
-                   remote_player, remote.frame);
+    if (g_manager.stop_ram_compare_on_mismatch)
+    {
+      g_manager.compare_confirmed_ram = false;
+      OSD::AddTypedMessage(OSD::MessageType::RollbackVerification,
+                           fmt::format("RAM mismatch at frame {} - verification disabled",
+                                       remote.frame),
+                           std::numeric_limits<u32>::max(), OSD::Color::RED);
+      NOTICE_LOG_FMT(CORE,
+                     "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
+                     "verification disabled and live emulation will continue",
+                     remote_player, remote.frame);
+    }
+    else
+    {
+      NOTICE_LOG_FMT(CORE, "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
+                           "pausing to restore and dump it",
+                     remote_player, remote.frame);
+    }
     return true;
   }
   if (type != RAM_DIAGNOSTIC_DIGEST || payload.size() != RAM_DIAGNOSTIC_PACKET_SIZE ||
@@ -1063,7 +1225,8 @@ void SetGekkoLocalDelay(int local_delay)
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
                        const std::vector<std::string>& player_endpoints, int local_delay,
                        int prediction_window, bool debug_p2_cstick, bool simulate_remote_p2,
-                       bool stress_test, bool compare_confirmed_ram)
+                       bool stress_test, bool stress_inputs, bool compare_confirmed_ram,
+                       bool stop_ram_compare_on_mismatch)
 {
   StopGekkoSession();
 
@@ -1080,12 +1243,6 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     ERROR_LOG_FMT(CORE, "GekkoNet: simulated remote player 2 requires a two-player host session");
     return false;
   }
-  if (stress_test && !simulate_remote_p2)
-  {
-    ERROR_LOG_FMT(CORE, "GekkoNet: rollback stress test requires the simulated remote peer");
-    return false;
-  }
-
   if (!gekko_create(&g_manager.session, GekkoGameSession))
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create session");
@@ -1097,8 +1254,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // Gekko allows prediction only while prediction_window > frames_already_predicted. The stress
   // transport therefore gets one internal prediction slot beyond the selected rollback distance,
   // or both simulated peers can reach the cap and stop the emulated clock that releases packets.
-  const int clamped_prediction =
-      stress_test ? clamped_rollback_window + 1 : clamped_rollback_window;
+  const int clamped_prediction = stress_test ? clamped_rollback_window + clamped_delay + 2 :
+                                               clamped_rollback_window;
 
   GekkoConfig config{};
   config.num_players = static_cast<unsigned char>(players);
@@ -1161,7 +1318,10 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.debug_p2_cstick = debug_p2_cstick;
   g_manager.simulate_remote_p2 = simulate_remote_p2;
   g_manager.stress_test = stress_test;
+  g_manager.stress_inputs = stress_inputs;
   g_manager.compare_confirmed_ram = compare_confirmed_ram && !simulate_remote_p2 && players > 1;
+  g_manager.stop_ram_compare_on_mismatch =
+      stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
   g_manager.ram_diagnostic_dumped = false;
   g_manager.frame_boundary = FrameBoundary::VINewField;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
@@ -1182,10 +1342,12 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.remote_ram_digests.clear();
   g_manager.first_ram_mismatch_frame.reset();
   g_manager.ram_mismatch_details_frame.reset();
+  g_manager.first_powerpc_mismatch_frame.reset();
   g_manager.last_advance_input_hash = 0;
   g_manager.last_advance_has_start = false;
   g_manager.last_sampled_start = false;
   g_manager.diagnostic_events.clear();
+  g_manager.host_memory_writes.clear();
   g_manager.restore_mismatch_reported = false;
   g_manager.perf_restore_checks = 0;
   g_manager.perf_restore_mismatches = 0;
@@ -1320,12 +1482,16 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     }
   }
 
+  ResetSimulatedLink();
+  // For a real two-process benchmark, delay only the P2 -> P1 receive path. Delaying both
+  // directions also delays acknowledgements and can make Gekko batch traffic instead of exposing
+  // a clean, repeatable remote-input misprediction. P2 still generates the stress input locally.
+  s_stress_mode = stress_test && (simulate_remote_p2 || local_player == 1);
+  s_stress_packet_delay_frames =
+      stress_test ? static_cast<u64>(clamped_rollback_window + clamped_delay + 1) : 0;
+
   if (simulate_remote_p2)
   {
-    ResetSimulatedLink();
-    s_stress_mode = stress_test;
-    s_stress_packet_delay_frames =
-        stress_test ? static_cast<u64>(clamped_rollback_window) : 0;
     if (!gekko_create(&g_manager.simulated_peer_session, GekkoGameSession))
     {
       ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create simulated player 2 peer session");
@@ -1356,9 +1522,13 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
 
   g_manager.tracked_bitmap_clear = Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
   g_manager.full_scan_benchmark = Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK);
+  g_manager.full_scan_keep_tracking =
+      Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING);
   g_manager.ring = std::make_unique<SnapshotRing>(RING_SNAPSHOT_SLOTS,
                                                   g_manager.tracked_bitmap_clear,
-                                                  g_manager.full_scan_benchmark);
+                                                  g_manager.full_scan_benchmark,
+                                                  g_manager.full_scan_keep_tracking,
+                                                  compare_confirmed_ram);
   g_manager.stop_requested.store(false, std::memory_order_relaxed);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
@@ -1370,14 +1540,18 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       "delay={}, "
       "rollback_window={}, gekko_prediction_window={}, local_input_source={}, "
       "debug_p2_cstick={}, simulate_remote_p2={}, simulated_one_way_latency_ms={}, "
-      "stress_every_3f={}, stress_rollback_frames={}, tracked_bitmap_clear={}, "
-      "full_scan_benchmark={}, compare_confirmed_ram={}, frame_boundary={})",
+      "stress_enabled={}, stress_inputs={}, stress_input_period_frames={}, stress_rollback_frames={}, "
+      "tracked_bitmap_clear={}, "
+      "full_scan_benchmark={}, full_scan_keep_tracking={}, compare_confirmed_ram={}, "
+      "frame_boundary={})",
       game_name, players, local_player, session_id, clamped_delay, clamped_rollback_window,
       clamped_prediction,
       g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad", debug_p2_cstick,
       simulate_remote_p2, simulate_remote_p2 && !stress_test ? SIMULATED_P2_LATENCY.count() : 0,
-      stress_test, s_stress_packet_delay_frames, g_manager.tracked_bitmap_clear,
+      stress_test, stress_inputs, STRESS_INPUT_PERIOD_FRAMES, clamped_rollback_window,
+      g_manager.tracked_bitmap_clear,
       g_manager.full_scan_benchmark,
+      g_manager.full_scan_keep_tracking,
       g_manager.compare_confirmed_ram, FrameBoundaryName(g_manager.frame_boundary));
   return true;
 }
@@ -1453,11 +1627,12 @@ static void ApplyDebugCStickPattern(GCPadStatus* status, u64 frame)
 
 static void ApplyStressCStickPattern(GCPadStatus* status, u64 frame)
 {
-  // A transition every three frames defeats repeat-last-input prediction. Alternating left/right
-  // avoids a neutral interval whose first prediction could accidentally be correct.
-  const bool right = ((frame / STRESS_INPUT_PERIOD_FRAMES) & 1) == 0;
-  status->substickX = static_cast<u8>(GCPadStatus::C_STICK_CENTER_X + (right ? 90 : -90));
-  status->substickY = GCPadStatus::C_STICK_CENTER_Y;
+  // Four distinct values prevent a two-frame-delayed input from matching the repeat-last
+  // prediction by parity, which would happen with a simple left/right alternation.
+  constexpr std::array<std::pair<s8, s8>, 4> CARDINALS{{{-90, 0}, {0, 90}, {90, 0}, {0, -90}}};
+  const auto [x, y] = CARDINALS[(frame / STRESS_INPUT_PERIOD_FRAMES) % CARDINALS.size()];
+  status->substickX = static_cast<u8>(GCPadStatus::C_STICK_CENTER_X + x);
+  status->substickY = static_cast<u8>(GCPadStatus::C_STICK_CENTER_Y + y);
 }
 
 static void SubmitLocalInput()
@@ -1480,6 +1655,12 @@ static void SubmitLocalInput()
   }
   if (g_manager.debug_p2_cstick && g_manager.local_player == 2)
     ApplyDebugCStickPattern(&local_status, g_manager.local_input_frame);
+  if (g_manager.stress_inputs && !g_manager.simulate_remote_p2)
+  {
+    ApplyStressCStickPattern(
+        &local_status,
+        g_manager.local_input_frame + static_cast<u64>(g_manager.local_player - 1));
+  }
   WirePad wire = EncodePad(local_status);
 
   const bool sampled_start = WirePadHasStart(wire);
@@ -1779,8 +1960,8 @@ static void MaybeLogPerformance(Core::System& system)
       "delay_measure cfg={} verified={}/{} mismatch={} missing={} observed "
       "{:.2f}/{}/{} frames avg/min/max ({} transitions); "
       "rollback_depth {:.2f}/{} avg/max; RAM dirty/saved/unchanged pages {}/{}/{}; "
-      "udp tx/rx/reject {}/{}/{}; ahead={:.2f}; stress_every_3f={}; "
-      "stress_rollback_frames={}; "
+      "udp tx/rx/reject {}/{}/{}; ahead={:.2f}; stress_enabled={}; "
+      "stress_input_period_frames={}; stress_rollback_frames={}; "
       "tracked_bitmap_clear={}; full_scan_benchmark={}",
       fps, g_manager.perf_real_frames, average(g_manager.perf_save_ms, g_manager.perf_save_count),
       g_manager.perf_save_max_ms, g_manager.perf_save_count,
@@ -1871,8 +2052,11 @@ static void MaybeLogPerformance(Core::System& system)
       (dirty_pages.dirty_pages - g_manager.perf_dirty_pages_start.dirty_pages) -
           (dirty_pages.pages_recorded - g_manager.perf_dirty_pages_start.pages_recorded),
       udp.sent, udp.received, udp.rejected, gekko_frames_ahead(g_manager.session),
-      g_manager.stress_test, s_stress_packet_delay_frames, g_manager.tracked_bitmap_clear,
-      g_manager.full_scan_benchmark);
+      g_manager.stress_test, STRESS_INPUT_PERIOD_FRAMES,
+      g_manager.stress_test ?
+          s_stress_packet_delay_frames - static_cast<u64>(g_manager.configured_local_delay) - 1 :
+          0,
+      g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark);
 
   NOTICE_LOG_FMT(CORE,
                  "GekkoNet presentation cadence: gaps >20/>25/>33.3/>50 ms = {}/{}/{}/{} of {} "
@@ -2257,6 +2441,14 @@ static bool PrepareQueuedFrame(Core::System& system)
       // Relatching here would expose it immediately at a JIT-dependent guest instruction.
       if (g_manager.frame_boundary == FrameBoundary::BrawlHook)
         system.GetSerialInterface().RelatchInputs();
+      if (g_manager.compare_confirmed_ram)
+      {
+        NOTICE_LOG_FMT(CORE,
+                       "Rollback input diagnostic: advance frame {} input={:016x} rollback={} "
+                       "runahead={}",
+                       event.frame, g_manager.last_advance_input_hash, event.rolling_back,
+                       event.running_ahead);
+      }
       if (g_manager.compare_confirmed_ram && !start_players.empty())
       {
         const auto si0_after = system.GetSerialInterface().GetInputRegisters(0);
@@ -2462,8 +2654,8 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
           s_last_stress_peer_update_frame = 0;
           NOTICE_LOG_FMT(CORE,
                          "GekkoNet benchmark: deterministic {}-frame packets active; Player 2 "
-                         "changes input every 3 frames",
-                         s_stress_packet_delay_frames);
+                         "changes input every {} frame(s)",
+                         s_stress_packet_delay_frames, STRESS_INPUT_PERIOD_FRAMES);
         }
         break;
       default:
@@ -2532,6 +2724,26 @@ bool IsPreciseVITailArmed()
 bool IsDeterminismDiagnosticsEnabled()
 {
   return g_manager.compare_confirmed_ram;
+}
+
+void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 address,
+                           std::size_t size, u64 source_offset)
+{
+  if (!g_manager.active.load(std::memory_order_acquire))
+    return;
+
+  std::lock_guard lk(g_manager.mutex);
+  if (!g_manager.compare_confirmed_ram)
+    return;
+
+  const u8* const data = system.GetMemory().GetPointerForRangeReadOnly(address, size);
+  const u64 data_hash = data ? XXH3_64bits(data, size) : 0;
+  g_manager.host_memory_writes.push_back(
+      HostMemoryWriteEvent{source, address, size, g_manager.frame_execution_gekko_frame,
+                           Rollback::IsResimulating(), system.GetCoreTiming().GetTicks(),
+                           data_hash, source_offset});
+  while (g_manager.host_memory_writes.size() > 512)
+    g_manager.host_memory_writes.pop_front();
 }
 
 void RunPendingVIBoundary(Core::System& system)

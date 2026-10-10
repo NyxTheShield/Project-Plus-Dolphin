@@ -2008,8 +2008,7 @@ bool NetPlayClient::StartGame(const std::string& path)
                                     });
   m_wii_sync_data_ready = false;
 
-  const bool rollback_stress_test = m_local_player->IsHost() && m_players.size() == 1 &&
-                                    Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
+  const bool rollback_stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
   const bool simulate_remote_p2 =
       m_local_player->IsHost() && m_players.size() == 1 &&
       (Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2) || rollback_stress_test);
@@ -2041,12 +2040,16 @@ bool NetPlayClient::StartGame(const std::string& path)
   const int local_delay = static_cast<int>(m_local_player->buffer);
   const int prediction_window = static_cast<int>(m_minimum_buffer_size);
   const bool debug_p2_cstick = Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
+  const bool stress_inputs = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INPUTS);
   const bool compare_confirmed_ram = Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
+  const bool stop_ram_compare_on_mismatch =
+      Config::Get(Config::NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH);
 
   if (!Rollback::StartGekkoSession("Project+", m_current_game, num_players, local_seat,
                                    m_rollback_player_endpoints, local_delay, prediction_window,
                                    debug_p2_cstick, simulate_remote_p2, rollback_stress_test,
-                                   compare_confirmed_ram))
+                                   stress_inputs, compare_confirmed_ram,
+                                   stop_ram_compare_on_mismatch))
   {
     ERROR_LOG_FMT(NETPLAY, "GekkoNet: failed to start native UDP rollback session");
     return false;

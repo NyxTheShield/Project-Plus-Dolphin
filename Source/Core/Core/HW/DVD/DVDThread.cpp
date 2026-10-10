@@ -24,6 +24,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/IOS/ES/Formats.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 
 #include "DiscIO/Enums.h"
@@ -284,6 +285,8 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
     {
       auto& memory = m_system.GetMemory();
       memory.CopyToEmu(request.output_address, buffer.data(), request.length);
+      Rollback::RecordHostMemoryWrite(m_system, "DVD", request.output_address, request.length,
+                                      request.dvd_offset);
     }
 
     interrupt = DVD::DIInterruptType::TCINT;

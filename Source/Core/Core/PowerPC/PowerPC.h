@@ -261,7 +261,8 @@ public:
   void Init(CPUCore cpu_core);
   void Reset();
   void Shutdown();
-  void DoState(PointerWrap& p);
+  void DoState(PointerWrap& p, std::array<std::size_t, 14>* rollback_section_ends = nullptr,
+               u8* rollback_layout_base = nullptr);
   void ScheduleInvalidateCacheThreadSafe(u32 address);
 
   CoreMode GetMode() const;

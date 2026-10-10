@@ -17,6 +17,7 @@
 #include "Core/HW/SystemTimers.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/IOS/Uids.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 
 namespace IOS::HLE
@@ -326,8 +327,13 @@ std::optional<IPCReply> FSDevice::Read(const ReadWriteRequest& request)
   return MakeIPCReply([&](Ticks t) {
     auto& system = GetSystem();
     auto& memory = system.GetMemory();
-    return m_core.Read(request.fd, memory.GetPointerForRange(request.buffer, request.size),
-                       request.size, request.buffer, t);
+    const s32 result = m_core.Read(request.fd,
+                                   memory.GetPointerForRange(request.buffer, request.size),
+                                   request.size, request.buffer, t);
+    if (result > 0)
+      Rollback::RecordHostMemoryWrite(system, "IOS-FS", request.buffer,
+                                      static_cast<std::size_t>(result));
+    return result;
   });
 }
 

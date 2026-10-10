@@ -57,12 +57,18 @@ const Info<bool> NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2{
     {System::Main, "NetPlay", "RollbackSimulateRemoteP2"}, false};
 const Info<bool> NETPLAY_ROLLBACK_STRESS_TEST{
     {System::Main, "NetPlay", "RollbackStressTest7F3F"}, false};
+const Info<bool> NETPLAY_ROLLBACK_STRESS_INPUTS{
+    {System::Main, "NetPlay", "RollbackStressInputs"}, false};
 const Info<bool> NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR{
     {System::Main, "NetPlay", "RollbackTrackedBitmapClear"}, false};
 const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK{
     {System::Main, "NetPlay", "RollbackFullScanBenchmark"}, false};
+const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING{
+    {System::Main, "NetPlay", "RollbackFullScanKeepTracking"}, false};
 const Info<bool> NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM{
     {System::Main, "NetPlay", "RollbackCompareConfirmedRAM"}, false};
+const Info<bool> NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH{
+    {System::Main, "NetPlay", "RollbackStopRAMCompareOnMismatch"}, false};
 
 const Info<bool> NETPLAY_SAVEDATA_LOAD{{System::Main, "NetPlay", "SyncSaves"}, true};
 const Info<bool> NETPLAY_SAVEDATA_WRITE{{System::Main, "NetPlay", "WriteSaveData"}, false};

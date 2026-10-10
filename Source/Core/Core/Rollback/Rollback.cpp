@@ -7,8 +7,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
+
+#include <xxh3.h>
 
 #include "Common/FPURoundMode.h"
 #include "Common/Logging/Log.h"
@@ -51,6 +54,180 @@ constexpr u32 PHYSICAL_MASK = 0x1FFFFFFFu;
 double MillisecondsSince(std::chrono::steady_clock::time_point start)
 {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+void HashRamPages(const u8* data, std::size_t size, std::vector<u64>* hashes)
+{
+  hashes->resize((size + RESTORE_PAGE - 1) / RESTORE_PAGE);
+  for (std::size_t page = 0; page < hashes->size(); ++page)
+  {
+    const std::size_t offset = page * RESTORE_PAGE;
+    (*hashes)[page] = XXH3_64bits(data + offset, std::min(RESTORE_PAGE, size - offset));
+  }
+}
+
+void AuditRestoredRamPages(const u8* data, std::size_t size, const std::vector<u64>& expected,
+                           u32 physical_base, s64 frame, std::string_view phase)
+{
+  std::size_t reported = 0;
+  for (std::size_t page = 0; page < expected.size(); ++page)
+  {
+    const std::size_t offset = page * RESTORE_PAGE;
+    const u64 actual = XXH3_64bits(data + offset, std::min(RESTORE_PAGE, size - offset));
+    if (actual == expected[page])
+      continue;
+    ERROR_LOG_FMT(CORE,
+                  "Rollback restore audit: WRONG RAM after {} frame {} physical=0x{:08x} "
+                  "expected={:016x} actual={:016x}",
+                  phase, frame, physical_base + static_cast<u32>(offset), expected[page], actual);
+    if (++reported == 16)
+      break;
+  }
+}
+
+void AuditStateRoundTrip(std::span<const u8> expected, const State::RollbackStateLayout& expected_layout,
+                         std::span<const u8> actual, const State::RollbackStateLayout& actual_layout,
+                         s64 frame, std::string_view comparison = "state roundtrip")
+{
+  static constexpr std::array<std::string_view, State::ROLLBACK_STATE_SECTION_COUNT> section_names = {
+      "Movie", "VideoBackend", "CoreTiming", "HW", "PowerPC", "Wiimote", "Gecko"};
+  static constexpr std::array<std::string_view, State::ROLLBACK_HW_SECTION_COUNT> hw_names = {
+      "Memory", "MemoryInterface", "VideoInterface", "SerialInterface", "ProcessorInterface",
+      "DSP", "DVDInterface", "GPFifo", "ExpansionInterface", "AudioInterface", "HSP",
+      "WiiIPC", "IOSHLE", "WIIHW"};
+  static constexpr std::array<std::string_view, State::ROLLBACK_VIDEO_SECTION_COUNT> video_names = {
+      "BPMemory", "CPMemory", "XFMemory", "TextureDecoder", "TMEM", "FIFO",
+      "CommandProcessor", "PixelEngine", "PixelShaderManager", "VertexShaderManager",
+      "GeometryShaderManager", "VertexManager", "FramebufferManager", "TextureCache",
+      "Presenter", "BoundingBox", "Widescreen", "XFStateManager"};
+  static constexpr std::array<std::string_view, State::ROLLBACK_PPC_SECTION_COUNT> ppc_names = {
+      "GPR", "PC", "CR", "Scalar", "FPR", "SR", "SPR", "TLB", "PageTable",
+      "Reserve", "ICache", "DCache", "MMU", "JIT"};
+
+  const auto log_range = [&](std::string_view group, std::string_view name,
+                             std::size_t expected_begin, std::size_t actual_begin,
+                             std::size_t expected_end, std::size_t actual_end) {
+    if (expected_end < expected_begin || actual_end < actual_begin ||
+        expected_end > expected.size() || actual_end > actual.size())
+    {
+      ERROR_LOG_FMT(CORE,
+                    "Rollback {}: frame {} invalid {} {} range begin={} expected_end={} "
+                    "actual_end={}",
+                    comparison, frame, group, name, expected_begin, expected_end, actual_end);
+      return;
+    }
+    const std::span<const u8> expected_range =
+        expected.subspan(expected_begin, expected_end - expected_begin);
+    const std::span<const u8> actual_range =
+        actual.subspan(actual_begin, actual_end - actual_begin);
+    const u64 expected_hash = XXH3_64bits(expected_range.data(), expected_range.size());
+    const u64 actual_hash = XXH3_64bits(actual_range.data(), actual_range.size());
+    if (expected_range.size() != actual_range.size() || expected_hash != actual_hash)
+    {
+      ERROR_LOG_FMT(CORE,
+                    "Rollback {}: frame {} {} {} differs expected={:016x}/{} "
+                    "actual={:016x}/{}",
+                    comparison, frame, group, name, expected_hash, expected_range.size(),
+                    actual_hash, actual_range.size());
+    }
+  };
+
+  std::size_t expected_begin = 0;
+  std::size_t actual_begin = 0;
+  for (std::size_t i = 0; i < section_names.size(); ++i)
+  {
+    log_range("section", section_names[i], expected_begin, actual_begin,
+              expected_layout.section_ends[i],
+              actual_layout.section_ends[i]);
+    expected_begin = expected_layout.section_ends[i];
+    actual_begin = actual_layout.section_ends[i];
+  }
+
+  expected_begin = expected_layout.section_ends[2];
+  actual_begin = actual_layout.section_ends[2];
+  for (std::size_t i = 0; i < hw_names.size(); ++i)
+  {
+    log_range("HW", hw_names[i], expected_begin, actual_begin,
+              expected_layout.hw_section_ends[i],
+              actual_layout.hw_section_ends[i]);
+    expected_begin = expected_layout.hw_section_ends[i];
+    actual_begin = actual_layout.hw_section_ends[i];
+  }
+
+  expected_begin = expected_layout.section_ends[0];
+  actual_begin = actual_layout.section_ends[0];
+  for (std::size_t i = 0; i < video_names.size(); ++i)
+  {
+    log_range("Video", video_names[i], expected_begin, actual_begin,
+              expected_layout.video_section_ends[i], actual_layout.video_section_ends[i]);
+    expected_begin = expected_layout.video_section_ends[i];
+    actual_begin = actual_layout.video_section_ends[i];
+  }
+
+  expected_begin = expected_layout.section_ends[3];
+  actual_begin = actual_layout.section_ends[3];
+  for (std::size_t i = 0; i < ppc_names.size(); ++i)
+  {
+    log_range("PowerPC", ppc_names[i], expected_begin, actual_begin,
+              expected_layout.ppc_section_ends[i], actual_layout.ppc_section_ends[i]);
+    expected_begin = expected_layout.ppc_section_ends[i];
+    actual_begin = actual_layout.ppc_section_ends[i];
+  }
+}
+
+std::size_t CountDifferentPageHashes(const std::vector<u64>& original,
+                                     const std::vector<u64>& replayed, u32 physical_base,
+                                     s64 frame, std::string_view area, bool report)
+{
+  const std::size_t common = std::min(original.size(), replayed.size());
+  std::size_t different = original.size() > replayed.size() ? original.size() - replayed.size() :
+                                                             replayed.size() - original.size();
+  std::size_t reported = 0;
+  for (std::size_t page = 0; page < common; ++page)
+  {
+    if (original[page] == replayed[page])
+      continue;
+    ++different;
+    if (report && reported++ < 16)
+    {
+      ERROR_LOG_FMT(CORE,
+                    "Rollback replay audit: frame {} {} page differs physical=0x{:08x} "
+                    "original={:016x} replayed={:016x}",
+                    frame, area, physical_base + static_cast<u32>(page * RESTORE_PAGE),
+                    original[page], replayed[page]);
+    }
+  }
+  return different;
+}
+
+bool DeterministicStateDiffers(std::span<const u8> original,
+                               const State::RollbackStateLayout& original_layout,
+                               std::span<const u8> replayed,
+                               const State::RollbackStateLayout& replayed_layout)
+{
+  // Movie and video state are host-facing. Resimulation deliberately skips rendering, so those
+  // sections may differ. CoreTiming through Gecko drive guest execution.
+  for (std::size_t section = 2; section < State::ROLLBACK_STATE_SECTION_COUNT; ++section)
+  {
+    const std::size_t original_begin = original_layout.section_ends[section - 1];
+    const std::size_t replayed_begin = replayed_layout.section_ends[section - 1];
+    const std::size_t original_end = original_layout.section_ends[section];
+    const std::size_t replayed_end = replayed_layout.section_ends[section];
+    if (original_end < original_begin || replayed_end < replayed_begin ||
+        original_end > original.size() || replayed_end > replayed.size())
+    {
+      return true;
+    }
+    const std::size_t original_size = original_end - original_begin;
+    const std::size_t replayed_size = replayed_end - replayed_begin;
+    if (original_size != replayed_size ||
+        XXH3_64bits(original.data() + original_begin, original_size) !=
+            XXH3_64bits(replayed.data() + replayed_begin, replayed_size))
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Copies saved RAM back one page at a time, skipping pages that already match. Only changed pages
@@ -236,9 +413,11 @@ SnapshotScope::~SnapshotScope()
   s_in_snapshot.store(false, std::memory_order_relaxed);
 }
 
-SnapshotRing::SnapshotRing(std::size_t slots, bool tracked_bitmap_clear, bool force_full_scan)
+SnapshotRing::SnapshotRing(std::size_t slots, bool tracked_bitmap_clear, bool force_full_scan,
+                           bool keep_jit_tracking, bool audit_untracked_writes)
     : m_slots(std::max<std::size_t>(slots, 2)), m_tracked_bitmap_clear(tracked_bitmap_clear),
-      m_force_full_scan(force_full_scan)
+      m_force_full_scan(force_full_scan), m_keep_jit_tracking(keep_jit_tracking),
+      m_audit_untracked_writes(audit_untracked_writes)
 {
   m_changed_blocks.reserve(4096);
   m_changed_ranges.reserve(32768);
@@ -276,7 +455,9 @@ bool SnapshotRing::UseDirtyPageTracking(Core::System& system, bool* armed_now)
   }
   if (!m_dirty_page_tracking)
   {
-    m_dirty_page_tracking = DirtyPages::ArmForSystem(system, this, m_force_full_scan);
+    m_dirty_page_tracking =
+        DirtyPages::ArmForSystem(system, this, m_force_full_scan, m_keep_jit_tracking,
+                                 m_audit_untracked_writes);
     *armed_now = *m_dirty_page_tracking;
   }
   return *m_dirty_page_tracking;
@@ -336,6 +517,7 @@ void SnapshotRing::Reset(Core::System& system)
   m_dirty_page_tracking.reset();
   m_next = 0;
   m_initial_trace_events = 0;
+  m_replay_mismatch_reported = false;
   if (IOS::HLE::FS::HostFileSystem* nand = HostNand(system))
     nand->JournalStop();
 }
@@ -348,6 +530,24 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   m_last_save_timings = {};
   // Re-saving a frame after a rewind reuses its slot; otherwise take the next one.
   Slot* slot = Find(frame);
+  const bool compare_replayed_frame =
+      slot && m_audit_untracked_writes && Rollback::IsResimulating();
+  std::size_t original_state_size = 0;
+  State::RollbackStateLayout original_state_layout{};
+  u64 original_l1_hash = 0;
+  u64 original_nand_mark = 0;
+  if (compare_replayed_frame)
+  {
+    original_state_size = slot->state_size;
+    if (m_state_replay_audit.size() < original_state_size)
+      m_state_replay_audit.reset(original_state_size);
+    std::memcpy(m_state_replay_audit.data(), slot->state.data(), original_state_size);
+    original_state_layout = slot->state_layout;
+    m_replay_mem1_audit = slot->audit_mem1_pages;
+    m_replay_mem2_audit = slot->audit_mem2_pages;
+    original_l1_hash = XXH3_64bits(slot->l1_cache.data(), slot->l1_cache.size());
+    original_nand_mark = slot->nand_journal_mark;
+  }
   if (!slot)
   {
     slot = &m_slots[m_next];
@@ -384,7 +584,7 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   if (dirty_page_tracking)
   {
     const auto phase_start = std::chrono::steady_clock::now();
-    slot->page_snapshot_id = DirtyPages::Snapshot();
+    slot->page_snapshot_id = DirtyPages::Snapshot(frame);
     if (trace)
       NOTICE_LOG_FMT(CORE, "Rollback trace: save frame {} dirty commit done (id={})", frame,
                      slot->page_snapshot_id);
@@ -399,6 +599,14 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
     else
       slot->mem2.clear();
     m_last_save_timings.dirty_pages_ms = MillisecondsSince(phase_start);
+  }
+  if (m_audit_untracked_writes)
+  {
+    HashRamPages(memory.GetRAM(), memory.GetRamSize(), &slot->audit_mem1_pages);
+    if (memory.GetEXRAM())
+      HashRamPages(memory.GetEXRAM(), memory.GetExRamSize(), &slot->audit_mem2_pages);
+    else
+      slot->audit_mem2_pages.clear();
   }
   const auto l1_start = std::chrono::steady_clock::now();
   slot->l1_cache.assign(memory.GetL1Cache(), memory.GetL1Cache() + memory.GetL1CacheSize());
@@ -418,6 +626,39 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
     }
     nand->JournalTrim(oldest);
     m_last_save_timings.journal_ms = MillisecondsSince(phase_start);
+  }
+
+  if (compare_replayed_frame)
+  {
+    const std::span<const u8> original_state{m_state_replay_audit.data(), original_state_size};
+    const std::span<const u8> replayed_state{slot->state.data(), slot->state_size};
+    const std::size_t mem1_pages =
+        CountDifferentPageHashes(m_replay_mem1_audit, slot->audit_mem1_pages, 0, frame, "MEM1",
+                                 false);
+    const std::size_t mem2_pages = CountDifferentPageHashes(
+        m_replay_mem2_audit, slot->audit_mem2_pages, 0x10000000u, frame, "MEM2", false);
+    const u64 replayed_l1_hash = XXH3_64bits(slot->l1_cache.data(), slot->l1_cache.size());
+    const bool state_differs =
+        DeterministicStateDiffers(original_state, original_state_layout, replayed_state,
+                                  slot->state_layout);
+    const bool l1_differs = original_l1_hash != replayed_l1_hash;
+    const bool nand_differs = original_nand_mark != slot->nand_journal_mark;
+    if (!m_replay_mismatch_reported &&
+        (mem1_pages != 0 || mem2_pages != 0 || state_differs || l1_differs || nand_differs))
+    {
+      m_replay_mismatch_reported = true;
+      ERROR_LOG_FMT(CORE,
+                    "Rollback replay audit: FIRST original/replay mismatch at snapshot frame {}: "
+                    "MEM1_pages={} MEM2_pages={} deterministic_state={} L1={} NAND_mark={}/{}",
+                    frame, mem1_pages, mem2_pages, state_differs, l1_differs,
+                    original_nand_mark, slot->nand_journal_mark);
+      CountDifferentPageHashes(m_replay_mem1_audit, slot->audit_mem1_pages, 0, frame, "MEM1",
+                               true);
+      CountDifferentPageHashes(m_replay_mem2_audit, slot->audit_mem2_pages, 0x10000000u, frame,
+                               "MEM2", true);
+      AuditStateRoundTrip(original_state, original_state_layout, replayed_state,
+                          slot->state_layout, frame, "replay audit");
+    }
   }
 
   if (trace)
@@ -471,7 +712,7 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
               if (m_changed_blocks.empty() || m_changed_blocks.back() != page)
                 m_changed_blocks.push_back(page);
             },
-            m_tracked_bitmap_clear))
+            m_tracked_bitmap_clear, frame))
     {
       ERROR_LOG_FMT(CORE, "Rollback: the dirty-page snapshot for frame {} is gone", frame);
       return false;
@@ -485,6 +726,14 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
     if (memory.GetEXRAM() && !slot->mem2.empty())
       RestoreRam(memory.GetEXRAM(), slot->mem2, MEM2_VIRTUAL, &m_changed_blocks,
                  &m_changed_ranges);
+  }
+  if (m_audit_untracked_writes)
+  {
+    AuditRestoredRamPages(memory.GetRAM(), memory.GetRamSize(), slot->audit_mem1_pages, 0, frame,
+                          "RAM restore");
+    if (memory.GetEXRAM())
+      AuditRestoredRamPages(memory.GetEXRAM(), memory.GetExRamSize(), slot->audit_mem2_pages,
+                            0x10000000u, frame, "RAM restore");
   }
   std::sort(m_changed_blocks.begin(), m_changed_blocks.end());
   m_changed_blocks.erase(std::unique(m_changed_blocks.begin(), m_changed_blocks.end()),
@@ -535,6 +784,38 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
   {
     ERROR_LOG_FMT(CORE, "Rollback: snapshot for frame {} did not load", frame);
     return false;
+  }
+  if (m_audit_untracked_writes)
+  {
+    AuditRestoredRamPages(memory.GetRAM(), memory.GetRamSize(), slot->audit_mem1_pages, 0, frame,
+                          "state restore");
+    if (memory.GetEXRAM())
+      AuditRestoredRamPages(memory.GetEXRAM(), memory.GetExRamSize(), slot->audit_mem2_pages,
+                            0x10000000u, frame, "state restore");
+
+    // Compare the state that was just loaded with an immediate reserialization. The rollback
+    // which later reaches a diagnostic mismatch may have started several frames earlier.
+    if (frame >= 0)
+    {
+      State::RollbackStateLayout loaded_layout;
+      std::size_t loaded_size;
+      {
+        SnapshotScope scope;
+        loaded_size =
+            State::SaveToBufferForRollback(system, m_state_roundtrip_audit, &loaded_layout);
+      }
+      if (loaded_size == 0)
+      {
+        ERROR_LOG_FMT(CORE, "Rollback state roundtrip: frame {} could not reserialize", frame);
+      }
+      else
+      {
+        AuditStateRoundTrip(std::span<const u8>(slot->state.data(), slot->state_size),
+                            slot->state_layout,
+                            std::span<const u8>(m_state_roundtrip_audit.data(), loaded_size),
+                            loaded_layout, frame);
+      }
+    }
   }
   // The NAND journal must have undone every change since this snapshot.
   const auto journal_start = std::chrono::steady_clock::now();

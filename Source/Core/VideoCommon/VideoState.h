@@ -3,9 +3,16 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
+
+#include "Common/CommonTypes.h"
+
 class PointerWrap;
 
-void VideoCommon_DoState(PointerWrap& p);
+void VideoCommon_DoState(PointerWrap& p,
+                         std::array<std::size_t, 18>* rollback_section_ends = nullptr,
+                         u8* rollback_layout_base = nullptr);
 
 // Orca: skip host rendering on throwaway re-run frames. The GX command stream is still parsed, so
 // registers, TMEM, PE tokens, interrupts and emulated GPU timing match a rendered frame; only

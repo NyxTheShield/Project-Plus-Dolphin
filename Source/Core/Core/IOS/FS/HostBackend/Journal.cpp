@@ -91,6 +91,43 @@ void HostFileSystem::JournalUndo(u64 mark)
   m_journal_next_seq = mark;
 }
 
+HostFileSystem::JournalCheckpoint HostFileSystem::JournalBeginTransaction(bool preserve_fst) const
+{
+  JournalCheckpoint checkpoint{m_journal_next_seq, m_journal_has_fst};
+  if (m_journal_active && preserve_fst)
+  {
+    checkpoint.root_fst = m_root_entry;
+    checkpoint.redirect_fst = m_redirect_fst;
+  }
+  return checkpoint;
+}
+
+void HostFileSystem::JournalAbortTransaction(const JournalCheckpoint& checkpoint)
+{
+  if (!m_journal_active)
+    return;
+
+  // A failed host mutation can leave buffered stdio state behind. Close every host handle before
+  // applying the undo entries, just like a normal rollback load does, then reopen the restored
+  // guest handles. This also prevents a late flush from overwriting the repaired file.
+  CloseHostFiles();
+  while (!m_journal.empty() && m_journal.back().seq >= checkpoint.next_seq)
+  {
+    UndoJournalEntry(m_journal.back());
+    m_journal.pop_back();
+  }
+  m_journal_next_seq = checkpoint.next_seq;
+  m_journal_has_fst = checkpoint.had_fst;
+  if (checkpoint.root_fst)
+  {
+    m_root_entry = *checkpoint.root_fst;
+    m_redirect_fst = *checkpoint.redirect_fst;
+    if (!SaveFst())
+      m_journal_error = true;
+  }
+  ReopenHostFiles();
+}
+
 void HostFileSystem::UndoJournalEntry(const JournalEntry& entry)
 {
   switch (entry.kind)
@@ -98,7 +135,8 @@ void HostFileSystem::UndoJournalEntry(const JournalEntry& entry)
   case JournalEntry::Kind::Fst:
     m_root_entry = entry.root_fst;
     m_redirect_fst = entry.redirect_fst;
-    SaveFst();
+    if (!SaveFst())
+      m_journal_error = true;
     break;
 
   case JournalEntry::Kind::Created:
@@ -175,13 +213,15 @@ void HostFileSystem::JournalCreated(const std::string& host_path)
   entry.host_path = host_path;
 }
 
-void HostFileSystem::JournalRemoved(const std::string& host_path)
+bool HostFileSystem::JournalRemoved(const std::string& host_path)
 {
   if (!m_journal_active)
-    return;
-  JournalEntry& entry = m_journal.emplace_back();
+    return true;
+
+  // Build the entry off-journal. A partial backup must never authorize the destructive operation.
+  JournalEntry entry;
   entry.kind = JournalEntry::Kind::Removed;
-  entry.seq = m_journal_next_seq++;
+  entry.seq = m_journal_next_seq;
   entry.host_path = host_path;
   if (File::IsDirectory(host_path))
   {
@@ -191,6 +231,7 @@ void HostFileSystem::JournalRemoved(const std::string& host_path)
                      &entry.removed_contents))
     {
       m_journal_error = true;
+      return false;
     }
   }
   else
@@ -200,20 +241,27 @@ void HostFileSystem::JournalRemoved(const std::string& host_path)
     {
       ERROR_LOG_FMT(IOS_FS, "NAND journal: could not read {}", host_path);
       m_journal_error = true;
+      return false;
     }
     entry.removed_paths.push_back(host_path);
     entry.removed_contents.push_back(std::move(content));
   }
+
+  m_journal.push_back(std::move(entry));
+  ++m_journal_next_seq;
+  return true;
 }
 
-void HostFileSystem::JournalWritten(const std::string& host_path, File::IOFile& file, u64 offset,
+bool HostFileSystem::JournalWritten(const std::string& host_path, File::IOFile& file, u64 offset,
                                     u64 count)
 {
   if (!m_journal_active)
-    return;
-  JournalEntry& entry = m_journal.emplace_back();
+    return true;
+
+  // Do not publish an undo entry until all bytes needed to reverse the write are available.
+  JournalEntry entry;
   entry.kind = JournalEntry::Kind::Written;
-  entry.seq = m_journal_next_seq++;
+  entry.seq = m_journal_next_seq;
   entry.host_path = host_path;
   entry.offset = offset;
   entry.old_size = file.GetSize();
@@ -230,8 +278,13 @@ void HostFileSystem::JournalWritten(const std::string& host_path, File::IOFile& 
       std::clearerr(handle);
       ERROR_LOG_FMT(IOS_FS, "NAND journal: could not read {} before a write", host_path);
       m_journal_error = true;
+      return false;
     }
   }
+
+  m_journal.push_back(std::move(entry));
+  ++m_journal_next_seq;
+  return true;
 }
 
 void HostFileSystem::JournalRenamed(const std::string& old_host_path,

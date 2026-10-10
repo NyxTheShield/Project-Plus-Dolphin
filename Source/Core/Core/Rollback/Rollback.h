@@ -143,7 +143,8 @@ class SnapshotRing
 {
 public:
   explicit SnapshotRing(std::size_t slots, bool tracked_bitmap_clear = false,
-                        bool force_full_scan = false);
+                        bool force_full_scan = false, bool keep_jit_tracking = false,
+                        bool audit_untracked_writes = false);
   ~SnapshotRing();
   SnapshotRing(const SnapshotRing&) = delete;
   SnapshotRing& operator=(const SnapshotRing&) = delete;
@@ -181,6 +182,8 @@ private:
     std::vector<u8> mem1;
     std::vector<u8> mem2;
     std::vector<u8> l1_cache;
+    std::vector<u64> audit_mem1_pages;
+    std::vector<u64> audit_mem2_pages;
     Common::UniqueBuffer<u8> state;
     std::size_t state_size = 0;
     State::RollbackStateLayout state_layout;
@@ -203,9 +206,19 @@ private:
   // Reused by loads to avoid allocating page vectors and unordered-set nodes every rollback.
   std::vector<u32> m_changed_blocks;
   std::vector<ChangedMemoryRange> m_changed_ranges;
+  Common::UniqueBuffer<u8> m_state_roundtrip_audit;
+  // Reused only by determinism diagnostics when a replay overwrites the original copy of a frame.
+  // Keeping this separate from the snapshot slots lets us compare the two serializations after the
+  // destination slot has been rewritten without changing the RAM save/restore path.
+  Common::UniqueBuffer<u8> m_state_replay_audit;
+  std::vector<u64> m_replay_mem1_audit;
+  std::vector<u64> m_replay_mem2_audit;
+  bool m_replay_mismatch_reported = false;
   std::optional<bool> m_dirty_page_tracking;
   const bool m_tracked_bitmap_clear;
   const bool m_force_full_scan;
+  const bool m_keep_jit_tracking;
+  const bool m_audit_untracked_writes;
   SnapshotPhaseTimings m_last_save_timings;
   SnapshotPhaseTimings m_last_load_timings;
   u32 m_initial_trace_events = 0;

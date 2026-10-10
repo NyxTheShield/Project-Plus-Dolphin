@@ -68,8 +68,14 @@ PowerPCManager::PowerPCManager(Core::System& system)
 
 PowerPCManager::~PowerPCManager() = default;
 
-void PowerPCManager::DoState(PointerWrap& p)
+void PowerPCManager::DoState(PointerWrap& p,
+                             std::array<std::size_t, 14>* rollback_section_ends,
+                             u8* rollback_layout_base)
 {
+  const auto note_section_end = [&](std::size_t section) {
+    if (rollback_section_ends && rollback_layout_base)
+      (*rollback_section_ends)[section] = p.GetOffsetFromPreviousPosition(rollback_layout_base);
+  };
   // some of this code has been disabled, because
   // it changes registers even in Mode::Measure (which is suspicious and seems like it could cause
   // desyncs)
@@ -94,9 +100,12 @@ void PowerPCManager::DoState(PointerWrap& p)
   const std::array<u32, 33> old_bats = read_bats();
 
   p.DoArray(m_ppc_state.gpr);
+  note_section_end(0);
   p.Do(m_ppc_state.pc);
   p.Do(m_ppc_state.npc);
+  note_section_end(1);
   p.DoArray(m_ppc_state.cr.fields);
+  note_section_end(2);
   p.Do(m_ppc_state.msr);
   p.Do(m_ppc_state.fpscr);
   p.Do(m_ppc_state.Exceptions);
@@ -104,20 +113,29 @@ void PowerPCManager::DoState(PointerWrap& p)
   p.Do(m_ppc_state.xer_ca);
   p.Do(m_ppc_state.xer_so_ov);
   p.Do(m_ppc_state.xer_stringctrl);
+  note_section_end(3);
   p.DoArray(m_ppc_state.ps);
+  note_section_end(4);
   p.DoArray(m_ppc_state.sr);
+  note_section_end(5);
   p.DoArray(m_ppc_state.spr);
+  note_section_end(6);
   p.DoArray(m_ppc_state.tlb);
+  note_section_end(7);
   p.Do(m_ppc_state.pagetable_base);
   p.Do(m_ppc_state.pagetable_mask);
   p.Do(m_ppc_state.pagetable_update_pending);
+  note_section_end(8);
 
   p.Do(m_ppc_state.reserve);
   p.Do(m_ppc_state.reserve_address);
+  note_section_end(9);
 
   auto& memory = m_system.GetMemory();
   m_ppc_state.iCache.DoState(memory, p);
+  note_section_end(10);
   m_ppc_state.dCache.DoState(memory, p);
+  note_section_end(11);
 
   auto& mmu = m_system.GetMMU();
   if (p.IsReadMode())
@@ -143,11 +161,13 @@ void PowerPCManager::DoState(PointerWrap& p)
   {
     mmu.DoState(p, false);
   }
+  note_section_end(12);
 
   // SystemTimers::DecrementerSet();
   // SystemTimers::TimeBaseSet();
 
   m_system.GetJitInterface().DoState(p);
+  note_section_end(13);
 }
 
 void PowerPCManager::ResetRegisters()

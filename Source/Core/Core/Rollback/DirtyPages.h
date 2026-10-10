@@ -49,9 +49,11 @@ struct Area
 
 // Starts tracking `areas` for `owner` (a snapshot ring). False if another owner is tracking, the
 // areas are unaligned, or the host's JIT does not set the bitmap.
-bool Arm(const void* owner, const std::vector<Area>& areas, bool force_full_scan);
+bool Arm(const void* owner, const std::vector<Area>& areas, bool force_full_scan,
+         bool keep_jit_tracking, bool audit_untracked_writes);
 // Arm over MEM1 and MEM2 of the running machine.
-bool ArmForSystem(Core::System& system, const void* owner, bool force_full_scan);
+bool ArmForSystem(Core::System& system, const void* owner, bool force_full_scan,
+                  bool keep_jit_tracking, bool audit_untracked_writes);
 // Stops tracking if `owner` holds it and drops every log.
 void Disarm(const void* owner);
 bool IsArmedFor(const void* owner);
@@ -59,13 +61,13 @@ bool IsArmedFor(const void* owner);
 bool IsTrackingArea(const u8* alias, u32 physical_address, u32 size);
 
 // Takes a snapshot and opens an empty undo log for it. Returns its id (never 0).
-u64 Snapshot();
+u64 Snapshot(s64 frame);
 bool Has(u64 id);
 // Puts RAM back as it was at snapshot `id`, calling changed() for each 32-byte guest cache line
 // whose contents differed. Newer snapshots are dropped and `id` becomes the newest, with an empty
 // log. False if `id` is not held.
 bool Restore(u64 id, const std::function<void(u32 physical_address, u32 length)>& changed,
-             bool tracked_bitmap_clear);
+             bool tracked_bitmap_clear, s64 frame);
 // Forgets snapshot `id`; its saved pages merge into the next older snapshot's log.
 void Drop(u64 id);
 // Memmap calls this when the host mappings of guest RAM change. Tracking stops if RAM is now

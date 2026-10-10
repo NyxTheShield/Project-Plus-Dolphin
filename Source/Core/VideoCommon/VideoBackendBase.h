@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -62,7 +64,8 @@ public:
   static void PopulateBackendInfo(const WindowSystemInfo& wsi);
 
   // Wrapper function which pushes the event to the GPU thread.
-  void DoState(PointerWrap& p);
+  void DoState(PointerWrap& p, std::array<std::size_t, 18>* rollback_section_ends = nullptr,
+               u8* rollback_layout_base = nullptr);
 
 protected:
   // For hardware backends

@@ -270,16 +270,19 @@ void VideoBackendBase::PopulateBackendInfo(const WindowSystemInfo& wsi)
   g_Config.VerifyValidity();
 }
 
-void VideoBackendBase::DoState(PointerWrap& p)
+void VideoBackendBase::DoState(PointerWrap& p,
+                               std::array<std::size_t, 18>* rollback_section_ends,
+                               u8* rollback_layout_base)
 {
   auto& system = Core::System::GetInstance();
   if (!system.IsDualCoreMode())
   {
-    VideoCommon_DoState(p);
+    VideoCommon_DoState(p, rollback_section_ends, rollback_layout_base);
     return;
   }
 
-  AsyncRequests::GetInstance()->PushBlockingEvent([&] { VideoCommon_DoState(p); });
+  AsyncRequests::GetInstance()->PushBlockingEvent(
+      [&] { VideoCommon_DoState(p, rollback_section_ends, rollback_layout_base); });
 
   // Let the GPU thread sleep after loading the state, so we're not spinning if paused after loading
   // a state. The next GP burst will wake it up again.

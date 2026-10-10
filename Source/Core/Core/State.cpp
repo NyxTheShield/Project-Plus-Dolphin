@@ -182,7 +182,7 @@ static void DoState(Core::System& system, PointerWrap& p, RollbackStateLayout* l
 
   // Begin with video backend, so that it gets a chance to clear its caches and writeback modified
   // things to RAM
-  g_video_backend->DoState(p);
+  g_video_backend->DoState(p, layout ? &layout->video_section_ends : nullptr, layout_base);
   p.DoMarker("video_backend");
   note_section_end(1);
 
@@ -193,11 +193,11 @@ static void DoState(Core::System& system, PointerWrap& p, RollbackStateLayout* l
   note_section_end(2);
 
   // HW needs to be restored before PowerPC because the data cache might need to be flushed.
-  HW::DoState(system, p);
+  HW::DoState(system, p, layout, layout_base);
   p.DoMarker("HW");
   note_section_end(3);
 
-  system.GetPowerPC().DoState(p);
+  system.GetPowerPC().DoState(p, layout ? &layout->ppc_section_ends : nullptr, layout_base);
   p.DoMarker("PowerPC");
   note_section_end(4);
 

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string_view>
 
 #include "Common/Buffer.h"
 #include "Common/Logging/Log.h"
@@ -50,6 +51,8 @@ struct Tracker
   std::vector<u32> restore_marks;
   u32 restore_mark = 0;
   bool force_full_scan = false;
+  bool audit_untracked_writes = false;
+  std::vector<u8> audit_reported_pages;
   Counters counters;
   // Ids stay unique across arms, so a stale id never names another ring's snapshot.
   u64 next_id = 1;
@@ -94,8 +97,46 @@ void ReplacePage(u8* live, const u8* contents, u32 physical,
 // Settles the pages written since the newest snapshot. A page whose bytes changed keeps its old
 // bytes (the mirror's) in the newest log, and then the mirror takes the live bytes. With no
 // snapshot there is no log to keep them in, so only the mirror moves.
-void CommitDirtyPages(Tracker& t)
+void AuditUntrackedPages(Tracker& t, std::string_view context, s64 frame)
 {
+  if (!t.audit_untracked_writes || t.force_full_scan)
+    return;
+
+  auto& bitmap = JITDirtyBitmap::Get();
+  for (std::size_t a = 0; a < t.areas.size(); ++a)
+  {
+    const Area& area = t.areas[a];
+    const std::size_t pages = area.size / PAGE;
+    const std::size_t first_bitmap_page = area.physical_address / PAGE;
+    for (std::size_t i = 0; i < pages; ++i)
+    {
+      const std::size_t global_page = t.area_first_page[a] + i;
+      if (bitmap.Load(first_bitmap_page + i) || t.audit_reported_pages[global_page])
+        continue;
+      const u8* const live = area.alias + i * PAGE;
+      const u8* const mirror = t.mirrors[a].data() + i * PAGE;
+      if (std::memcmp(live, mirror, PAGE) == 0)
+        continue;
+
+      std::size_t first = 0;
+      std::size_t changed = 0;
+      while (first < PAGE && live[first] == mirror[first])
+        ++first;
+      for (std::size_t offset = first; offset < PAGE; ++offset)
+        changed += live[offset] != mirror[offset];
+      t.audit_reported_pages[global_page] = 1;
+      ERROR_LOG_FMT(CORE,
+                    "Rollback dirty audit: UNTRACKED RAM write before {} frame {} "
+                    "physical=0x{:08x} first=0x{:03x} changed_bytes={} mirror=0x{:02x} "
+                    "live=0x{:02x}",
+                    context, frame, PhysicalOf(area, i), first, changed, mirror[first], live[first]);
+    }
+  }
+}
+
+void CommitDirtyPages(Tracker& t, s64 frame)
+{
+  AuditUntrackedPages(t, "save", frame);
   auto& bitmap = JITDirtyBitmap::Get();
   for (std::size_t a = 0; a < t.areas.size(); ++a)
   {
@@ -142,11 +183,14 @@ void ResetLocked(Tracker& t)
   t.restore_marks.clear();
   t.restore_mark = 0;
   t.force_full_scan = false;
+  t.audit_untracked_writes = false;
+  t.audit_reported_pages.clear();
   t.log.reset();
 }
 }  // namespace
 
-bool Arm(const void* owner, const std::vector<Area>& areas, bool force_full_scan)
+bool Arm(const void* owner, const std::vector<Area>& areas, bool force_full_scan,
+         bool keep_jit_tracking, bool audit_untracked_writes)
 {
   Tracker& t = T();
   std::lock_guard lock(t.lock);
@@ -179,19 +223,25 @@ bool Arm(const void* owner, const std::vector<Area>& areas, bool force_full_scan
   t.restore_marks.assign(t.page_count, 0);
   t.restore_mark = 0;
   t.force_full_scan = force_full_scan;
+  t.audit_untracked_writes = audit_untracked_writes;
+  t.audit_reported_pages.assign(t.page_count, 0);
   t.log->Reserve(RESERVE_PAGES);
   t.owner = owner;
   // Everything written before this point is already in the mirror.
   auto& bitmap = JITDirtyBitmap::Get();
-  bitmap.SetEmitUpdates(!force_full_scan);
+  bitmap.SetEmitUpdates(!force_full_scan || keep_jit_tracking);
   bitmap.Clear();
-  bitmap.SetEnabled(!force_full_scan);
-  NOTICE_LOG_FMT(CORE, "Rollback: dirty-page snapshots over {} KB of guest RAM (full_scan={})",
-                 t.page_count * PAGE / 1024, force_full_scan);
+  bitmap.SetEnabled(!force_full_scan || keep_jit_tracking);
+  NOTICE_LOG_FMT(CORE,
+                 "Rollback: dirty-page snapshots over {} KB of guest RAM (full_scan={}, "
+                 "jit_tracking={})",
+                 t.page_count * PAGE / 1024, force_full_scan,
+                 !force_full_scan || keep_jit_tracking);
   return true;
 }
 
-bool ArmForSystem(Core::System& system, const void* owner, bool force_full_scan)
+bool ArmForSystem(Core::System& system, const void* owner, bool force_full_scan,
+                  bool keep_jit_tracking, bool audit_untracked_writes)
 {
   if (!JIT_STORES_TRACKED)
     return false;
@@ -231,7 +281,7 @@ bool ArmForSystem(Core::System& system, const void* owner, bool force_full_scan)
                            memory.GetFakeVMemSize()});
     }
   }
-  if (!Arm(owner, areas, force_full_scan))
+  if (!Arm(owner, areas, force_full_scan, keep_jit_tracking, audit_untracked_writes))
     return false;
 
   Tracker& t = T();
@@ -269,7 +319,7 @@ bool IsTrackingArea(const u8* alias, u32 physical_address, u32 size)
          });
 }
 
-u64 Snapshot()
+u64 Snapshot(s64 frame)
 {
   Tracker& t = T();
   std::lock_guard lock(t.lock);
@@ -278,7 +328,7 @@ u64 Snapshot()
   t.log->Reserve(RESERVE_PAGES);
   // The pages written since the previous snapshot belong to that snapshot's log, so commit them
   // before the new log opens.
-  CommitDirtyPages(t);
+  CommitDirtyPages(t, frame);
   return t.log->Open();
 }
 
@@ -290,7 +340,7 @@ bool Has(u64 id)
 }
 
 bool Restore(u64 id, const std::function<void(u32 physical_address, u32 length)>& changed,
-             bool tracked_bitmap_clear)
+             bool tracked_bitmap_clear, s64 frame)
 {
   Tracker& t = T();
   std::lock_guard lock(t.lock);
@@ -298,7 +348,9 @@ bool Restore(u64 id, const std::function<void(u32 physical_address, u32 length)>
     return false;
   // With inline tracking disabled, first settle every write made since the newest snapshot.
   if (t.force_full_scan)
-    CommitDirtyPages(t);
+    CommitDirtyPages(t, frame);
+  else
+    AuditUntrackedPages(t, "load", frame);
   // Pages with a pre-image in the logs from `id` on hold their bytes at `id` there.
   if (++t.restore_mark == 0)
   {

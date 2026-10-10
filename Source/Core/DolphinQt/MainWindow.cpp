@@ -1915,6 +1915,58 @@ void MainWindow::StartManagedNetPlay()
   const auto test_solo_it = ticket.find("test_solo");
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
+  const auto stress_test_it = ticket.find("stress_test");
+  m_managed_session->stress_test =
+      stress_test_it != ticket.end() && stress_test_it->second.is<bool>() &&
+      stress_test_it->second.get<bool>();
+  const auto stress_inputs_it = ticket.find("stress_inputs");
+  m_managed_session->stress_inputs =
+      stress_inputs_it != ticket.end() && stress_inputs_it->second.is<bool>() &&
+      stress_inputs_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_INPUTS,
+                     m_managed_session->stress_inputs);
+  const auto full_scan_it = ticket.find("full_scan_benchmark");
+  m_managed_session->full_scan_benchmark =
+      full_scan_it != ticket.end() && full_scan_it->second.is<bool>() &&
+      full_scan_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK,
+                     m_managed_session->full_scan_benchmark);
+  const auto input_delay_it = ticket.find("input_delay_override");
+  if (input_delay_it != ticket.end() && input_delay_it->second.is<double>())
+  {
+    const double input_delay = input_delay_it->second.get<double>();
+    if (input_delay >= 0.0 && input_delay <= 60.0)
+    {
+      m_managed_session->input_delay_override = static_cast<u32>(input_delay);
+      Config::SetCurrent(Config::NETPLAY_ROLLBACK_INPUT_DELAY,
+                         *m_managed_session->input_delay_override);
+    }
+  }
+  const auto compare_ram_it = ticket.find("compare_confirmed_ram");
+  m_managed_session->compare_confirmed_ram =
+      compare_ram_it != ticket.end() && compare_ram_it->second.is<bool>() &&
+      compare_ram_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM,
+                     m_managed_session->compare_confirmed_ram);
+  if (m_managed_session->test_solo)
+  {
+    // Fake matchmaking is a rollback reproduction harness: the visible one-player lobby receives
+    // an in-process P2 whose inputs arrive one rollback window late. This exercises the normal
+    // Gekko event and Orca snapshot paths without requiring a second Dolphin process.
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2, true);
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_TEST, true);
+    INFO_LOG_FMT(NETPLAY,
+                 "Managed solo test: enabling forced rollback every frame at the negotiated "
+                 "rollback-window depth");
+  }
+  else if (m_managed_session->stress_test)
+  {
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2, false);
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_TEST, true);
+    INFO_LOG_FMT(NETPLAY,
+                 "Managed two-client test: enabling forced rollback every frame at the "
+                 "negotiated rollback-window depth");
+  }
   for (const picojson::value& player_value : players_it->second.get<picojson::array>())
   {
     if (!player_value.is<picojson::object>())
@@ -2114,14 +2166,17 @@ void MainWindow::PollManagedNetPlayReady()
       return;
     }
 
-    constexpr unsigned int ROLLBACK_WINDOW = 5;
+    const unsigned int rollback_window =
+        m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5;
     const u32 ping = client->GetPlayersMaxPing();
     const u32 delay = NetPlay::GetGekkoInputDelayForPing(ping);
-    server->AdjustMinimumPadBufferSize(ROLLBACK_WINDOW);
-    server->SetGekkoInputDelay(delay);
+    server->AdjustMinimumPadBufferSize(rollback_window);
+    if (!m_managed_session->input_delay_override)
+      server->SetGekkoInputDelay(delay);
     INFO_LOG_FMT(NETPLAY,
-                 "Managed session latency settings: ping={} ms, input_delay={}, rollback_window={}",
-                 ping, delay, ROLLBACK_WINDOW);
+                 "Managed session latency settings: ping={} ms, input_delay={}, rollback_window={}{}",
+                 ping, m_managed_session->input_delay_override.value_or(delay), rollback_window,
+                 m_managed_session->input_delay_override ? " (local stress override)" : "");
 
     m_managed_session->start_requested = true;
     if (!server->RequestStartGame())

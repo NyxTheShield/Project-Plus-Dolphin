@@ -23,12 +23,18 @@ class System;
 namespace State
 {
 constexpr std::size_t ROLLBACK_STATE_SECTION_COUNT = 7;
+constexpr std::size_t ROLLBACK_HW_SECTION_COUNT = 14;
+constexpr std::size_t ROLLBACK_VIDEO_SECTION_COUNT = 18;
+constexpr std::size_t ROLLBACK_PPC_SECTION_COUNT = 14;
 
 // Byte offsets immediately after each top-level DoState marker. Used only to attribute rollback
 // determinism diagnostics without changing the serialized state format.
 struct RollbackStateLayout
 {
   std::array<std::size_t, ROLLBACK_STATE_SECTION_COUNT> section_ends{};
+  std::array<std::size_t, ROLLBACK_HW_SECTION_COUNT> hw_section_ends{};
+  std::array<std::size_t, ROLLBACK_VIDEO_SECTION_COUNT> video_section_ends{};
+  std::array<std::size_t, ROLLBACK_PPC_SECTION_COUNT> ppc_section_ends{};
 };
 
 // number of states

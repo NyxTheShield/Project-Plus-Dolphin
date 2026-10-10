@@ -1493,7 +1493,10 @@ bool NetPlayServer::SetupNetSettings()
   settings.mem1_size = Config::Get(Config::MAIN_MEM1_SIZE);
   settings.mem2_size = Config::Get(Config::MAIN_MEM2_SIZE);
   settings.fallback_region = Config::Get(Config::MAIN_FALLBACK_REGION);
-  settings.allow_sd_writes = Config::Get(Config::MAIN_ALLOW_SD_WRITES);
+  // Raw SD image writes are host filesystem state and are not part of the rollback snapshot.
+  // Orca's session profile disables them for the same reason. Synchronize the read-only policy
+  // through NetPlay before the emulated SD device is opened.
+  settings.allow_sd_writes = false;
   settings.oc_enable = Config::Get(Config::MAIN_OVERCLOCK_ENABLE);
   settings.oc_factor = Config::Get(Config::MAIN_OVERCLOCK);
   settings.vi_oc_enable = Config::Get(Config::MAIN_VI_OVERCLOCK_ENABLE);

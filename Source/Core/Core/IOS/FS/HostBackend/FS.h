@@ -7,7 +7,10 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
+#include <source_location>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -133,13 +136,22 @@ private:
     FstEntry root_fst;
     FstEntry redirect_fst;
   };
+  struct JournalCheckpoint
+  {
+    u64 next_seq;
+    bool had_fst;
+    std::optional<FstEntry> root_fst;
+    std::optional<FstEntry> redirect_fst;
+  };
   u64 JournalMark();
   void JournalUndo(u64 mark);
   void UndoJournalEntry(const JournalEntry& entry);
+  JournalCheckpoint JournalBeginTransaction(bool preserve_fst = false) const;
+  void JournalAbortTransaction(const JournalCheckpoint& checkpoint);
   void JournalFst();
   void JournalCreated(const std::string& host_path);
-  void JournalRemoved(const std::string& host_path);
-  void JournalWritten(const std::string& host_path, File::IOFile& file, u64 offset, u64 count);
+  bool JournalRemoved(const std::string& host_path);
+  bool JournalWritten(const std::string& host_path, File::IOFile& file, u64 offset, u64 count);
   void JournalRenamed(const std::string& old_host_path, const std::string& new_host_path);
 
   Handle* GetHandleFromFd(Fd fd);
@@ -150,7 +162,9 @@ private:
     std::string host_path;
     bool is_redirect;
   };
-  HostFilename BuildFilename(const std::string& wii_path) const;
+  HostFilename BuildFilename(
+      const std::string& wii_path, std::string_view context = "unspecified",
+      const std::source_location& location = std::source_location::current()) const;
   std::shared_ptr<File::IOFile> OpenHostFile(const std::string& host_path);
 
   ResultCode CreateFileOrDirectory(Uid uid, Gid gid, const std::string& path,
@@ -161,7 +175,7 @@ private:
   std::string GetFstFilePath() const;
   void ResetFst();
   void LoadFst();
-  void SaveFst();
+  bool SaveFst();
   /// Get the FST entry for a file (or directory).
   /// Automatically creates fallback entries for parents if they do not exist.
   /// Returns nullptr if the path is invalid or the file does not exist.

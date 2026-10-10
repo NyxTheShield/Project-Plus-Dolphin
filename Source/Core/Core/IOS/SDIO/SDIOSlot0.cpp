@@ -20,6 +20,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/IOS/IOS.h"
 #include "Core/IOS/VersionInfo.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 
 namespace IOS::HLE
@@ -54,7 +55,21 @@ void SDIOSlot0Device::RefreshConfig()
 void SDIOSlot0Device::DoState(PointerWrap& p)
 {
   Device::DoState(p);
+  bool has_event = m_event != nullptr;
+  EventType event_type = has_event ? m_event->type : EVENT_INVALID;
+  u32 event_request_address = has_event ? m_event->request.address : 0;
+  p.Do(has_event);
+  p.Do(event_type);
+  p.Do(event_request_address);
+  p.Do(m_sd_card_inserted);
   if (p.IsReadMode())
+  {
+    if (has_event)
+      m_event = std::make_unique<Event>(event_type, Request(GetSystem(), event_request_address));
+    else
+      m_event.reset();
+  }
+  if (p.IsReadMode() && !(Rollback::IsGekkoSessionActive() && m_card.IsOpen()))
   {
     OpenInternal();
   }
@@ -87,6 +102,17 @@ void SDIOSlot0Device::EventNotify()
 void SDIOSlot0Device::OpenInternal()
 {
   const std::string filename = File::GetUserPath(F_WIISDCARDIMAGE_IDX);
+  // A rollback session keeps one verified card handle open. Reopening it during every state load
+  // makes host-file state depend on how often each peer rolled back.
+  if (Rollback::IsGekkoSessionActive() && !Config::Get(Config::MAIN_WII_SD_CARD))
+    return;
+  if (Rollback::IsGekkoSessionActive() && !Config::Get(Config::MAIN_ALLOW_SD_WRITES))
+  {
+    m_card.Open(filename, "rb");
+    if (!m_card)
+      ERROR_LOG_FMT(IOS_SD, "Rollback: could not open the session SD card image {}", filename);
+    return;
+  }
   m_card.Open(filename, "r+b");
   if (!m_card)
   {
@@ -291,6 +317,7 @@ s32 SDIOSlot0Device::ExecuteCommand(const Request& request, u32 buffer_in, u32 b
     u8* const destination = memory.GetPointerForRange(req.addr, size);
     if (m_card.ReadBytes(destination, size))
     {
+      Rollback::RecordHostMemoryWrite(system, "SDIO", req.addr, size, address);
       DEBUG_LOG_FMT(IOS_SD, "Outbuffer size {} got {}", rw_buffer_size, size);
     }
     else

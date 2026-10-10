@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Common/CommonTypes.h"
@@ -56,12 +58,16 @@ void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
                             bool next_is_new_field);
 bool IsPreciseVITailArmed();
 bool IsDeterminismDiagnosticsEnabled();
+// Keeps a bounded history of host-subsystem writes into guest RAM for mismatch diagnostics.
+void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 address,
+                           std::size_t size, u64 source_offset = 0);
 
 // Session management. Dolphin negotiates endpoints in the lobby; GekkoNet owns gameplay traffic.
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
                        const std::vector<std::string>& player_endpoints,
                        int local_delay, int prediction_window, bool debug_p2_cstick,
-                       bool simulate_remote_p2, bool stress_test, bool compare_confirmed_ram);
+                       bool simulate_remote_p2, bool stress_test, bool stress_inputs,
+                       bool compare_confirmed_ram, bool stop_ram_compare_on_mismatch);
 void StopGekkoSession();
 bool IsGekkoSessionActive();
 void SetGekkoLocalDelay(int local_delay);

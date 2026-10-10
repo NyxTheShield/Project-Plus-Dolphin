@@ -51,9 +51,12 @@ extern const Info<bool> NETPLAY_SPECTATOR_MODE;
 extern const Info<bool> NETPLAY_ROLLBACK_DEBUG_P2_CSTICK;
 extern const Info<bool> NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2;
 extern const Info<bool> NETPLAY_ROLLBACK_STRESS_TEST;
+extern const Info<bool> NETPLAY_ROLLBACK_STRESS_INPUTS;
 extern const Info<bool> NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR;
 extern const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK;
+extern const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING;
 extern const Info<bool> NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM;
+extern const Info<bool> NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH;
 
 extern const Info<bool> NETPLAY_SAVEDATA_LOAD;
 extern const Info<bool> NETPLAY_SAVEDATA_WRITE;

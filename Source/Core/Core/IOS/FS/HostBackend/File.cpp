@@ -81,7 +81,7 @@ Result<FileHandle> HostFileSystem::OpenFile(Uid, Gid, const std::string& path, M
   if (!handle)
     return std::unexpected{ResultCode::NoFreeHandle};
 
-  const std::string host_path = BuildFilename(path).host_path;
+  const std::string host_path = BuildFilename(path, "OpenFile guest request").host_path;
   if (File::IsDirectory(host_path))
   {
     *handle = Handle{};
@@ -155,12 +155,20 @@ Result<u32> HostFileSystem::WriteBytesToFile(Fd fd, const u8* ptr, u32 count)
   if ((u8(handle->mode) & u8(Mode::Write)) == 0)
     return std::unexpected{ResultCode::AccessDenied};
 
-  JournalWritten(BuildFilename(handle->wii_path).host_path, *handle->host_file,
-                 handle->file_offset, count);
-  // File might be opened twice, need to seek before we read
-  handle->host_file->Seek(handle->file_offset, File::SeekOrigin::Begin);
-  if (!handle->host_file->WriteBytes(ptr, count))
+  const JournalCheckpoint checkpoint = JournalBeginTransaction();
+  if (!JournalWritten(BuildFilename(handle->wii_path, "WriteBytesToFile handle").host_path,
+                      *handle->host_file, handle->file_offset, count))
+  {
+    JournalAbortTransaction(checkpoint);
     return std::unexpected{ResultCode::AccessDenied};
+  }
+  // File might be opened twice, need to seek before we read
+  if (!handle->host_file->Seek(handle->file_offset, File::SeekOrigin::Begin) ||
+      !handle->host_file->WriteBytes(ptr, count))
+  {
+    JournalAbortTransaction(checkpoint);
+    return std::unexpected{ResultCode::AccessDenied};
+  }
 
   handle->file_offset += count;
   return count;

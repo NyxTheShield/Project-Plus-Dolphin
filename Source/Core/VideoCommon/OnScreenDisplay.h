@@ -18,6 +18,7 @@ enum class MessageType
 {
   NetPlayPing,
   NetPlayBuffer,
+  RollbackVerification,
 
   // This entry must be kept last so that persistent typed messages are
   // displayed before other messages

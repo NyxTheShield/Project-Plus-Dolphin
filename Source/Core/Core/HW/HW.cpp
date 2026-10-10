@@ -83,39 +83,60 @@ void Shutdown(Core::System& system)
   system.GetCoreTiming().Shutdown();
 }
 
-void DoState(Core::System& system, PointerWrap& p)
+void DoState(Core::System& system, PointerWrap& p, State::RollbackStateLayout* layout,
+             u8* layout_base)
 {
+  std::size_t section = 0;
+  const auto note_section_end = [&] {
+    if (layout && layout_base)
+      layout->hw_section_ends[section] = p.GetOffsetFromPreviousPosition(layout_base);
+    ++section;
+  };
   system.GetMemory().DoState(p);
   p.DoMarker("Memory");
+  note_section_end();
   system.GetMemoryInterface().DoState(p);
   p.DoMarker("MemoryInterface");
+  note_section_end();
   system.GetVideoInterface().DoState(p);
   p.DoMarker("VideoInterface");
+  note_section_end();
   system.GetSerialInterface().DoState(p);
   p.DoMarker("SerialInterface");
+  note_section_end();
   system.GetProcessorInterface().DoState(p);
   p.DoMarker("ProcessorInterface");
+  note_section_end();
   system.GetDSP().DoState(p);
   p.DoMarker("DSP");
+  note_section_end();
   system.GetDVDInterface().DoState(p);
   p.DoMarker("DVDInterface");
+  note_section_end();
   system.GetGPFifo().DoState(p);
   p.DoMarker("GPFifo");
+  note_section_end();
   system.GetExpansionInterface().DoState(p);
   p.DoMarker("ExpansionInterface");
+  note_section_end();
   system.GetAudioInterface().DoState(p);
   p.DoMarker("AudioInterface");
+  note_section_end();
   system.GetHSP().DoState(p);
   p.DoMarker("HSP");
+  note_section_end();
 
   if (system.IsWii())
   {
     system.GetWiiIPC().DoState(p);
     p.DoMarker("IOS");
+    note_section_end();
     system.GetIOS()->DoState(p);
     p.DoMarker("IOS::HLE");
+    note_section_end();
   }
 
   p.DoMarker("WIIHW");
+  note_section_end();
 }
 }  // namespace HW
