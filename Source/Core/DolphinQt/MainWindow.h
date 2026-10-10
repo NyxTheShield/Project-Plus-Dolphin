@@ -287,6 +287,8 @@ private:
     bool stress_inputs = false;
     bool full_scan_benchmark = false;
     std::optional<u32> input_delay_override;
+    u32 input_delay_reduction = 2;
+    std::string input_delay_mode = "safe";
     bool compare_confirmed_ram = false;
     bool latency_sampling_started = false;
     bool start_requested = false;

@@ -67,6 +67,7 @@ public:
 
   void AdjustMinimumPadBufferSize(unsigned int size);
   void SetGekkoInputDelay(unsigned int delay);
+  void SetManagedGekkoPing(unsigned int ping);
   void SetHostInputAuthority(bool enable);
 
   void KickPlayer(PlayerId player);

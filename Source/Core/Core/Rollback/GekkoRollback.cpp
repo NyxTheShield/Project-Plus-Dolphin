@@ -75,6 +75,7 @@ constexpr int RING_SNAPSHOT_SLOTS = 12;
 constexpr int WAIT_SLEEP_US = 100;
 constexpr auto SIMULATED_P2_LATENCY = std::chrono::milliseconds(40);
 constexpr u64 STRESS_INPUT_PERIOD_FRAMES = 1;
+constexpr u64 P2_INPUT_SPAM_START_FRAME = 500;
 // GekkoNet's serialized MsgHeader starts with its u8 PacketType. Artificial rollback stress must
 // delay only Inputs packets; delaying InputAck/session-health traffic can stall the remote peer.
 constexpr u8 GEKKO_INPUT_PACKET_TYPE = 1;
@@ -1653,13 +1654,17 @@ static void SubmitLocalInput()
   {
     local_status = Pad::GetStatus(LOCAL_PAD);
   }
-  if (g_manager.debug_p2_cstick && g_manager.local_player == 2)
-    ApplyDebugCStickPattern(&local_status, g_manager.local_input_frame);
-  if (g_manager.stress_inputs && !g_manager.simulate_remote_p2)
+  const bool p2_input_spam_active =
+      g_manager.local_player == 2 && g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
+  if (g_manager.debug_p2_cstick && p2_input_spam_active)
   {
-    ApplyStressCStickPattern(
-        &local_status,
-        g_manager.local_input_frame + static_cast<u64>(g_manager.local_player - 1));
+    ApplyDebugCStickPattern(&local_status,
+                            g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
+  }
+  if (g_manager.stress_inputs && !g_manager.simulate_remote_p2 && p2_input_spam_active)
+  {
+    ApplyStressCStickPattern(&local_status,
+                             g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
   }
   WirePad wire = EncodePad(local_status);
 
@@ -1702,10 +1707,14 @@ static void SubmitLocalInput()
   if (g_manager.simulated_peer_session && g_manager.simulated_peer_p2_handle >= 0)
   {
     GCPadStatus simulated_p2{};
-    if (g_manager.stress_test)
-      ApplyStressCStickPattern(&simulated_p2, g_manager.local_input_frame);
-    else
-      ApplyDebugCStickPattern(&simulated_p2, g_manager.local_input_frame);
+    if (g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME)
+    {
+      const u64 spam_frame = g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME;
+      if (g_manager.stress_test)
+        ApplyStressCStickPattern(&simulated_p2, spam_frame);
+      else
+        ApplyDebugCStickPattern(&simulated_p2, spam_frame);
+    }
     WirePad simulated_wire = EncodePad(simulated_p2);
     gekko_add_local_input(g_manager.simulated_peer_session, g_manager.simulated_peer_p2_handle,
                           &simulated_wire);

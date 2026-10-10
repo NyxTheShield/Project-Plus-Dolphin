@@ -42,7 +42,7 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
-u32 GetGekkoInputDelayForPing(u32 ping_ms);
+u32 GetGekkoInputDelayForPing(u32 ping_ms, u32 reduction = 2);
 
 struct ManagedNetPlayConfig
 {
@@ -53,6 +53,8 @@ struct ManagedNetPlayConfig
   int seat = 0;
   int player_count = 0;
   bool coordinator = false;
+  u32 input_delay_reduction = 2;
+  bool auto_input_delay = true;
 };
 
 class NetPlayUI
@@ -336,6 +338,7 @@ private:
   void OnPadBufferMinimum(sf::Packet& packet);
   void OnPadBufferPlayer(sf::Packet& packet);
   void OnGekkoInputDelay(sf::Packet& packet);
+  void OnGekkoAutoPing(sf::Packet& packet);
   void OnHostInputAuthority(sf::Packet& packet);
   void OnGolfSwitch(sf::Packet& packet);
   void OnGolfPrepare(sf::Packet& packet);

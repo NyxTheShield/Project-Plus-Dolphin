@@ -1942,6 +1942,21 @@ void MainWindow::StartManagedNetPlay()
                          *m_managed_session->input_delay_override);
     }
   }
+  const auto input_delay_mode_it = ticket.find("input_delay_mode");
+  if (input_delay_mode_it != ticket.end() && input_delay_mode_it->second.is<std::string>())
+  {
+    const std::string& delay_mode = input_delay_mode_it->second.get<std::string>();
+    if (delay_mode == "normal")
+    {
+      m_managed_session->input_delay_mode = delay_mode;
+      m_managed_session->input_delay_reduction = 3;
+    }
+    else if (delay_mode == "aggressive")
+    {
+      m_managed_session->input_delay_mode = delay_mode;
+      m_managed_session->input_delay_reduction = 4;
+    }
+  }
   const auto compare_ram_it = ticket.find("compare_confirmed_ram");
   m_managed_session->compare_confirmed_ram =
       compare_ram_it != ticket.end() && compare_ram_it->second.is<bool>() &&
@@ -2166,16 +2181,30 @@ void MainWindow::PollManagedNetPlayReady()
       return;
     }
 
-    const unsigned int rollback_window =
+    unsigned int rollback_window =
         m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5;
     const u32 ping = client->GetPlayersMaxPing();
-    const u32 delay = NetPlay::GetGekkoInputDelayForPing(ping);
+    const u32 delay = NetPlay::GetGekkoInputDelayForPing(
+        ping, m_managed_session->input_delay_reduction);
+    if (!m_managed_session->test_solo && !m_managed_session->stress_test)
+    {
+      // The rollback window is shared, while input-delay presets are local. Size the shared window
+      // against Aggressive, the lowest-delay preset, so every client's prediction budget covers
+      // the same host-measured round trip.
+      const u32 aggressive_delay = NetPlay::GetGekkoInputDelayForPing(ping, 4);
+      while (rollback_window < 10 && static_cast<u64>(ping) * 3 >
+                                         static_cast<u64>(aggressive_delay + rollback_window) * 100)
+      {
+        ++rollback_window;
+      }
+    }
     server->AdjustMinimumPadBufferSize(rollback_window);
-    if (!m_managed_session->input_delay_override)
-      server->SetGekkoInputDelay(delay);
+    server->SetManagedGekkoPing(ping);
     INFO_LOG_FMT(NETPLAY,
-                 "Managed session latency settings: ping={} ms, input_delay={}, rollback_window={}{}",
-                 ping, m_managed_session->input_delay_override.value_or(delay), rollback_window,
+                 "Managed session latency settings: ping={} ms, host_input_delay={}, "
+                 "input_delay_mode={}, rollback_window={}{}",
+                 ping, m_managed_session->input_delay_override.value_or(delay),
+                 m_managed_session->input_delay_mode, rollback_window,
                  m_managed_session->input_delay_override ? " (local stress override)" : "");
 
     m_managed_session->start_requested = true;
@@ -2253,6 +2282,8 @@ bool MainWindow::NetPlayJoin()
     managed_config->seat = m_managed_session->seat;
     managed_config->player_count = m_managed_session->player_count;
     managed_config->coordinator = m_managed_session->seat == 1;
+    managed_config->input_delay_reduction = m_managed_session->input_delay_reduction;
+    managed_config->auto_input_delay = !m_managed_session->input_delay_override.has_value();
   }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
       host_ip, host_port, m_netplay_dialog, nickname,
