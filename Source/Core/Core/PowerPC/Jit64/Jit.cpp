@@ -212,11 +212,14 @@ bool Jit64::BackPatch(uintptr_t access_address, SContext* ctx)
   }
 
   TrampolineInfo& info = it->second;
-  ERROR_LOG_FMT(DYNA_REC,
-                "Jit64 fastmem fault recovery: host_pc={}, access={:#018x}, guest_pc={:#010x}, "
-                "region_start={}, region_len={}, read={}, access_size={}",
-                fmt::ptr(codePtr), access_address, info.pc, fmt::ptr(info.start), info.len, info.read,
-                info.accessSize);
+  if (Rollback::IsDetailedResimProfilingEnabled())
+  {
+    ERROR_LOG_FMT(DYNA_REC,
+                  "Jit64 fastmem fault recovery: host_pc={}, access={:#018x}, guest_pc={:#010x}, "
+                  "region_start={}, region_len={}, read={}, access_size={}",
+                  fmt::ptr(codePtr), access_address, info.pc, fmt::ptr(info.start), info.len,
+                  info.read, info.accessSize);
+  }
 
   u8* exceptionHandler = nullptr;
   if (jo.memcheck)
