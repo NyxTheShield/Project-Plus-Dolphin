@@ -377,7 +377,8 @@ void CoreTimingManager::MoveEvents()
 
 void CoreTimingManager::Advance()
 {
-  const bool profile_resim = Rollback::IsResimulating();
+  const bool profile_resim =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto profile_start = profile_resim ? std::chrono::steady_clock::now() :
                                              std::chrono::steady_clock::time_point{};
   u64 profile_guest_nanoseconds = 0;
@@ -422,7 +423,7 @@ void CoreTimingManager::Advance()
     m_event_queue.pop_back();
     // FIFO work is measured inside RunGpuOnCpu so synchronous register-access runs are included
     // and the scheduled SyncGPU callback does not count the same work twice.
-    if (Rollback::IsResimulating() && *evt.type->name != "SyncGPUCallback")
+    if (profile_resim && *evt.type->name != "SyncGPUCallback")
     {
       const auto start = std::chrono::steady_clock::now();
       evt.type->callback(m_system, evt.userdata, m_globals.global_timer - evt.time);
@@ -478,7 +479,7 @@ void CoreTimingManager::Advance()
                                    0);
   }
 
-  if (Rollback::IsResimulating())
+  if (profile_resim)
     s_resim_guest_start = ResimGuestSliceStart{std::chrono::steady_clock::now(), ppc_state.pc};
   else
     s_resim_guest_start.reset();
@@ -890,9 +891,11 @@ bool RunPreciseVITail()
 
     prepared_timing_slice = true;
 
-    const auto tail_start = std::chrono::steady_clock::now();
-    const u64 start_tick = core_timing.GetTicks();
-    const u32 start_pc = ppc_state.pc;
+    const bool diagnose_tail = Rollback::IsDeterminismDiagnosticsEnabled();
+    const auto tail_start = diagnose_tail ? std::chrono::steady_clock::now() :
+                                            std::chrono::steady_clock::time_point{};
+    const u64 start_tick = diagnose_tail ? core_timing.GetTicks() : 0;
+    const u32 start_pc = diagnose_tail ? ppc_state.pc : 0;
     u32 instructions = 0;
     u32 cycles = 0;
 
@@ -907,8 +910,7 @@ bool RunPreciseVITail()
 
     static u64 s_precise_tail_count = 0;
     ++s_precise_tail_count;
-    if (Rollback::IsDeterminismDiagnosticsEnabled() &&
-        (s_precise_tail_count <= 16 || s_precise_tail_count % 300 == 0))
+    if (diagnose_tail && (s_precise_tail_count <= 16 || s_precise_tail_count % 300 == 0))
     {
       const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                   std::chrono::steady_clock::now() - tail_start)

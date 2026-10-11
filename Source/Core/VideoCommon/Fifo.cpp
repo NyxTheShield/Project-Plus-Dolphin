@@ -37,6 +37,12 @@
 namespace Fifo
 {
 static constexpr int GPU_TIME_SLOT_SIZE = 1000;
+static constexpr int ROLLBACK_GPU_TIME_SLOT_SIZE = 4000;
+
+static int GetGpuTimeSlotSize()
+{
+  return Rollback::UseCoarseFifoTiming() ? ROLLBACK_GPU_TIME_SLOT_SIZE : GPU_TIME_SLOT_SIZE;
+}
 
 FifoManager::FifoManager(Core::System& system) : m_system{system}
 {
@@ -428,15 +434,16 @@ void FifoManager::RunGpu()
     if (m_syncing_suspended)
     {
       m_syncing_suspended = false;
-      m_system.GetCoreTiming().ScheduleEvent(GPU_TIME_SLOT_SIZE, m_event_sync_gpu,
-                                             GPU_TIME_SLOT_SIZE);
+      const int time_slot = GetGpuTimeSlotSize();
+      m_system.GetCoreTiming().ScheduleEvent(time_slot, m_event_sync_gpu, time_slot);
     }
   }
 }
 
 int FifoManager::RunGpuOnCpu(int ticks)
 {
-  const bool profile_resim = Rollback::IsResimulating();
+  const bool profile_resim =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto profile_start = profile_resim ? std::chrono::steady_clock::now() :
                                              std::chrono::steady_clock::time_point{};
   auto& command_processor = m_system.GetCommandProcessor();
@@ -492,7 +499,7 @@ int FifoManager::RunGpuOnCpu(int ticks)
   m_sync_ticks.store(std::min(available_ticks, 0));
 
   // If the GPU is idle, drop the handler.
-  const int next = available_ticks >= 0 ? -1 : -available_ticks + GPU_TIME_SLOT_SIZE;
+  const int next = available_ticks >= 0 ? -1 : -available_ticks + GetGpuTimeSlotSize();
 
   if (profile_resim)
   {
@@ -559,13 +566,13 @@ int FifoManager::WaitForGpuThread(int ticks)
 
   // If the GPU is still sleeping, wait for a longer time
   if (now < m_config_sync_gpu_min_distance)
-    return GPU_TIME_SLOT_SIZE + m_config_sync_gpu_min_distance - now;
+    return GetGpuTimeSlotSize() + m_config_sync_gpu_min_distance - now;
 
   // Wait for GPU
   if (now >= m_config_sync_gpu_max_distance)
     m_sync_wakeup_event.Wait();
 
-  return GPU_TIME_SLOT_SIZE;
+  return GetGpuTimeSlotSize();
 }
 
 void FifoManager::SyncGPUCallback(Core::System& system, u64 ticks, s64 cyclesLate)
@@ -593,9 +600,9 @@ void FifoManager::SyncGPUForRegisterAccess()
   SyncGPU(SyncGPUReason::Other);
 
   if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
-    RunGpuOnCpu(GPU_TIME_SLOT_SIZE);
+    RunGpuOnCpu(GetGpuTimeSlotSize());
   else if (m_config_sync_gpu)
-    WaitForGpuThread(GPU_TIME_SLOT_SIZE);
+    WaitForGpuThread(GetGpuTimeSlotSize());
 }
 
 // Initialize GPU - CPU thread syncing, this gives us a deterministic way to start the GPU thread.

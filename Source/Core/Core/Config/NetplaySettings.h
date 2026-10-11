@@ -59,6 +59,9 @@ extern const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK;
 extern const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING;
 extern const Info<bool> NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM;
 extern const Info<bool> NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH;
+extern const Info<bool> NETPLAY_ROLLBACK_DEEP_LOGGING;
+extern const Info<bool> NETPLAY_ROLLBACK_COARSE_FIFO_TIMING;
+extern const Info<bool> NETPLAY_ROLLBACK_LATE_VI_GUARD;
 
 extern const Info<bool> NETPLAY_SAVEDATA_LOAD;
 extern const Info<bool> NETPLAY_SAVEDATA_WRITE;

@@ -834,8 +834,10 @@ void Jit64::Trace()
 
 void Jit64::Jit(u32 em_address)
 {
-  const bool measure_resim_compile = Rollback::IsResimulating();
-  const auto compile_start = std::chrono::steady_clock::now();
+  const bool measure_resim_compile =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
+  const auto compile_start = measure_resim_compile ? std::chrono::steady_clock::now() :
+                                                     std::chrono::steady_clock::time_point{};
   Jit(em_address, true);
   if (measure_resim_compile)
   {

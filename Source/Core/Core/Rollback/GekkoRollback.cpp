@@ -430,6 +430,8 @@ struct GekkoManager
   FrameBoundary frame_boundary = FrameBoundary::VINewField;
   std::atomic<bool> vi_boundary_pending{false};
   std::atomic<bool> precise_vi_tail{false};
+  std::atomic<bool> precise_vi_guard_requested{false};
+  bool late_vi_guard = false;
   int configured_local_delay = 0;
   u32 session_id = 0;
   u64 local_input_frame = 0;
@@ -1356,6 +1358,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.compare_confirmed_ram = compare_confirmed_ram && !simulate_remote_p2 && players > 1;
   g_manager.stop_ram_compare_on_mismatch =
       stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
+  SetDetailedResimProfilingEnabled(Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING));
+  SetCoarseFifoTiming(Config::Get(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING));
+  g_manager.late_vi_guard = Config::Get(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD);
   g_manager.ram_diagnostic_dumped = false;
   const u32 configured_frame_boundary =
       std::min(Config::Get(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY),
@@ -1418,8 +1423,11 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.frame_execution_start.reset();
   g_manager.frame_execution_resim = false;
   g_manager.frame_execution_gekko_frame = -1;
-  g_manager.frame_execution_jit_start = GetResimJitCompileStats();
-  g_manager.frame_execution_event_start = GetResimEventStats();
+  if (IsDetailedResimProfilingEnabled())
+  {
+    g_manager.frame_execution_jit_start = GetResimJitCompileStats();
+    g_manager.frame_execution_event_start = GetResimEventStats();
+  }
   g_manager.perf_replay_exec_count = 0;
   g_manager.perf_replay_exec_ms = 0.0;
   g_manager.perf_replay_exec_max_ms = 0.0;
@@ -1571,6 +1579,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.stop_requested.store(false, std::memory_order_relaxed);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
+  g_manager.precise_vi_guard_requested.store(false, std::memory_order_relaxed);
   g_manager.active.store(true, std::memory_order_release);
 
   NOTICE_LOG_FMT(
@@ -1595,6 +1604,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       g_manager.full_scan_benchmark,
       g_manager.full_scan_keep_tracking,
       g_manager.compare_confirmed_ram, FrameBoundaryName(g_manager.frame_boundary));
+  NOTICE_LOG_FMT(CORE, "GekkoNet optimization experiment: coarse_fifo_timing={}, late_vi_guard={}",
+                 UseCoarseFifoTiming(), g_manager.late_vi_guard);
   return true;
 }
 
@@ -1608,6 +1619,7 @@ void StopGekkoSession()
   g_manager.active.store(false, std::memory_order_release);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
+  g_manager.precise_vi_guard_requested.store(false, std::memory_order_relaxed);
 
   if (g_manager.session)
   {
@@ -1631,6 +1643,8 @@ void StopGekkoSession()
     g_manager.ring->Reset(Core::System::GetInstance());
   g_manager.ring.reset();
   Rollback::SetResimulating(false);
+  Rollback::SetDetailedResimProfilingEnabled(false);
+  Rollback::SetCoarseFifoTiming(false);
   if (had_session)
     NOTICE_LOG_FMT(CORE, "GekkoNet: Session stopped");
 }
@@ -1696,7 +1710,9 @@ static void SubmitLocalInput()
     local_status = Pad::GetStatus(LOCAL_PAD);
   }
   const bool input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
-  if (g_manager.debug_p2_cstick && input_spam_active)
+  // This diagnostic targets the network seat, not whichever executable happened to receive the
+  // setting. Matchmaking can assign either local process to either seat.
+  if (g_manager.debug_p2_cstick && g_manager.local_player == 2 && input_spam_active)
   {
     ApplyDebugCStickPattern(&local_status,
                             g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
@@ -2484,8 +2500,11 @@ static bool PrepareQueuedFrame(Core::System& system)
       g_manager.frame_execution_start = advance_now;
       g_manager.frame_execution_resim = resimulating;
       g_manager.frame_execution_gekko_frame = event.frame;
-      g_manager.frame_execution_jit_start = GetResimJitCompileStats();
-      g_manager.frame_execution_event_start = GetResimEventStats();
+      if (IsDetailedResimProfilingEnabled())
+      {
+        g_manager.frame_execution_jit_start = GetResimJitCompileStats();
+        g_manager.frame_execution_event_start = GetResimEventStats();
+      }
       const auto frame_setup_start =
           resimulating ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       if (g_manager.frame_boundary == FrameBoundary::BrawlHook)
@@ -2527,7 +2546,7 @@ static bool PrepareQueuedFrame(Core::System& system)
         DEBUG_LOG_FMT(CORE, "GekkoNet: Replaying frame {} (rollback={}, runahead={})", event.frame,
                       event.rolling_back, event.running_ahead);
       }
-      if (resimulating)
+      if (resimulating && IsDetailedResimProfilingEnabled())
       {
         RecordResimEvent(
             ResimEventCategory::FrameSetup,
@@ -2577,22 +2596,26 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     const double elapsed = ElapsedMs(*g_manager.frame_execution_start);
     if (g_manager.frame_execution_resim)
     {
-      const ResimJitCompileStats jit_now = GetResimJitCompileStats();
-      const u64 jit_blocks = jit_now.blocks - g_manager.frame_execution_jit_start.blocks;
-      const u64 jit_nanoseconds =
-          jit_now.nanoseconds - g_manager.frame_execution_jit_start.nanoseconds;
-      const ResimEventStats event_now = GetResimEventStats();
+      u64 jit_blocks = 0;
+      u64 jit_nanoseconds = 0;
       ++g_manager.perf_replay_exec_count;
       g_manager.perf_replay_exec_ms += elapsed;
       g_manager.perf_replay_exec_max_ms = std::max(g_manager.perf_replay_exec_max_ms, elapsed);
-      g_manager.perf_replay_jit_blocks += jit_blocks;
-      g_manager.perf_replay_jit_nanoseconds += jit_nanoseconds;
-      for (std::size_t i = 0; i < g_manager.perf_replay_events.nanoseconds.size(); ++i)
+      if (IsDetailedResimProfilingEnabled())
       {
-        g_manager.perf_replay_events.nanoseconds[i] +=
-            event_now.nanoseconds[i] - g_manager.frame_execution_event_start.nanoseconds[i];
-        g_manager.perf_replay_events.callbacks[i] +=
-            event_now.callbacks[i] - g_manager.frame_execution_event_start.callbacks[i];
+        const ResimJitCompileStats jit_now = GetResimJitCompileStats();
+        jit_blocks = jit_now.blocks - g_manager.frame_execution_jit_start.blocks;
+        jit_nanoseconds = jit_now.nanoseconds - g_manager.frame_execution_jit_start.nanoseconds;
+        const ResimEventStats event_now = GetResimEventStats();
+        g_manager.perf_replay_jit_blocks += jit_blocks;
+        g_manager.perf_replay_jit_nanoseconds += jit_nanoseconds;
+        for (std::size_t i = 0; i < g_manager.perf_replay_events.nanoseconds.size(); ++i)
+        {
+          g_manager.perf_replay_events.nanoseconds[i] +=
+              event_now.nanoseconds[i] - g_manager.frame_execution_event_start.nanoseconds[i];
+          g_manager.perf_replay_events.callbacks[i] +=
+              event_now.callbacks[i] - g_manager.frame_execution_event_start.callbacks[i];
+        }
       }
       if (g_manager.rollback_burst_start)
         g_manager.current_burst_exec_ms += elapsed;
@@ -2762,7 +2785,27 @@ void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
       (g_manager.frame_boundary == FrameBoundary::VIBeginField && next_is_begin_field) ||
       (g_manager.frame_boundary == FrameBoundary::VIEndField && next_is_end_field) ||
       (g_manager.frame_boundary == FrameBoundary::VINewField && next_is_new_field);
-  g_manager.precise_vi_tail.store(active && selected, std::memory_order_release);
+  if (active && selected && g_manager.late_vi_guard)
+  {
+    g_manager.precise_vi_tail.store(false, std::memory_order_release);
+    g_manager.precise_vi_guard_requested.store(true, std::memory_order_release);
+  }
+  else
+  {
+    g_manager.precise_vi_guard_requested.store(false, std::memory_order_release);
+    g_manager.precise_vi_tail.store(active && selected, std::memory_order_release);
+  }
+}
+
+bool ConsumePreciseVIGuardRequest()
+{
+  return g_manager.precise_vi_guard_requested.exchange(false, std::memory_order_acq_rel);
+}
+
+void ArmPreciseVITailFromGuard()
+{
+  if (g_manager.active.load(std::memory_order_acquire) && g_manager.late_vi_guard)
+    g_manager.precise_vi_tail.store(true, std::memory_order_release);
 }
 
 bool IsPreciseVITailArmed()

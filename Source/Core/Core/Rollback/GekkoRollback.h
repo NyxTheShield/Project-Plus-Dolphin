@@ -56,6 +56,8 @@ void RunPendingVIBoundary(Core::System& system);
 // instruction-precise point independent of each client's JIT cache and block layout.
 void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
                             bool next_is_new_field);
+bool ConsumePreciseVIGuardRequest();
+void ArmPreciseVITailFromGuard();
 bool IsPreciseVITailArmed();
 bool IsDeterminismDiagnosticsEnabled();
 // Keeps a bounded history of host-subsystem writes into guest RAM for mismatch diagnostics.

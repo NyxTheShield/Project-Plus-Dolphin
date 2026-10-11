@@ -73,6 +73,12 @@ const Info<bool> NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM{
     {System::Main, "NetPlay", "RollbackCompareConfirmedRAM"}, false};
 const Info<bool> NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH{
     {System::Main, "NetPlay", "RollbackStopRAMCompareOnMismatch"}, false};
+const Info<bool> NETPLAY_ROLLBACK_DEEP_LOGGING{
+    {System::Main, "NetPlay", "RollbackDeepLogging"}, false};
+const Info<bool> NETPLAY_ROLLBACK_COARSE_FIFO_TIMING{
+    {System::Main, "NetPlay", "RollbackCoarseFifoTiming"}, false};
+const Info<bool> NETPLAY_ROLLBACK_LATE_VI_GUARD{
+    {System::Main, "NetPlay", "RollbackLateVIGuard"}, false};
 
 const Info<bool> NETPLAY_SAVEDATA_LOAD{{System::Main, "NetPlay", "SyncSaves"}, true};
 const Info<bool> NETPLAY_SAVEDATA_WRITE{{System::Main, "NetPlay", "WriteSaveData"}, false};

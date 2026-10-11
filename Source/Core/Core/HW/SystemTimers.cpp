@@ -44,6 +44,8 @@ IPC_HLE_PERIOD: For the Wii Remote this is the call schedule:
 
 #include "Core/HW/SystemTimers.h"
 
+#include <algorithm>
+
 #include "AudioCommon/Mixer.h"
 #include "Common/CommonTypes.h"
 #include "Common/Timer.h"
@@ -58,6 +60,7 @@ IPC_HLE_PERIOD: For the Wii Remote this is the call schedule:
 #include "Core/IOS/IOS.h"
 #include "Core/PatchEngine.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 #include "VideoCommon/Fifo.h"
 #include "VideoCommon/PerformanceMetrics.h"
@@ -121,8 +124,24 @@ void SystemTimersManager::VICallback(Core::System& system, u64 userdata, s64 cyc
   auto& core_timing = system.GetCoreTiming();
   auto& vi = system.GetVideoInterface();
   vi.Update(core_timing.GetTicks() - cycles_late);
-  core_timing.ScheduleEvent(vi.GetTicksPerHalfLine() - cycles_late,
+  const s64 half_line_ticks = vi.GetTicksPerHalfLine();
+  if (Rollback::ConsumePreciseVIGuardRequest())
+  {
+    // JIT blocks can overrun a timing event by the remainder of the current block. Leave a
+    // conservative guard, then interpret only the short tail instead of the entire half-line.
+    constexpr s64 GUARD_TICKS = 4096;
+    const s64 guard_delay = std::max<s64>(0, half_line_ticks - GUARD_TICKS - cycles_late);
+    core_timing.ScheduleEvent(guard_delay,
+                              system.GetSystemTimers().m_event_type_rollback_vi_guard);
+  }
+  core_timing.ScheduleEvent(half_line_ticks - cycles_late,
                             system.GetSystemTimers().m_event_type_vi);
+}
+
+void SystemTimersManager::RollbackVIGuardCallback(Core::System& system, u64 userdata,
+                                                  s64 cycles_late)
+{
+  Rollback::ArmPreciseVITailFromGuard();
 }
 
 void SystemTimersManager::DecrementerCallback(Core::System& system, u64 userdata, s64 cycles_late)
@@ -267,6 +286,8 @@ void SystemTimersManager::Init()
 
   m_event_type_decrementer = core_timing.RegisterEvent("DecCallback", DecrementerCallback);
   m_event_type_vi = core_timing.RegisterEvent("VICallback", VICallback);
+  m_event_type_rollback_vi_guard =
+      core_timing.RegisterEvent("RollbackVIGuard", RollbackVIGuardCallback);
   m_event_type_dsp = core_timing.RegisterEvent("DSPCallback", DSPCallback);
   m_event_type_audio_dma = core_timing.RegisterEvent("AudioDMACallback", AudioDMACallback);
   m_event_type_ipc_hle =

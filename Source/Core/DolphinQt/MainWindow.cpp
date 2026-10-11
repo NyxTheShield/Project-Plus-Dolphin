@@ -1994,6 +1994,24 @@ void MainWindow::StartManagedNetPlay()
       compare_ram_it->second.get<bool>();
   Config::SetCurrent(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM,
                      m_managed_session->compare_confirmed_ram);
+  const auto deep_logging_it = ticket.find("enable_deep_logging");
+  m_managed_session->deep_logging =
+      deep_logging_it != ticket.end() && deep_logging_it->second.is<bool>() &&
+      deep_logging_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_DEEP_LOGGING,
+                     m_managed_session->deep_logging);
+  const auto coarse_fifo_it = ticket.find("coarse_fifo_timing");
+  m_managed_session->coarse_fifo_timing =
+      coarse_fifo_it != ticket.end() && coarse_fifo_it->second.is<bool>() &&
+      coarse_fifo_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING,
+                     m_managed_session->coarse_fifo_timing);
+  const auto late_vi_guard_it = ticket.find("late_vi_guard");
+  m_managed_session->late_vi_guard =
+      late_vi_guard_it != ticket.end() && late_vi_guard_it->second.is<bool>() &&
+      late_vi_guard_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD,
+                     m_managed_session->late_vi_guard);
   if (m_managed_session->test_solo)
   {
     // Fake matchmaking supports both the simulated-P2 network harness and GekkoNet's native
@@ -2232,6 +2250,17 @@ void MainWindow::PollManagedNetPlayReady()
     }
     server->AdjustMinimumPadBufferSize(rollback_window);
     server->SetManagedGekkoPing(ping);
+
+    // NetPlayJoin saves the hidden dialog's controls. Reapply ticket-owned diagnostics and
+    // experiments afterwards so a stale persistent checkbox cannot override an explicit false.
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM,
+                       m_managed_session->compare_confirmed_ram);
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_DEEP_LOGGING,
+                       m_managed_session->deep_logging);
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING,
+                       m_managed_session->coarse_fifo_timing);
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD,
+                       m_managed_session->late_vi_guard);
     INFO_LOG_FMT(NETPLAY,
                  "Managed session latency settings: ping={} ms, host_input_delay={}, "
                  "input_delay_mode={}, rollback_window={}{}",

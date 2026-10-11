@@ -34,6 +34,8 @@ namespace
 {
 std::atomic<bool> s_in_snapshot{false};
 std::atomic<bool> s_resimulating{false};
+std::atomic<bool> s_detailed_resim_profiling{false};
+std::atomic<bool> s_coarse_fifo_timing{false};
 std::atomic<u64> s_resim_jit_compile_blocks{0};
 std::atomic<u64> s_resim_jit_compile_nanoseconds{0};
 std::atomic<u64> s_rollback_burst_sequence{0};
@@ -299,6 +301,26 @@ void SetResimulating(bool resimulating)
 {
   s_resimulating.store(resimulating, std::memory_order_relaxed);
   VideoCommon_SetSkipRender(resimulating);
+}
+
+bool IsDetailedResimProfilingEnabled()
+{
+  return s_detailed_resim_profiling.load(std::memory_order_relaxed);
+}
+
+void SetDetailedResimProfilingEnabled(bool enabled)
+{
+  s_detailed_resim_profiling.store(enabled, std::memory_order_relaxed);
+}
+
+bool UseCoarseFifoTiming()
+{
+  return s_coarse_fifo_timing.load(std::memory_order_relaxed);
+}
+
+void SetCoarseFifoTiming(bool enabled)
+{
+  s_coarse_fifo_timing.store(enabled, std::memory_order_relaxed);
 }
 
 void RecordRollbackBurst(u64 duration_ns)

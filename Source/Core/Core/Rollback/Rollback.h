@@ -107,6 +107,12 @@ bool InSnapshotDoState();
 // True while frames are re-run after a load: host rendering is skipped and their audio dropped.
 bool IsResimulating();
 void SetResimulating(bool resimulating);
+// Detailed subsystem profiling performs clock reads and aggregation in hot emulation paths.
+// Keep it independent from the lightweight per-frame rollback timing.
+bool IsDetailedResimProfilingEnabled();
+void SetDetailedResimProfilingEnabled(bool enabled);
+bool UseCoarseFifoTiming();
+void SetCoarseFifoTiming(bool enabled);
 void RecordResimJitCompile(u64 nanoseconds);
 ResimJitCompileStats GetResimJitCompileStats();
 void RecordResimGuestSlice(u32 pc, u64 nanoseconds, u64 cycles);

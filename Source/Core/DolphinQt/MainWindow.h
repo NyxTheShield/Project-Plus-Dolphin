@@ -294,6 +294,9 @@ private:
     u32 input_delay_reduction = 2;
     std::string input_delay_mode = "safe";
     bool compare_confirmed_ram = false;
+    bool deep_logging = false;
+    bool coarse_fifo_timing = false;
+    bool late_vi_guard = false;
     bool latency_sampling_started = false;
     bool start_requested = false;
     bool started_reported = false;

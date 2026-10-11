@@ -2088,7 +2088,8 @@ void ClearDCacheLineFromJit(MMU& mmu, u32 address)
 template <std::unsigned_integral T>
 Common::MakeAtLeastU32<T> ReadFromJit(MMU& mmu, u32 address)
 {
-  const bool profile = Rollback::IsResimulating();
+  const bool profile =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto start = profile ? std::chrono::steady_clock::now() :
                                std::chrono::steady_clock::time_point{};
   const Common::MakeAtLeastU32<T> result = mmu.Read<T>(address);
@@ -2109,7 +2110,8 @@ template u64 ReadFromJit<u64>(MMU& mmu, u32 address);
 template <std::unsigned_integral T>
 void WriteFromJit(MMU& mmu, Common::MakeAtLeastU32<T> var, u32 address)
 {
-  const bool profile = Rollback::IsResimulating();
+  const bool profile =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto start = profile ? std::chrono::steady_clock::now() :
                                std::chrono::steady_clock::time_point{};
   mmu.Write<T>(var, address);
@@ -2127,7 +2129,8 @@ template void WriteFromJit<u32>(MMU& mmu, u32 var, u32 address);
 template void WriteFromJit<u64>(MMU& mmu, u64 var, u32 address);
 void WriteU16SwapFromJit(MMU& mmu, u32 var, u32 address)
 {
-  const bool profile = Rollback::IsResimulating();
+  const bool profile =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto start = profile ? std::chrono::steady_clock::now() :
                                std::chrono::steady_clock::time_point{};
   mmu.Write_U16_Swap(var, address);
@@ -2139,7 +2142,8 @@ void WriteU16SwapFromJit(MMU& mmu, u32 var, u32 address)
 }
 void WriteU32SwapFromJit(MMU& mmu, u32 var, u32 address)
 {
-  const bool profile = Rollback::IsResimulating();
+  const bool profile =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto start = profile ? std::chrono::steady_clock::now() :
                                std::chrono::steady_clock::time_point{};
   mmu.Write_U32_Swap(var, address);
@@ -2151,7 +2155,8 @@ void WriteU32SwapFromJit(MMU& mmu, u32 var, u32 address)
 }
 void WriteU64SwapFromJit(MMU& mmu, u64 var, u32 address)
 {
-  const bool profile = Rollback::IsResimulating();
+  const bool profile =
+      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
   const auto start = profile ? std::chrono::steady_clock::now() :
                                std::chrono::steady_clock::time_point{};
   mmu.Write_U64_Swap(var, address);
