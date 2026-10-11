@@ -448,7 +448,8 @@ void NetPlayClient::OnData(sf::Packet& packet)
   MessageID mid;
   packet >> mid;
 
-  INFO_LOG_FMT(NETPLAY, "Got server message: {:x}", static_cast<u8>(mid));
+  if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+    INFO_LOG_FMT(NETPLAY, "Got server message: {:x}", static_cast<u8>(mid));
 
   switch (mid)
   {
@@ -1904,12 +1905,14 @@ void NetPlayClient::ThreadFunc()
     net = enet_host_service(m_client, &netEvent, 250);
     while (!m_async_queue.Empty())
     {
-      INFO_LOG_FMT(NETPLAY, "Processing async queue event.");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(NETPLAY, "Processing async queue event.");
       {
         auto& e = m_async_queue.Front();
         Send(e.packet, e.channel_id);
       }
-      INFO_LOG_FMT(NETPLAY, "Processing async queue event done.");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(NETPLAY, "Processing async queue event done.");
       m_async_queue.Pop();
     }
     if (net > 0)
@@ -1921,7 +1924,8 @@ void NetPlayClient::ThreadFunc()
         INFO_LOG_FMT(NETPLAY, "enet_host_service: connect event");
         break;
       case ENET_EVENT_TYPE_RECEIVE:
-        INFO_LOG_FMT(NETPLAY, "enet_host_service: receive event");
+        if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+          INFO_LOG_FMT(NETPLAY, "enet_host_service: receive event");
 
         rpac.append(netEvent.packet->data, netEvent.packet->dataLength);
         OnData(rpac);
@@ -1940,7 +1944,10 @@ void NetPlayClient::ThreadFunc()
       default:
         // not a valid switch case due to not technically being part of the enum
         if (static_cast<int>(netEvent.type) == Common::ENet::SKIPPABLE_EVENT)
-          INFO_LOG_FMT(NETPLAY, "enet_host_service: skippable packet event");
+        {
+          if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+            INFO_LOG_FMT(NETPLAY, "enet_host_service: skippable packet event");
+        }
         else
           ERROR_LOG_FMT(NETPLAY, "enet_host_service: unknown event type: {}",
                         static_cast<int>(netEvent.type));
@@ -1949,7 +1956,8 @@ void NetPlayClient::ThreadFunc()
     }
     else if (net == 0)
     {
-      INFO_LOG_FMT(NETPLAY, "enet_host_service: no event occurred");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(NETPLAY, "enet_host_service: no event occurred");
     }
     else
     {

@@ -17,6 +17,7 @@
 
 #include "Core/CPUThreadConfigCallback.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/Config/NetplaySettings.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
@@ -144,7 +145,8 @@ void PowerPCManager::DoState(PointerWrap& p,
 
     if (!m_ppc_state.m_enable_dcache)
     {
-      INFO_LOG_FMT(POWERPC, "Flushing data cache");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(POWERPC, "Flushing data cache");
       m_ppc_state.dCache.FlushAll(memory);
     }
 
@@ -294,7 +296,8 @@ void PowerPCManager::RefreshConfig()
 
   if (old_enable_dcache && !m_ppc_state.m_enable_dcache)
   {
-    INFO_LOG_FMT(POWERPC, "Flushing data cache");
+    if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+      INFO_LOG_FMT(POWERPC, "Flushing data cache");
     m_ppc_state.dCache.FlushAll(m_system.GetMemory());
   }
 }

@@ -209,6 +209,8 @@ GEKKONET_API int gekko_current_frame(GekkoSession* session);
 
 GEKKONET_API int gekko_last_received_frame(GekkoSession* session, int player);
 
+GEKKONET_API int gekko_incorrect_prediction_frame(GekkoSession* session, int player);
+
 GEKKONET_API void gekko_network_stats(GekkoSession* session, int player, GekkoNetworkStats* stats);
 
 GEKKONET_API void gekko_network_poll(GekkoSession* session);

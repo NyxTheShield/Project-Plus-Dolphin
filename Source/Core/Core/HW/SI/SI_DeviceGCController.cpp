@@ -141,6 +141,11 @@ void CSIDevice_GCController::HandleMoviePadStatus(Movie::MovieManager& movie, in
 
 GCPadStatus CSIDevice_GCController::GetPadStatus()
 {
+  // GekkoNet selects one input for the entire emulated frame. Return that latch before touching
+  // the physical controller so repeated SI reads and rollback replays cannot sample host input.
+  if (const auto rb_pad = Rollback::GetRollbackPad(m_device_number))
+    return *rb_pad;
+
   GCPadStatus pad_status = {};
 
   // For netplay, the local controllers are polled in GetNetPads(), and
@@ -151,9 +156,6 @@ GCPadStatus CSIDevice_GCController::GetPadStatus()
   }
 
   HandleMoviePadStatus(m_system.GetMovie(), m_device_number, &pad_status);
-
-  if (const auto rb_pad = Rollback::GetRollbackPad(m_device_number))
-    pad_status = *rb_pad;
 
   // Our GCAdapter code sets PAD_GET_ORIGIN when a new device has been connected.
   // Watch for this to calibrate real controllers on connection.

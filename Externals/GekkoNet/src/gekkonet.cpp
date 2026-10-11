@@ -94,6 +94,11 @@ int gekko_last_received_frame(GekkoSession* session, int player)
     return session->LastReceivedFrame(player);
 }
 
+int gekko_incorrect_prediction_frame(GekkoSession* session, int player)
+{
+    return session->IncorrectPredictionFrame(player);
+}
+
 void gekko_network_stats(GekkoSession* session, int player, GekkoNetworkStats* stats)
 {
     session->NetworkStats(player, stats);

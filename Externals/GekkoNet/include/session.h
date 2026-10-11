@@ -24,6 +24,7 @@ struct GekkoSession {
     virtual f32 FramesAhead() = 0;
     virtual i32 CurrentFrame() = 0;
     virtual i32 LastReceivedFrame(i32 player) = 0;
+    virtual i32 IncorrectPredictionFrame(i32 player) = 0;
     virtual void NetworkStats(i32 player, GekkoNetworkStats* stats) = 0;
     virtual void NetworkPoll() = 0;
     virtual ~GekkoSession() = default;
@@ -56,6 +57,8 @@ namespace Gekko {
         i32 CurrentFrame() override { return _sync.GetCurrentFrame(); }
 
         i32 LastReceivedFrame(i32 player) override { return _sync.GetLastReceivedFrom(player); }
+
+        i32 IncorrectPredictionFrame(i32 player) override { return _sync.GetIncorrectFrame(player); }
 
         void NetworkStats(i32 player, GekkoNetworkStats* stats) override;
 
@@ -146,6 +149,8 @@ namespace Gekko {
 
         i32 LastReceivedFrame(i32 player) override { return _sync.GetLastReceivedFrom(player); }
 
+        i32 IncorrectPredictionFrame(i32 player) override { return _sync.GetIncorrectFrame(player); }
+
         void NetworkStats(i32 player, GekkoNetworkStats* stats) override;
 
         void NetworkPoll() override;
@@ -202,6 +207,8 @@ namespace Gekko {
         i32 CurrentFrame() override { return _sync.GetCurrentFrame(); }
 
         i32 LastReceivedFrame(i32 player) override { return _sync.GetLastReceivedFrom(player); }
+
+        i32 IncorrectPredictionFrame(i32 player) override { return _sync.GetIncorrectFrame(player); }
 
         void NetworkStats(i32 player, GekkoNetworkStats* stats) override;
 

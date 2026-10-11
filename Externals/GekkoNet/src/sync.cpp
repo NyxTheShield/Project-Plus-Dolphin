@@ -138,6 +138,14 @@ Frame Gekko::SyncSystem::GetMinIncorrectFrame()
 	return min == INT_MAX ? GameInput::NULL_FRAME : min;
 }
 
+Frame Gekko::SyncSystem::GetIncorrectFrame(Handle player)
+{
+    if (player >= 0 && player < _num_players) {
+        return _input_buffers[player].GetIncorrectPredictionFrame();
+    }
+    return GameInput::NULL_FRAME;
+}
+
 Frame Gekko::SyncSystem::GetMinReceivedFrame()
 {
 	Frame min = INT_MAX;

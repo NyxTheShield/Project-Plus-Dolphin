@@ -53,6 +53,8 @@ const Info<bool> NETPLAY_BRAWL_MUSIC_OFF{{System::Main, "NetPlay", "BrawlMusicOf
 const Info<bool> NETPLAY_SPECTATOR_MODE{{System::Main, "NetPlay", "IsSpectator"}, false};
 const Info<bool> NETPLAY_ROLLBACK_DEBUG_P2_CSTICK{
     {System::Main, "NetPlay", "RollbackDebugP2CStick"}, false};
+const Info<bool> NETPLAY_ROLLBACK_DEEP_LOGGING{
+    {System::Main, "NetPlay", "RollbackDeepLogging"}, false};
 const Info<bool> NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2{
     {System::Main, "NetPlay", "RollbackSimulateRemoteP2"}, false};
 const Info<bool> NETPLAY_ROLLBACK_STRESS_TEST{

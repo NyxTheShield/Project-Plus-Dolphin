@@ -38,6 +38,7 @@ namespace Gekko {
 		void SetCurrentFrame(Frame frame);
 
 		Frame GetMinIncorrectFrame();
+		Frame GetIncorrectFrame(Handle player);
 
 		Frame GetMinReceivedFrame();
 

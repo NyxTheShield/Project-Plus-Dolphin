@@ -281,10 +281,12 @@ void NetPlayServer::ThreadFunc()
     net = enet_host_service(m_server, &netEvent, 1000);
     while (!m_async_queue.Empty())
     {
-      INFO_LOG_FMT(NETPLAY, "Processing async queue event.");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(NETPLAY, "Processing async queue event.");
       {
         std::lock_guard lkp(m_crit.players);
-        INFO_LOG_FMT(NETPLAY, "Locked player mutex.");
+        if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+          INFO_LOG_FMT(NETPLAY, "Locked player mutex.");
         auto& e = m_async_queue.Front();
         if (e.target_mode == TargetMode::Only)
         {
@@ -296,7 +298,8 @@ void NetPlayServer::ThreadFunc()
           SendToClients(e.packet, e.target_pid, e.channel_id);
         }
       }
-      INFO_LOG_FMT(NETPLAY, "Processing async queue event done.");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(NETPLAY, "Processing async queue event done.");
       m_async_queue.Pop();
     }
     if (net > 0)
@@ -313,7 +316,8 @@ void NetPlayServer::ThreadFunc()
       break;
       case ENET_EVENT_TYPE_RECEIVE:
       {
-        INFO_LOG_FMT(NETPLAY, "enet_host_service: receive event");
+        if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+          INFO_LOG_FMT(NETPLAY, "enet_host_service: receive event");
 
         sf::Packet rpac;
         rpac.append(netEvent.packet->data, netEvent.packet->dataLength);
@@ -359,7 +363,8 @@ void NetPlayServer::ThreadFunc()
           }
           else
           {
-            INFO_LOG_FMT(NETPLAY, "successfully handled packet from client {}", client.pid);
+            if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+              INFO_LOG_FMT(NETPLAY, "successfully handled packet from client {}", client.pid);
           }
         }
         enet_packet_destroy(netEvent.packet);
@@ -394,7 +399,10 @@ void NetPlayServer::ThreadFunc()
       default:
         // not a valid switch case due to not technically being part of the enum
         if (static_cast<int>(netEvent.type) == Common::ENet::SKIPPABLE_EVENT)
-          INFO_LOG_FMT(NETPLAY, "enet_host_service: skippable packet event");
+        {
+          if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+            INFO_LOG_FMT(NETPLAY, "enet_host_service: skippable packet event");
+        }
         else
           ERROR_LOG_FMT(NETPLAY, "enet_host_service: unknown event type: {}",
                         static_cast<int>(netEvent.type));
@@ -403,7 +411,8 @@ void NetPlayServer::ThreadFunc()
     }
     else if (net == 0)
     {
-      INFO_LOG_FMT(NETPLAY, "enet_host_service: no event occurred");
+      if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+        INFO_LOG_FMT(NETPLAY, "enet_host_service: no event occurred");
     }
     else
     {
@@ -826,8 +835,9 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   MessageID mid;
   packet >> mid;
 
-  INFO_LOG_FMT(NETPLAY, "Got client message: {:x} from client {}", static_cast<u8>(mid),
-               player.pid);
+  if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
+    INFO_LOG_FMT(NETPLAY, "Got client message: {:x} from client {}", static_cast<u8>(mid),
+                 player.pid);
 
   // don't need lock because this is the only thread that modifies the players
   // only need locks for writes to m_players in this thread

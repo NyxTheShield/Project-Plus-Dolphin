@@ -1962,6 +1962,12 @@ void MainWindow::StartManagedNetPlay()
       full_scan_it->second.get<bool>();
   Config::SetCurrent(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK,
                      m_managed_session->full_scan_benchmark);
+  const auto deep_logging_it = ticket.find("enable_deep_logging");
+  m_managed_session->deep_logging =
+      deep_logging_it != ticket.end() && deep_logging_it->second.is<bool>() &&
+      deep_logging_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_DEEP_LOGGING,
+                     m_managed_session->deep_logging);
   const auto input_delay_it = ticket.find("input_delay_override");
   if (input_delay_it != ticket.end() && input_delay_it->second.is<double>())
   {
