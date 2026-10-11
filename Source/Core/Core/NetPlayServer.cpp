@@ -477,7 +477,8 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     u8 requested_seat = 0;
     if (!managed)
       return ConnectionError::ManagedSessionMismatch;
-    received_packet >> match_id >> player_id >> requested_seat;
+    received_packet >> match_id >> player_id >> requested_seat >> new_player.rollback_window;
+    new_player.rollback_window = std::clamp(new_player.rollback_window, 3u, 4u);
     if (match_id != m_managed_match_id || requested_seat == 0 ||
         requested_seat >= m_managed_player_ids.size() ||
         m_managed_player_ids[requested_seat] != player_id)
@@ -2526,6 +2527,15 @@ void NetPlayServer::SetManagedPlayers(std::string match_id, std::vector<std::str
   std::lock_guard lkp(m_crit.players);
   m_managed_match_id = std::move(match_id);
   m_managed_player_ids = std::move(player_ids);
+}
+
+u32 NetPlayServer::GetManagedRollbackWindow()
+{
+  std::lock_guard lkp(m_crit.players);
+  u32 rollback_window = 3;
+  for (const Client& player : std::views::values(m_players))
+    rollback_window = std::max(rollback_window, player.rollback_window);
+  return rollback_window;
 }
 
 PlayerId NetPlayServer::GiveFirstAvailableIDTo(ENetPeer* player)

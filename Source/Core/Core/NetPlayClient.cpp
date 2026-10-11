@@ -79,14 +79,11 @@ namespace NetPlay
 {
 using namespace WiimoteCommon;
 
-u32 GetGekkoInputDelayForPing(const u32 ping_ms, const u32 reduction)
+u32 GetGekkoInputDelayForPing(const u32 ping_ms)
 {
-  if (ping_ms < 100)
-    return 1;
-
   const u64 frame_pairs = (static_cast<u64>(ping_ms) * 3 + 99) / 100;
-  const int delay = static_cast<int>(frame_pairs) - static_cast<int>(std::min(reduction, 60u));
-  return static_cast<u32>(std::clamp(delay, 0, 60));
+  const int delay = static_cast<int>(frame_pairs) - 3;
+  return static_cast<u32>(std::clamp(delay, 1, 60));
 }
 
 static std::mutex crit_netplay_client;
@@ -323,6 +320,7 @@ bool NetPlayClient::Connect()
     packet << m_managed_config->match_id;
     packet << m_managed_config->player_id;
     packet << static_cast<u8>(m_managed_config->seat);
+    packet << m_managed_config->rollback_window;
   }
   Send(packet);
   enet_host_flush(m_client);
@@ -917,11 +915,9 @@ void NetPlayClient::OnGekkoAutoPing(sf::Packet& packet)
   if (!m_managed_config || !m_managed_config->auto_input_delay)
     return;
 
-  const u32 delay =
-      GetGekkoInputDelayForPing(ping, m_managed_config->input_delay_reduction);
+  const u32 delay = GetGekkoInputDelayForPing(ping);
   AdjustPlayerPadBufferSize(delay);
-  INFO_LOG_FMT(NETPLAY, "Managed input delay: ping={} ms, reduction={}, local_delay={}", ping,
-               m_managed_config->input_delay_reduction, delay);
+  INFO_LOG_FMT(NETPLAY, "Managed input delay: ping={} ms, local_delay={}", ping, delay);
 }
 
 void NetPlayClient::OnHostInputAuthority(sf::Packet& packet)

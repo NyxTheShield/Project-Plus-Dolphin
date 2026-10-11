@@ -58,6 +58,7 @@ public:
   void SetPadMapping(const PadMappingArray& mappings);
   void SetManagedRollbackEndpoints(std::vector<std::string> endpoints);
   void SetManagedPlayers(std::string match_id, std::vector<std::string> player_ids);
+  u32 GetManagedRollbackWindow();
 
   GBAConfigArray GetGBAConfig() const;
   void SetGBAConfig(const GBAConfigArray& configs, bool update_rom);
@@ -94,6 +95,7 @@ private:
     u32 ping = 0;
     u32 current_game = 0;
     unsigned int buffer;
+    u32 rollback_window = 3;
 
     Common::QoSSession qos_session;
 

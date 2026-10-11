@@ -44,7 +44,7 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
-u32 GetGekkoInputDelayForPing(u32 ping_ms, u32 reduction = 2);
+u32 GetGekkoInputDelayForPing(u32 ping_ms);
 
 struct ManagedNetPlayConfig
 {
@@ -55,7 +55,7 @@ struct ManagedNetPlayConfig
   int seat = 0;
   int player_count = 0;
   bool coordinator = false;
-  u32 input_delay_reduction = 2;
+  u32 rollback_window = 3;
   bool auto_input_delay = true;
 };
 
