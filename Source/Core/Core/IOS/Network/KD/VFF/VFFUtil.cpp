@@ -403,6 +403,73 @@ ErrorCode ReadFromVFF(const std::string& path, const std::string& filename,
   return return_value;
 }
 
+ErrorCode ReadDirectoryFromVFF(const std::string& path, const std::string& directory,
+                               const std::shared_ptr<FS::FileSystem>& fs,
+                               std::vector<VFFFile>& out)
+{
+  VffFatFsCallbacks callbacks;
+  ErrorCode return_value;
+  Common::RunInFatFsContext(callbacks, [&] {
+    auto temp = fs->OpenFile(PID_KD, PID_KD, path, FS::Mode::ReadWrite);
+    if (!temp)
+    {
+      return_value = WC24_ERR_NOT_FOUND;
+      return;
+    }
+
+    callbacks.m_vff = &*temp;
+
+    FATFS fatfs{};
+    if (f_mount(&fatfs, "", 0) != FR_OK || vff_mount(callbacks.m_vff, &fatfs) != FR_OK)
+    {
+      ERROR_LOG_FMT(IOS_WC24, "Failed to mount VFF at: {}", path);
+      return_value = WC24_ERR_BROKEN;
+      return;
+    }
+
+    Common::ScopeGuard unmount_guard{[] { f_unmount(""); }};
+    DIR dir{};
+    const FRESULT open_result = f_opendir(&dir, directory.c_str());
+    if (open_result != FR_OK)
+    {
+      return_value = WC24_ERR_NOT_FOUND;
+      return;
+    }
+
+    Common::ScopeGuard close_guard{[&] { f_closedir(&dir); }};
+    out.clear();
+    while (true)
+    {
+      FILINFO info{};
+      const FRESULT read_result = f_readdir(&dir, &info);
+      if (read_result != FR_OK)
+      {
+        ERROR_LOG_FMT(IOS_WC24, "Failed to read directory {} in VFF at: {}", directory, path);
+        return_value = WC24_ERR_FILE_READ;
+        return;
+      }
+      if (info.fname[0] == '\0')
+        break;
+      if ((info.fattrib & AM_DIR) != 0)
+        continue;
+
+      VFFFile file{.name = info.fname, .data = std::vector<u8>(info.fsize)};
+      const std::string filename = fmt::format("{}/{}", directory, file.name);
+      const ErrorCode read_file_result = ReadFile(filename, file.data);
+      if (read_file_result != WC24_OK)
+      {
+        return_value = read_file_result;
+        return;
+      }
+      out.emplace_back(std::move(file));
+    }
+
+    return_value = WC24_OK;
+  });
+
+  return return_value;
+}
+
 ErrorCode DeleteFileFromVFF(const std::string& path, const std::string& filename,
                             const std::shared_ptr<FS::FileSystem>& fs)
 {

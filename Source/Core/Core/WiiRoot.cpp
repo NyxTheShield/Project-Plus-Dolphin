@@ -6,6 +6,7 @@
 #include <optional>
 #include <filesystem>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <fmt/format.h>
@@ -40,6 +41,26 @@ static std::string s_temp_wii_root;
 static std::string s_temp_redirect_root;
 static bool s_wii_root_initialized = false;
 static std::vector<IOS::HLE::FS::NandRedirect> s_nand_redirects;
+static std::unordered_set<std::string> s_initial_replay_names;
+
+static constexpr std::string_view BRAWL_REPLAY_VFF =
+    "/title/00010000/52534245/data/collect.vff";
+
+static void CaptureInitialReplayNames(const std::shared_ptr<FS::FileSystem>& fs)
+{
+  s_initial_replay_names.clear();
+  std::vector<IOS::HLE::NWC24::VFFFile> files;
+  if (IOS::HLE::NWC24::ReadDirectoryFromVFF(std::string(BRAWL_REPLAY_VFF), "/rp", fs, files) !=
+      IOS::HLE::NWC24::WC24_OK)
+  {
+    return;
+  }
+
+  for (const auto& file : files)
+    s_initial_replay_names.emplace(file.name);
+
+  INFO_LOG_FMT(IOS_FS, "Recorded {} pre-session replay files", s_initial_replay_names.size());
+}
 
 // When Temp NAND + Redirects are both active, we need to keep track of where each redirect path
 // should be copied back to after a successful session finish.
@@ -209,6 +230,7 @@ static void MoveToBackupIfExists(const std::string& path)
 void InitializeWiiRoot(bool use_temporary)
 {
   ASSERT(!s_wii_root_initialized);
+  s_initial_replay_names.clear();
 
   const std::string replay_file = Config::Get(Config::MAIN_REPLAY_PLAYBACK_FILE);
   use_temporary = use_temporary || !replay_file.empty();
@@ -292,113 +314,36 @@ void ShutdownWiiRoot()
       File::CreateFullPath(session_directory);
 
       const std::string players = Config::Get(Config::MAIN_NETPLAY_REPLAY_PLAYERS);
-      const std::string vff_path = brawl_temp_save + "collect.vff";
-
-      // Extract individual .bin replays directly from the VFF FAT16 container
-      std::vector<u8> vff_bytes;
+      const auto fs = std::make_shared<FS::HostFileSystem>(s_temp_wii_root);
+      std::vector<IOS::HLE::NWC24::VFFFile> replay_files;
       bool extracted_any = false;
-      File::IOFile vff_file(vff_path, "rb");
-      if (vff_file.IsOpen())
+      if (IOS::HLE::NWC24::ReadDirectoryFromVFF(std::string(BRAWL_REPLAY_VFF), "/rp", fs,
+                                                replay_files) ==
+          IOS::HLE::NWC24::WC24_OK)
       {
-        const u64 file_len = vff_file.GetSize();
-        if (file_len >= 32)
+        for (const auto& replay : replay_files)
         {
-          vff_bytes.resize(static_cast<size_t>(file_len));
-          if (vff_file.ReadBytes(vff_bytes.data(), vff_bytes.size()))
+          if (s_initial_replay_names.contains(replay.name))
           {
-            if (std::memcmp(vff_bytes.data(), "VFF ", 4) == 0)
-            {
-              constexpr u32 SYSECT = 233;
-              const auto cluster_offset = [](u32 c) -> u64 {
-                return static_cast<u64>(SYSECT + (c - 2)) * 512 - 480;
-              };
+            INFO_LOG_FMT(IOS_FS, "Ignoring pre-session replay save file {}", replay.name);
+            continue;
+          }
 
-              // /rp (replays) directory is cluster 3
-              const u64 rp_offset = cluster_offset(3);
-              if (rp_offset + 512 <= vff_bytes.size())
-              {
-                const u8* rp_dir = vff_bytes.data() + rp_offset;
-                std::u16string lfn_parts;
+          std::string out_name;
+          if (!players.empty())
+            out_name = fmt::format("{} {} {}", players, date, replay.name);
+          else
+            out_name = fmt::format("{} {}", date, replay.name);
 
-                for (size_t i = 0; i < 512; i += 32)
-                {
-                  const u8* entry = rp_dir + i;
-                  if (entry[0] == 0)
-                    break;
+          if (!out_name.ends_with(".bin"))
+            out_name += ".bin";
 
-                  const u8 attr = entry[11];
-                  if (attr == 0x0F)
-                  {
-                    // LFN entry
-                    std::u16string part;
-                    const auto append_u16 = [&](size_t offset, size_t count) {
-                      for (size_t c = 0; c < count; ++c)
-                      {
-                        const u16 ch = static_cast<u16>(entry[offset + c * 2]) |
-                                       (static_cast<u16>(entry[offset + c * 2 + 1]) << 8);
-                        if (ch == 0 || ch == 0xFFFF)
-                          return;
-                        part.push_back(static_cast<char16_t>(ch));
-                      }
-                    };
-                    append_u16(1, 5);
-                    append_u16(14, 6);
-                    append_u16(28, 2);
-                    lfn_parts = part + lfn_parts;
-                  }
-                  else
-                  {
-                    std::string entry_name;
-                    if (!lfn_parts.empty())
-                    {
-                      for (char16_t ch : lfn_parts)
-                        entry_name.push_back(static_cast<char>(ch));
-                      lfn_parts.clear();
-                    }
-                    else
-                    {
-                      for (size_t c = 0; c < 11; ++c)
-                      {
-                        if (entry[c] != ' ' && entry[c] != 0)
-                          entry_name.push_back(static_cast<char>(entry[c]));
-                      }
-                    }
-
-                    const u16 start_clst = static_cast<u16>(entry[26]) |
-                                           (static_cast<u16>(entry[27]) << 8);
-                    const u32 size = static_cast<u32>(entry[28]) |
-                                     (static_cast<u32>(entry[29]) << 8) |
-                                     (static_cast<u32>(entry[30]) << 16) |
-                                     (static_cast<u32>(entry[31]) << 24);
-
-                    if ((attr & 0x10) == 0 && size > 0 && start_clst >= 2)
-                    {
-                      const u64 file_offset = cluster_offset(start_clst);
-                      if (file_offset + size <= vff_bytes.size())
-                      {
-                        std::string out_name;
-                        if (!players.empty())
-                          out_name = fmt::format("{} {} {}", players, date, entry_name);
-                        else
-                          out_name = fmt::format("{} {}", date, entry_name);
-
-                        if (!out_name.ends_with(".bin"))
-                          out_name += ".bin";
-
-                        const std::string out_path = session_directory + out_name;
-                        File::IOFile out_file(out_path, "wb");
-                        if (out_file.IsOpen() &&
-                            out_file.WriteBytes(vff_bytes.data() + file_offset, size))
-                        {
-                          INFO_LOG_FMT(IOS_FS, "Extracted replay save file to {}", out_path);
-                          extracted_any = true;
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
+          const std::string out_path = session_directory + out_name;
+          File::IOFile out_file(out_path, "wb");
+          if (out_file.IsOpen() && out_file.WriteBytes(replay.data.data(), replay.data.size()))
+          {
+            INFO_LOG_FMT(IOS_FS, "Extracted replay save file to {}", out_path);
+            extracted_any = true;
           }
         }
       }
@@ -418,6 +363,7 @@ void ShutdownWiiRoot()
   }
 
   s_nand_redirects.clear();
+  s_initial_replay_names.clear();
   s_wii_root_initialized = false;
 }
 
@@ -514,6 +460,7 @@ void InitializeWiiFileSystemContents(
     sysconf.Save();
 
     InitializeDeterministicWiiSaves(fs.get(), boot_session_data);
+    CaptureInitialReplayNames(fs);
   }
 
   if (save_redirect)

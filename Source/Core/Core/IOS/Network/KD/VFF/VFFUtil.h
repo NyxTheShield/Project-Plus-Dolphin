@@ -23,10 +23,20 @@ namespace NWC24
 constexpr u16 SECTOR_SIZE = 512;
 constexpr u16 VF_LITTLE_ENDIAN = 0xFFFE;
 constexpr u16 VF_BIG_ENDIAN = 0xFEFF;
+
+struct VFFFile
+{
+  std::string name;
+  std::vector<u8> data;
+};
+
 ErrorCode WriteToVFF(const std::string& path, const std::string& filename,
                      const std::shared_ptr<FS::FileSystem>& fs, std::span<const u8> data);
 ErrorCode ReadFromVFF(const std::string& path, const std::string& filename,
                       const std::shared_ptr<FS::FileSystem>& fs, std::vector<u8>& out);
+ErrorCode ReadDirectoryFromVFF(const std::string& path, const std::string& directory,
+                               const std::shared_ptr<FS::FileSystem>& fs,
+                               std::vector<VFFFile>& out);
 ErrorCode DeleteFileFromVFF(const std::string& path, const std::string& filename,
                             const std::shared_ptr<FS::FileSystem>& fs);
 

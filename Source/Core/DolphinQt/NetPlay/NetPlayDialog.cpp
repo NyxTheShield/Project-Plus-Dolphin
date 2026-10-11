@@ -144,7 +144,7 @@ void NetPlayDialog::CreateMainLayout()
   m_auto_delay_button = new QPushButton(tr("Auto"));
   m_auto_delay_button->setAutoDefault(false);
   m_auto_delay_button->setToolTip(
-      tr("Use 1 frame below 100 ms; otherwise use ceil(ping / 33.33333 ms) - 2. The host "
+      tr("Use max(1, round(ping / 33.33333 ms) - 2). The host "
          "also sets Rollback Frames to 5."));
   m_frame_boundary_label = new QLabel(tr("Frame Boundary:"));
   m_frame_boundary_combo = new QComboBox;

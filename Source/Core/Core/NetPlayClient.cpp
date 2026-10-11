@@ -81,8 +81,9 @@ using namespace WiimoteCommon;
 
 u32 GetGekkoInputDelayForPing(const u32 ping_ms, const u32 reduction)
 {
-  const u64 frame_pairs = (static_cast<u64>(ping_ms) * 3 + 99) / 100;
-  const int delay = static_cast<int>(frame_pairs) - static_cast<int>(std::min(reduction, 60u));
+  const u64 network_frames = (static_cast<u64>(ping_ms) * 3 + 50) / 100;
+  const int delay =
+      static_cast<int>(network_frames) - static_cast<int>(std::min(reduction, 60u));
   return static_cast<u32>(std::clamp(delay, 1, 60));
 }
 
