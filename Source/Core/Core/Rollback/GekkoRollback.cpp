@@ -27,14 +27,14 @@
 #include <arm64intr.h>
 #endif
 
-#include <gekkonet.h>
 #include <fmt/format.h>
+#include <gekkonet.h>
 #include <xxh3.h>
 
 #include "Common/Config/Config.h"
 #include "Common/ENet.h"
-#include "Common/FileUtil.h"
 #include "Common/FPURoundMode.h"
+#include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
 #include "Common/Timer.h"
@@ -90,8 +90,8 @@ constexpr u8 RAM_DIAGNOSTIC_MISMATCH = 2;
 constexpr std::size_t RAM_DIAGNOSTIC_PACKET_SIZE =
     112 + State::ROLLBACK_STATE_SECTION_COUNT * sizeof(u64);
 constexpr std::array<std::string_view, State::ROLLBACK_STATE_SECTION_COUNT>
-    ROLLBACK_STATE_SECTION_NAMES{"Movie", "VideoBackend", "CoreTiming", "HW", "PowerPC",
-                                 "Wiimote", "Gecko"};
+    ROLLBACK_STATE_SECTION_NAMES{"Movie",   "VideoBackend", "CoreTiming", "HW",
+                                 "PowerPC", "Wiimote",      "Gecko"};
 
 bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram);
 
@@ -222,8 +222,8 @@ GekkoNetResult** SharedAdapterReceive(int* length)
     if (HandleRamDiagnosticDatagram(datagram))
       continue;
 
-    const bool is_input_packet = !datagram.payload.empty() &&
-                                 datagram.payload.front() == GEKKO_INPUT_PACKET_TYPE;
+    const bool is_input_packet =
+        !datagram.payload.empty() && datagram.payload.front() == GEKKO_INPUT_PACKET_TYPE;
     if (s_stress_mode && s_stress_frame_delay_active && is_input_packet)
     {
       s_delayed_native_packets.push_back(
@@ -244,8 +244,7 @@ GekkoNetResult** SharedAdapterReceive(int* length)
   while (!s_delayed_native_packets.empty() &&
          s_delayed_native_packets.front().delivery_frame <= s_simulated_link_frame)
   {
-    Common::ENet::RollbackDatagram datagram =
-        std::move(s_delayed_native_packets.front().datagram);
+    Common::ENet::RollbackDatagram datagram = std::move(s_delayed_native_packets.front().datagram);
     s_delayed_native_packets.pop_front();
     auto* result = static_cast<GekkoNetResult*>(std::malloc(sizeof(GekkoNetResult)));
     result->addr.size = sizeof(ENetAddress);
@@ -566,22 +565,33 @@ void LogStartFrameStateDigest(Core::System& system, int frame)
   if (g_manager.last_advance_has_start)
   {
     const auto& ppc = system.GetPPCState();
-    NOTICE_LOG_FMT(
-        CORE,
-        "GekkoNet state trace: START save frame {} state={:016x} sections "
-        "Movie={:016x},Video={:016x},CoreTiming={:016x},HW={:016x},PowerPC={:016x},"
-        "Wiimote={:016x},Gecko={:016x}; ticks={}, timebase={}, pc={:08x}, npc={:08x}",
-        frame, XXH3_64bits(state.data(), state.size()), sections[0], sections[1], sections[2],
-        sections[3], sections[4], sections[5], sections[6], system.GetCoreTiming().GetTicks(),
-        system.GetPowerPC().ReadFullTimeBaseValue(), ppc.pc, ppc.npc);
+    NOTICE_LOG_FMT(CORE,
+                   "GekkoNet state trace: START save frame {} state={:016x} sections "
+                   "Movie={:016x},Video={:016x},CoreTiming={:016x},HW={:016x},PowerPC={:016x},"
+                   "Wiimote={:016x},Gecko={:016x}; ticks={}, timebase={}, pc={:08x}, npc={:08x}",
+                   frame, XXH3_64bits(state.data(), state.size()), sections[0], sections[1],
+                   sections[2], sections[3], sections[4], sections[5], sections[6],
+                   system.GetCoreTiming().GetTicks(), system.GetPowerPC().ReadFullTimeBaseValue(),
+                   ppc.pc, ppc.npc);
   }
 
   if (frame >= 278 && frame <= 281)
   {
     static constexpr std::array<std::string_view, State::ROLLBACK_HW_SECTION_COUNT> names{
-        "Memory", "MemoryInterface", "VideoInterface", "SerialInterface",
-        "ProcessorInterface", "DSP", "DVDInterface", "GPFifo", "ExpansionInterface",
-        "AudioInterface", "HSP", "WiiIPC", "IOSHLE", "WIIHW"};
+        "Memory",
+        "MemoryInterface",
+        "VideoInterface",
+        "SerialInterface",
+        "ProcessorInterface",
+        "DSP",
+        "DVDInterface",
+        "GPFifo",
+        "ExpansionInterface",
+        "AudioInterface",
+        "HSP",
+        "WiiIPC",
+        "IOSHLE",
+        "WIIHW"};
     std::string hashes;
     std::size_t start = layout.section_ends[2];
     for (std::size_t i = 0; i < names.size(); ++i)
@@ -599,8 +609,8 @@ void LogStartFrameStateDigest(Core::System& system, int frame)
   if ((frame >= 0 && frame <= 10) || (frame >= 278 && frame <= 281))
   {
     static constexpr std::array<std::string_view, State::ROLLBACK_PPC_SECTION_COUNT> names{
-        "GPR", "PC", "CR", "Scalar", "FPR", "SR", "SPR", "TLB", "PageTable",
-        "Reserve", "ICache", "DCache", "MMU", "JIT"};
+        "GPR", "PC",        "CR",      "Scalar", "FPR",    "SR",  "SPR",
+        "TLB", "PageTable", "Reserve", "ICache", "DCache", "MMU", "JIT"};
     std::string hashes;
     std::size_t start = layout.section_ends[3];
     for (std::size_t i = 0; i < names.size(); ++i)
@@ -647,7 +657,8 @@ void RecordDiagnosticEvent(Core::System& system, const QueuedEvent& event)
   diagnostic.frame = event.frame;
   diagnostic.rolling_back = event.rolling_back;
   diagnostic.running_ahead = event.running_ahead;
-  diagnostic.inputs = event.inputs.empty() ? 0 : XXH3_64bits(event.inputs.data(), event.inputs.size());
+  diagnostic.inputs =
+      event.inputs.empty() ? 0 : XXH3_64bits(event.inputs.data(), event.inputs.size());
   diagnostic.ticks = system.GetCoreTiming().GetTicks();
   if (IOS::HLE::FS::HostFileSystem* nand = HostNand(system))
     diagnostic.nand_mark = nand->LastJournalMark();
@@ -715,8 +726,7 @@ u64 ReadU64(const u8* in)
   return value;
 }
 
-std::array<u8, RAM_DIAGNOSTIC_PACKET_SIZE> MakeRamDiagnosticPacket(u8 type,
-                                                                   const RamDigest& digest)
+std::array<u8, RAM_DIAGNOSTIC_PACKET_SIZE> MakeRamDiagnosticPacket(u8 type, const RamDigest& digest)
 {
   std::array<u8, RAM_DIAGNOSTIC_PACKET_SIZE> packet{};
   std::copy(RAM_DIAGNOSTIC_MAGIC.begin(), RAM_DIAGNOSTIC_MAGIC.end(), packet.begin());
@@ -774,11 +784,11 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
                    local.decrementer, remote.decrementer);
   }
   const bool ram_matches = local.root == remote.root;
-  const bool timing_matches =
-      local.core_ticks == remote.core_ticks && local.timebase == remote.timebase &&
-      local.fake_tb_start_value == remote.fake_tb_start_value &&
-      local.fake_tb_start_ticks == remote.fake_tb_start_ticks &&
-      local.decrementer == remote.decrementer;
+  const bool timing_matches = local.core_ticks == remote.core_ticks &&
+                              local.timebase == remote.timebase &&
+                              local.fake_tb_start_value == remote.fake_tb_start_value &&
+                              local.fake_tb_start_ticks == remote.fake_tb_start_ticks &&
+                              local.decrementer == remote.decrementer;
   // PointerWrap serializes some trivially-copyable structs with their alignment padding. For
   // example, IOS FSCore::Handle has two padding bytes between gid and uid whose values can differ
   // even though every meaningful field matches. Keep the state and section hashes in the report,
@@ -802,8 +812,7 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
   if (!g_manager.first_ram_mismatch_frame || remote.frame < *g_manager.first_ram_mismatch_frame)
     g_manager.first_ram_mismatch_frame = remote.frame;
 
-  if (!g_manager.ram_mismatch_details_frame ||
-      remote.frame < *g_manager.ram_mismatch_details_frame)
+  if (!g_manager.ram_mismatch_details_frame || remote.frame < *g_manager.ram_mismatch_details_frame)
   {
     g_manager.ram_mismatch_details_frame = remote.frame;
     NOTICE_LOG_FMT(
@@ -816,11 +825,11 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
         "DEC {:#x}/{:#x}; differing state sections [{}]",
         remote.frame, remote_player, local.root, remote.root, local.mem1, remote.mem1, local.mem2,
         remote.mem2, local.aram, remote.aram, local.fake_vmem, remote.fake_vmem, local.l1,
-        remote.l1, local.state, remote.state,
-        local.inputs == remote.inputs ? "match" : "DIFFER", local.inputs, remote.inputs,
-        local.core_ticks, remote.core_ticks, local.timebase, remote.timebase,
-        local.fake_tb_start_value, remote.fake_tb_start_value, local.fake_tb_start_ticks,
-        remote.fake_tb_start_ticks, local.decrementer, remote.decrementer, differing_sections);
+        remote.l1, local.state, remote.state, local.inputs == remote.inputs ? "match" : "DIFFER",
+        local.inputs, remote.inputs, local.core_ticks, remote.core_ticks, local.timebase,
+        remote.timebase, local.fake_tb_start_value, remote.fake_tb_start_value,
+        local.fake_tb_start_ticks, remote.fake_tb_start_ticks, local.decrementer,
+        remote.decrementer, differing_sections);
     LogDiagnosticEventHistory();
   }
 
@@ -843,10 +852,10 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
   if (g_manager.stop_ram_compare_on_mismatch)
   {
     g_manager.compare_confirmed_ram = false;
-    OSD::AddTypedMessage(OSD::MessageType::RollbackVerification,
-                         fmt::format("RAM mismatch at frame {} - verification disabled",
-                                     remote.frame),
-                         std::numeric_limits<u32>::max(), OSD::Color::RED);
+    OSD::AddTypedMessage(
+        OSD::MessageType::RollbackVerification,
+        fmt::format("RAM mismatch at frame {} - verification disabled", remote.frame),
+        std::numeric_limits<u32>::max(), OSD::Color::RED);
     NOTICE_LOG_FMT(CORE,
                    "Rollback RAM diagnostic: mismatch recorded at frame {}; verification "
                    "disabled and live emulation will continue",
@@ -887,10 +896,10 @@ bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
     if (g_manager.stop_ram_compare_on_mismatch)
     {
       g_manager.compare_confirmed_ram = false;
-      OSD::AddTypedMessage(OSD::MessageType::RollbackVerification,
-                           fmt::format("RAM mismatch at frame {} - verification disabled",
-                                       remote.frame),
-                           std::numeric_limits<u32>::max(), OSD::Color::RED);
+      OSD::AddTypedMessage(
+          OSD::MessageType::RollbackVerification,
+          fmt::format("RAM mismatch at frame {} - verification disabled", remote.frame),
+          std::numeric_limits<u32>::max(), OSD::Color::RED);
       NOTICE_LOG_FMT(CORE,
                      "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
                      "verification disabled and live emulation will continue",
@@ -898,8 +907,9 @@ bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
     }
     else
     {
-      NOTICE_LOG_FMT(CORE, "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
-                           "pausing to restore and dump it",
+      NOTICE_LOG_FMT(CORE,
+                     "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
+                     "pausing to restore and dump it",
                      remote_player, remote.frame);
     }
     return true;
@@ -939,9 +949,8 @@ void FillRamRegionHashes(Core::System& system, RamDigest* digest)
     auto& dsp = system.GetDSP();
     digest->aram = XXH3_64bits(dsp.GetARAMPtr(), dsp.GetARAMSize());
   }
-  digest->fake_vmem = memory.GetFakeVMEM() ?
-                          XXH3_64bits(memory.GetFakeVMEM(), memory.GetFakeVMemSize()) :
-                          0;
+  digest->fake_vmem =
+      memory.GetFakeVMEM() ? XXH3_64bits(memory.GetFakeVMEM(), memory.GetFakeVMemSize()) : 0;
   digest->l1 = XXH3_64bits(memory.GetL1Cache(), memory.GetL1CacheSize());
   const std::array<u64, 5> regions{digest->mem1, digest->mem2, digest->aram, digest->fake_vmem,
                                    digest->l1};
@@ -973,8 +982,8 @@ void VerifyRestoredRam(Core::System& system, int frame)
   const s64 snapshot_key = static_cast<s64>(frame) + 1;
   const std::optional<u64> expected_nand = g_manager.ring->NandJournalMarkForFrame(snapshot_key);
   IOS::HLE::FS::HostFileSystem* nand = HostNand(system);
-  const std::optional<u64> actual_nand = nand ? std::optional<u64>(nand->LastJournalMark()) :
-                                               std::nullopt;
+  const std::optional<u64> actual_nand =
+      nand ? std::optional<u64>(nand->LastJournalMark()) : std::nullopt;
   NOTICE_LOG_FMT(
       CORE,
       "Rollback restore diagnostic: RESTORE MISMATCH frame {} key {} root {:016x}/{:016x}; "
@@ -1071,8 +1080,7 @@ void CompareSettledRamDigests()
 
 void SendConfirmedRamDigests()
 {
-  if (!g_manager.compare_confirmed_ram || !g_manager.session ||
-      g_manager.remote_endpoints.empty())
+  if (!g_manager.compare_confirmed_ram || !g_manager.session || g_manager.remote_endpoints.empty())
   {
     return;
   }
@@ -1132,12 +1140,10 @@ bool DumpFirstRamMismatch(Core::System& system)
     aram_ok = WriteRamRegion(base + "-aram.bin", dsp.GetARAMPtr(), dsp.GetARAMSize());
   }
   const bool fake_vmem_ok =
-      !memory.GetFakeVMEM() || WriteRamRegion(base + "-fakevmem.bin", memory.GetFakeVMEM(),
-                                              memory.GetFakeVMemSize());
-  const bool l1_ok =
-      WriteRamRegion(base + "-l1.bin", memory.GetL1Cache(), memory.GetL1CacheSize());
-  const std::span<const u8> state =
-      g_manager.ring->StateForFrame(static_cast<s64>(frame) + 1);
+      !memory.GetFakeVMEM() ||
+      WriteRamRegion(base + "-fakevmem.bin", memory.GetFakeVMEM(), memory.GetFakeVMemSize());
+  const bool l1_ok = WriteRamRegion(base + "-l1.bin", memory.GetL1Cache(), memory.GetL1CacheSize());
+  const std::span<const u8> state = g_manager.ring->StateForFrame(static_cast<s64>(frame) + 1);
   const bool state_ok =
       !state.empty() && WriteRamRegion(base + "-state.bin", state.data(), state.size());
 
@@ -1211,8 +1217,7 @@ bool IsGekkoSessionActive()
 
 bool IsGekkoFrameBoundary(FrameBoundary boundary)
 {
-  return g_manager.active.load(std::memory_order_acquire) &&
-         g_manager.frame_boundary == boundary;
+  return g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary;
 }
 
 void SetGekkoLocalDelay(int local_delay)
@@ -1252,9 +1257,9 @@ void SetGekkoLocalDelay(int local_delay)
 
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
                        const std::vector<std::string>& player_endpoints, int local_delay,
-                       int prediction_window, bool debug_p2_cstick, bool simulate_remote_p2,
-                       bool stress_test, bool stress_inputs, bool native_stress,
-                       u32 stress_interval, bool compare_confirmed_ram,
+                       int prediction_window, FrameBoundary frame_boundary, bool debug_p2_cstick,
+                       bool simulate_remote_p2, bool stress_test, bool stress_inputs,
+                       bool native_stress, u32 stress_interval, bool compare_confirmed_ram,
                        bool stop_ram_compare_on_mismatch)
 {
   StopGekkoSession();
@@ -1274,13 +1279,11 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   }
   if (native_stress && (!stress_test || simulate_remote_p2 || players != 1 || local_player != 1))
   {
-    ERROR_LOG_FMT(CORE,
-                  "GekkoNet: native stress requires a one-player stress session without a "
-                  "simulated peer");
+    ERROR_LOG_FMT(CORE, "GekkoNet: native stress requires a one-player stress session without a "
+                        "simulated peer");
     return false;
   }
-  if (!gekko_create(&g_manager.session,
-                    native_stress ? GekkoStressSession : GekkoGameSession))
+  if (!gekko_create(&g_manager.session, native_stress ? GekkoStressSession : GekkoGameSession))
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create session");
     return false;
@@ -1291,8 +1294,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // Gekko allows prediction only while prediction_window > frames_already_predicted. The stress
   // transport therefore gets one internal prediction slot beyond the selected rollback distance,
   // or both simulated peers can reach the cap and stop the emulated clock that releases packets.
-  const int clamped_prediction = stress_test ? clamped_rollback_window + clamped_delay + 2 :
-                                               clamped_rollback_window;
+  const int clamped_prediction =
+      stress_test ? clamped_rollback_window + clamped_delay + 2 : clamped_rollback_window;
 
   GekkoConfig config{};
   config.num_players = static_cast<unsigned char>(players);
@@ -1312,9 +1315,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // StressSession loads the state at current-check_distance, then advances from the following
   // frame through current-1. Therefore its replay count is check_distance-1; add one so the
   // harness's RollbackFrames value means the number of frames actually re-executed.
-  config.check_distance = native_stress ?
-                              static_cast<unsigned int>(clamped_rollback_window + 1) :
-                              10;
+  config.check_distance =
+      native_stress ? static_cast<unsigned int>(clamped_rollback_window + 1) : 10;
   config.stress_interval = std::max(1u, stress_interval);
 
   gekko_start(g_manager.session, &config);
@@ -1369,16 +1371,19 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.stress_inputs = stress_inputs;
   g_manager.native_stress = native_stress;
   g_manager.stress_interval = std::max(1u, stress_interval);
-  g_manager.stress_rollback_frames =
-      stress_test ? static_cast<u32>(clamped_rollback_window) : 0;
+  g_manager.stress_rollback_frames = stress_test ? static_cast<u32>(clamped_rollback_window) : 0;
   g_manager.compare_confirmed_ram = compare_confirmed_ram && !simulate_remote_p2 && players > 1;
   g_manager.stop_ram_compare_on_mismatch =
       stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
   g_manager.ram_diagnostic_dumped = false;
-  const u32 configured_frame_boundary =
-      std::min(Config::Get(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY),
-               static_cast<u32>(FrameBoundary::VINewField));
-  g_manager.frame_boundary = static_cast<FrameBoundary>(configured_frame_boundary);
+  if (frame_boundary < FrameBoundary::VIBeginField || frame_boundary > FrameBoundary::VINewField)
+  {
+    ERROR_LOG_FMT(CORE, "GekkoNet: invalid negotiated VI frame boundary {}",
+                  static_cast<u32>(frame_boundary));
+    destroy_failed_session();
+    return false;
+  }
+  g_manager.frame_boundary = frame_boundary;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.configured_local_delay = clamped_delay;
   g_manager.session_id = session_id;
@@ -1551,10 +1556,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // directions also delays acknowledgements and can make Gekko batch traffic instead of exposing
   // a clean, repeatable remote-input misprediction. P2 still generates the stress input locally.
   s_stress_mode = !native_stress && stress_test && (simulate_remote_p2 || local_player == 1);
-  s_stress_packet_delay_frames =
-      stress_test && !native_stress ?
-          static_cast<u64>(clamped_rollback_window + clamped_delay + 1) :
-          0;
+  s_stress_packet_delay_frames = stress_test && !native_stress ?
+                                     static_cast<u64>(clamped_rollback_window + clamped_delay + 1) :
+                                     0;
 
   if (simulate_remote_p2)
   {
@@ -1588,13 +1592,10 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
 
   g_manager.tracked_bitmap_clear = Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
   g_manager.full_scan_benchmark = Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK);
-  g_manager.full_scan_keep_tracking =
-      Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING);
-  g_manager.ring = std::make_unique<SnapshotRing>(RING_SNAPSHOT_SLOTS,
-                                                  g_manager.tracked_bitmap_clear,
-                                                  g_manager.full_scan_benchmark,
-                                                  g_manager.full_scan_keep_tracking,
-                                                  compare_confirmed_ram);
+  g_manager.full_scan_keep_tracking = Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING);
+  g_manager.ring = std::make_unique<SnapshotRing>(
+      RING_SNAPSHOT_SLOTS, g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark,
+      g_manager.full_scan_keep_tracking, compare_confirmed_ram);
   g_manager.stop_requested.store(false, std::memory_order_relaxed);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
@@ -1612,16 +1613,14 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       "full_scan_benchmark={}, full_scan_keep_tracking={}, compare_confirmed_ram={}, "
       "frame_boundary={})",
       game_name, players, local_player, session_id, clamped_delay, clamped_rollback_window,
-      clamped_prediction,
-      g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad", debug_p2_cstick,
-      simulate_remote_p2, simulate_remote_p2 && !stress_test ? SIMULATED_P2_LATENCY.count() : 0,
-      stress_test, native_stress, stress_inputs,
+      clamped_prediction, g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad",
+      debug_p2_cstick, simulate_remote_p2,
+      simulate_remote_p2 && !stress_test ? SIMULATED_P2_LATENCY.count() : 0, stress_test,
+      native_stress, stress_inputs,
       native_stress ? std::max(1u, stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
-      clamped_rollback_window,
-      g_manager.tracked_bitmap_clear,
-      g_manager.full_scan_benchmark,
-      g_manager.full_scan_keep_tracking,
-      g_manager.compare_confirmed_ram, FrameBoundaryName(g_manager.frame_boundary));
+      clamped_rollback_window, g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark,
+      g_manager.full_scan_keep_tracking, g_manager.compare_confirmed_ram,
+      FrameBoundaryName(g_manager.frame_boundary));
   return true;
 }
 
@@ -1728,8 +1727,7 @@ static void SubmitLocalInput()
       g_manager.local_player == 2 && g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
   if (g_manager.debug_p2_cstick && p2_input_spam_active)
   {
-    ApplyDebugCStickPattern(&local_status,
-                            g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
+    ApplyDebugCStickPattern(&local_status, g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
   }
   if (g_manager.stress_inputs && !g_manager.simulate_remote_p2 && p2_input_spam_active)
   {
@@ -1769,8 +1767,7 @@ static void SubmitLocalInput()
   // Keep the raw host sample beside the Gekko frame on which it was submitted. When Gekko later
   // emits the local player's input for an Advance event, this lets diagnostics verify the actual
   // delay behavior instead of merely reporting the configured value.
-  g_manager.sampled_local_inputs.push_back(
-      {static_cast<s64>(g_manager.local_input_frame), wire});
+  g_manager.sampled_local_inputs.push_back({static_cast<s64>(g_manager.local_input_frame), wire});
 
   gekko_add_local_input(g_manager.session, g_manager.local_handle, &wire);
 
@@ -1874,11 +1871,11 @@ static void MeasureLocalInputDelay(int advance_frame, const std::vector<unsigned
       static_cast<s64>(advance_frame) - g_manager.configured_local_delay;
   if (expected_sample_frame >= 0)
   {
-    const auto expected = std::find_if(
-        g_manager.sampled_local_inputs.begin(), g_manager.sampled_local_inputs.end(),
-        [expected_sample_frame](const SampledLocalInput& sample) {
-          return sample.frame == expected_sample_frame;
-        });
+    const auto expected =
+        std::find_if(g_manager.sampled_local_inputs.begin(), g_manager.sampled_local_inputs.end(),
+                     [expected_sample_frame](const SampledLocalInput& sample) {
+                       return sample.frame == expected_sample_frame;
+                     });
     if (expected == g_manager.sampled_local_inputs.end())
     {
       ++g_manager.perf_delay_missing;
@@ -1958,10 +1955,8 @@ static void RecordRemoteInputHeadroom()
     }
     else
     {
-      g_manager.perf_remote_headroom_min =
-          std::min(g_manager.perf_remote_headroom_min, headroom);
-      g_manager.perf_remote_headroom_max =
-          std::max(g_manager.perf_remote_headroom_max, headroom);
+      g_manager.perf_remote_headroom_min = std::min(g_manager.perf_remote_headroom_min, headroom);
+      g_manager.perf_remote_headroom_max = std::max(g_manager.perf_remote_headroom_max, headroom);
     }
     ++g_manager.perf_remote_headroom_count;
     g_manager.perf_remote_headroom_total += headroom;
@@ -2123,13 +2118,11 @@ static void MaybeLogPerformance(Core::System& system)
                   ResimEventCategory::GuestCpu)]) /
                   1'000'000.0,
               g_manager.perf_replay_exec_count),
-      average(std::max(
-                  0.0,
-                  g_manager.perf_replay_exec_ms -
-                      static_cast<double>(std::accumulate(
-                          g_manager.perf_replay_events.nanoseconds.begin(),
-                          g_manager.perf_replay_events.nanoseconds.end(), u64{0})) /
-                          1'000'000.0),
+      average(std::max(0.0, g_manager.perf_replay_exec_ms -
+                                static_cast<double>(std::accumulate(
+                                    g_manager.perf_replay_events.nanoseconds.begin(),
+                                    g_manager.perf_replay_events.nanoseconds.end(), u64{0})) /
+                                    1'000'000.0),
               g_manager.perf_replay_exec_count),
       average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(
                   ResimEventCategory::FrameSetup)]) /
@@ -2139,8 +2132,8 @@ static void MaybeLogPerformance(Core::System& system)
                   ResimEventCategory::CoreTiming)]) /
                   1'000'000.0,
               g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(
-                  ResimEventCategory::Fifo)]) /
+      average(static_cast<double>(g_manager.perf_replay_events
+                                      .nanoseconds[static_cast<size_t>(ResimEventCategory::Fifo)]) /
                   1'000'000.0,
               g_manager.perf_replay_exec_count),
       average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(
@@ -2181,9 +2174,8 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.perf_local_byte_changes[1], g_manager.perf_local_byte_changes[2],
       g_manager.perf_local_byte_changes[3], g_manager.perf_local_byte_changes[4],
       g_manager.perf_local_byte_changes[5], g_manager.perf_local_byte_changes[6],
-      g_manager.perf_local_byte_changes[7],
-      g_manager.configured_local_delay, g_manager.perf_delay_matches,
-      g_manager.perf_delay_checks, g_manager.perf_delay_mismatches,
+      g_manager.perf_local_byte_changes[7], g_manager.configured_local_delay,
+      g_manager.perf_delay_matches, g_manager.perf_delay_checks, g_manager.perf_delay_mismatches,
       g_manager.perf_delay_missing,
       average(static_cast<double>(g_manager.perf_delay_transition_frames),
               g_manager.perf_delay_transitions),
@@ -2193,15 +2185,13 @@ static void MaybeLogPerformance(Core::System& system)
               g_manager.perf_remote_headroom_count),
       g_manager.perf_remote_headroom_min, g_manager.perf_remote_headroom_max,
       g_manager.perf_remote_headroom_last, g_manager.perf_remote_headroom_count,
-      g_manager.perf_mispredictions_by_player[0],
-      g_manager.perf_mispredictions_by_player[1],
-      g_manager.perf_mispredictions_by_player[2],
-      g_manager.perf_mispredictions_by_player[3],
+      g_manager.perf_mispredictions_by_player[0], g_manager.perf_mispredictions_by_player[1],
+      g_manager.perf_mispredictions_by_player[2], g_manager.perf_mispredictions_by_player[3],
       average(static_cast<double>(g_manager.perf_misprediction_depth_total),
               std::accumulate(g_manager.perf_mispredictions_by_player.begin(),
                               g_manager.perf_mispredictions_by_player.end(), u64{0})),
-      g_manager.perf_misprediction_depth_max, network_stats.avg_ping,
-      network_stats.last_ping, network_stats.jitter,
+      g_manager.perf_misprediction_depth_max, network_stats.avg_ping, network_stats.last_ping,
+      network_stats.jitter,
       average(static_cast<double>(g_manager.perf_rollback_depth_total),
               g_manager.perf_rollback_burst_count),
       g_manager.perf_rollback_depth_max,
@@ -2213,80 +2203,79 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.stress_test,
       g_manager.native_stress ? g_manager.stress_interval : STRESS_INPUT_PERIOD_FRAMES,
       g_manager.native_stress ? g_manager.stress_rollback_frames :
-      g_manager.stress_test ?
-          s_stress_packet_delay_frames - static_cast<u64>(g_manager.configured_local_delay) - 1 :
-          0,
+      g_manager.stress_test   ? s_stress_packet_delay_frames -
+                                    static_cast<u64>(g_manager.configured_local_delay) - 1 :
+                                0,
       g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark);
 
   if (Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING))
   {
     NOTICE_LOG_FMT(CORE,
-                 "GekkoNet presentation cadence: gaps >20/>25/>33.3/>50 ms = {}/{}/{}/{} of {} "
-                 "real frames",
-                 g_manager.perf_real_gaps_over_20_ms, g_manager.perf_real_gaps_over_25_ms,
-                 g_manager.perf_real_gaps_over_33_ms, g_manager.perf_real_gaps_over_50_ms,
-                 g_manager.perf_real_interval_count);
+                   "GekkoNet presentation cadence: gaps >20/>25/>33.3/>50 ms = {}/{}/{}/{} of {} "
+                   "real frames",
+                   g_manager.perf_real_gaps_over_20_ms, g_manager.perf_real_gaps_over_25_ms,
+                   g_manager.perf_real_gaps_over_33_ms, g_manager.perf_real_gaps_over_50_ms,
+                   g_manager.perf_real_interval_count);
 
     NOTICE_LOG_FMT(
-      CORE,
-      "GekkoNet throttle: normal calls {}; requested {:.3f}/{:.3f} ms avg/max; actual "
-      "{:.3f}/{:.3f} ms avg/max; first-after-burst calls {}; requested {:.3f}/{:.3f} ms "
-      "avg/max; actual {:.3f}/{:.3f} ms avg/max",
-      throttle.normal_calls,
-      average(static_cast<double>(throttle.normal_requested_ns) / 1'000'000.0,
-              throttle.normal_calls),
-      static_cast<double>(throttle.normal_requested_max_ns) / 1'000'000.0,
-      average(static_cast<double>(throttle.normal_actual_ns) / 1'000'000.0,
-              throttle.normal_calls),
-      static_cast<double>(throttle.normal_actual_max_ns) / 1'000'000.0,
-      throttle.post_burst_calls,
-      average(static_cast<double>(throttle.post_burst_requested_ns) / 1'000'000.0,
-              throttle.post_burst_calls),
-      static_cast<double>(throttle.post_burst_requested_max_ns) / 1'000'000.0,
-      average(static_cast<double>(throttle.post_burst_actual_ns) / 1'000'000.0,
-              throttle.post_burst_calls),
-      static_cast<double>(throttle.post_burst_actual_max_ns) / 1'000'000.0);
+        CORE,
+        "GekkoNet throttle: normal calls {}; requested {:.3f}/{:.3f} ms avg/max; actual "
+        "{:.3f}/{:.3f} ms avg/max; first-after-burst calls {}; requested {:.3f}/{:.3f} ms "
+        "avg/max; actual {:.3f}/{:.3f} ms avg/max",
+        throttle.normal_calls,
+        average(static_cast<double>(throttle.normal_requested_ns) / 1'000'000.0,
+                throttle.normal_calls),
+        static_cast<double>(throttle.normal_requested_max_ns) / 1'000'000.0,
+        average(static_cast<double>(throttle.normal_actual_ns) / 1'000'000.0,
+                throttle.normal_calls),
+        static_cast<double>(throttle.normal_actual_max_ns) / 1'000'000.0, throttle.post_burst_calls,
+        average(static_cast<double>(throttle.post_burst_requested_ns) / 1'000'000.0,
+                throttle.post_burst_calls),
+        static_cast<double>(throttle.post_burst_requested_max_ns) / 1'000'000.0,
+        average(static_cast<double>(throttle.post_burst_actual_ns) / 1'000'000.0,
+                throttle.post_burst_calls),
+        static_cast<double>(throttle.post_burst_actual_max_ns) / 1'000'000.0);
 
     NOTICE_LOG_FMT(
-      CORE,
-      "GekkoNet replay callbacks: cpu_slices {:.2f}, boundary_setups {:.2f}, fifo {:.2f}, "
-      "vi {:.2f}, dsp_audio {:.2f}, ios_ipc {:.2f}, devices {:.2f}, events_other {:.2f} "
-      "callbacks/frame",
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::GuestCpu)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::FrameSetup)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::Fifo)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::VideoInterface)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::DspAudio)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::IosIpc)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::Devices)]),
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::Other)]),
-              g_manager.perf_replay_exec_count));
+        CORE,
+        "GekkoNet replay callbacks: cpu_slices {:.2f}, boundary_setups {:.2f}, fifo {:.2f}, "
+        "vi {:.2f}, dsp_audio {:.2f}, ios_ipc {:.2f}, devices {:.2f}, events_other {:.2f} "
+        "callbacks/frame",
+        average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
+                    ResimEventCategory::GuestCpu)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
+                    ResimEventCategory::FrameSetup)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events
+                                        .callbacks[static_cast<size_t>(ResimEventCategory::Fifo)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
+                    ResimEventCategory::VideoInterface)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
+                    ResimEventCategory::DspAudio)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
+                    ResimEventCategory::IosIpc)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
+                    ResimEventCategory::Devices)]),
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(g_manager.perf_replay_events
+                                        .callbacks[static_cast<size_t>(ResimEventCategory::Other)]),
+                g_manager.perf_replay_exec_count));
 
     NOTICE_LOG_FMT(
-      CORE,
-      "GekkoNet replay JIT memory helpers: reads {:.2f} calls/{:.3f} ms, writes {:.2f} "
-      "calls/{:.3f} ms per replay frame",
-      average(static_cast<double>(jit_memory.read_calls), g_manager.perf_replay_exec_count),
-      average(static_cast<double>(jit_memory.read_nanoseconds) / 1'000'000.0,
-              g_manager.perf_replay_exec_count),
-      average(static_cast<double>(jit_memory.write_calls), g_manager.perf_replay_exec_count),
-      average(static_cast<double>(jit_memory.write_nanoseconds) / 1'000'000.0,
-              g_manager.perf_replay_exec_count));
+        CORE,
+        "GekkoNet replay JIT memory helpers: reads {:.2f} calls/{:.3f} ms, writes {:.2f} "
+        "calls/{:.3f} ms per replay frame",
+        average(static_cast<double>(jit_memory.read_calls), g_manager.perf_replay_exec_count),
+        average(static_cast<double>(jit_memory.read_nanoseconds) / 1'000'000.0,
+                g_manager.perf_replay_exec_count),
+        average(static_cast<double>(jit_memory.write_calls), g_manager.perf_replay_exec_count),
+        average(static_cast<double>(jit_memory.write_nanoseconds) / 1'000'000.0,
+                g_manager.perf_replay_exec_count));
 
     const u64 guest_total_nanoseconds =
         g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(ResimEventCategory::GuestCpu)];
@@ -2307,43 +2296,39 @@ static void MaybeLogPerformance(Core::System& system)
           average(static_cast<double>(hotspot.cycles), g_manager.perf_replay_exec_count));
     }
 
-    const double save_known_ms = g_manager.perf_save_phases.state_ms +
-                                 g_manager.perf_save_phases.dirty_pages_ms +
-                                 g_manager.perf_save_phases.l1_ms +
-                                 g_manager.perf_save_phases.journal_ms;
-    const double load_known_ms = g_manager.perf_load_phases.dirty_pages_ms +
-                                 g_manager.perf_load_phases.jit_ms +
-                                 g_manager.perf_load_phases.l1_ms +
-                                 g_manager.perf_load_phases.state_ms +
-                                 g_manager.perf_load_phases.journal_ms;
+    const double save_known_ms =
+        g_manager.perf_save_phases.state_ms + g_manager.perf_save_phases.dirty_pages_ms +
+        g_manager.perf_save_phases.l1_ms + g_manager.perf_save_phases.journal_ms;
+    const double load_known_ms =
+        g_manager.perf_load_phases.dirty_pages_ms + g_manager.perf_load_phases.jit_ms +
+        g_manager.perf_load_phases.l1_ms + g_manager.perf_load_phases.state_ms +
+        g_manager.perf_load_phases.journal_ms;
     NOTICE_LOG_FMT(
-      CORE,
-      "GekkoNet snapshot phases: save state {:.3f} dirty {:.3f} l1 {:.3f} journal {:.3f} "
-      "other {:.3f} ms, state {:.1f} KiB; load dirty {:.3f} jit {:.3f} l1 {:.3f} state "
-      "{:.3f} journal {:.3f} other {:.3f} ms, changed {:.1f} pages/{:.1f} cache lines, "
-      "invalidated {:.1f} JIT blocks",
-      average(g_manager.perf_save_phases.state_ms, g_manager.perf_save_count),
-      average(g_manager.perf_save_phases.dirty_pages_ms, g_manager.perf_save_count),
-      average(g_manager.perf_save_phases.l1_ms, g_manager.perf_save_count),
-      average(g_manager.perf_save_phases.journal_ms, g_manager.perf_save_count),
-      average(std::max(0.0, g_manager.perf_save_ms - save_known_ms),
-              g_manager.perf_save_count),
-      average(static_cast<double>(g_manager.perf_save_phases.state_bytes),
-              g_manager.perf_save_count) /
-          1024.0,
-      average(g_manager.perf_load_phases.dirty_pages_ms, g_manager.perf_load_count),
-      average(g_manager.perf_load_phases.jit_ms, g_manager.perf_load_count),
-      average(g_manager.perf_load_phases.l1_ms, g_manager.perf_load_count),
-      average(g_manager.perf_load_phases.state_ms, g_manager.perf_load_count),
-      average(g_manager.perf_load_phases.journal_ms, g_manager.perf_load_count),
-      average(std::max(0.0, g_manager.perf_load_ms - load_known_ms),
-              g_manager.perf_load_count),
-      average(static_cast<double>(g_manager.perf_load_phases.changed_blocks),
-              g_manager.perf_load_count),
-      average(static_cast<double>(g_manager.perf_load_phases.changed_cache_lines),
-              g_manager.perf_load_count),
-      average(static_cast<double>(g_manager.perf_load_phases.jit_blocks_invalidated),
-              g_manager.perf_load_count));
+        CORE,
+        "GekkoNet snapshot phases: save state {:.3f} dirty {:.3f} l1 {:.3f} journal {:.3f} "
+        "other {:.3f} ms, state {:.1f} KiB; load dirty {:.3f} jit {:.3f} l1 {:.3f} state "
+        "{:.3f} journal {:.3f} other {:.3f} ms, changed {:.1f} pages/{:.1f} cache lines, "
+        "invalidated {:.1f} JIT blocks",
+        average(g_manager.perf_save_phases.state_ms, g_manager.perf_save_count),
+        average(g_manager.perf_save_phases.dirty_pages_ms, g_manager.perf_save_count),
+        average(g_manager.perf_save_phases.l1_ms, g_manager.perf_save_count),
+        average(g_manager.perf_save_phases.journal_ms, g_manager.perf_save_count),
+        average(std::max(0.0, g_manager.perf_save_ms - save_known_ms), g_manager.perf_save_count),
+        average(static_cast<double>(g_manager.perf_save_phases.state_bytes),
+                g_manager.perf_save_count) /
+            1024.0,
+        average(g_manager.perf_load_phases.dirty_pages_ms, g_manager.perf_load_count),
+        average(g_manager.perf_load_phases.jit_ms, g_manager.perf_load_count),
+        average(g_manager.perf_load_phases.l1_ms, g_manager.perf_load_count),
+        average(g_manager.perf_load_phases.state_ms, g_manager.perf_load_count),
+        average(g_manager.perf_load_phases.journal_ms, g_manager.perf_load_count),
+        average(std::max(0.0, g_manager.perf_load_ms - load_known_ms), g_manager.perf_load_count),
+        average(static_cast<double>(g_manager.perf_load_phases.changed_blocks),
+                g_manager.perf_load_count),
+        average(static_cast<double>(g_manager.perf_load_phases.changed_cache_lines),
+                g_manager.perf_load_count),
+        average(static_cast<double>(g_manager.perf_load_phases.jit_blocks_invalidated),
+                g_manager.perf_load_count));
   }
 
   if (g_manager.compare_confirmed_ram)
@@ -2451,8 +2436,7 @@ static bool PrepareQueuedFrame(Core::System& system)
         {
           ++g_manager.perf_replay_save_count;
           g_manager.perf_replay_save_ms += elapsed;
-          g_manager.perf_replay_save_max_ms =
-              std::max(g_manager.perf_replay_save_max_ms, elapsed);
+          g_manager.perf_replay_save_max_ms = std::max(g_manager.perf_replay_save_max_ms, elapsed);
           g_manager.current_burst_save_ms += elapsed;
         }
         if (event.checksum)
@@ -2515,8 +2499,7 @@ static bool PrepareQueuedFrame(Core::System& system)
       std::pair<u32, u32> si1_before{};
       if (g_manager.compare_confirmed_ram)
       {
-        g_manager.last_advance_input_hash =
-            XXH3_64bits(event.inputs.data(), event.inputs.size());
+        g_manager.last_advance_input_hash = XXH3_64bits(event.inputs.data(), event.inputs.size());
         for (int p = 0; p < g_manager.players; ++p)
         {
           const int handle = g_manager.player_handles[p];
@@ -2567,8 +2550,7 @@ static bool PrepareQueuedFrame(Core::System& system)
         g_manager.perf_burst_save_max_ms =
             std::max(g_manager.perf_burst_save_max_ms, g_manager.current_burst_save_ms);
         g_manager.perf_burst_other_ms += other_ms;
-        g_manager.perf_burst_other_max_ms =
-            std::max(g_manager.perf_burst_other_max_ms, other_ms);
+        g_manager.perf_burst_other_max_ms = std::max(g_manager.perf_burst_other_max_ms, other_ms);
         g_manager.perf_rollback_depth_total += g_manager.current_rollback_replays;
         g_manager.perf_rollback_depth_max =
             std::max(g_manager.perf_rollback_depth_max, g_manager.current_rollback_replays);
@@ -2649,11 +2631,10 @@ static bool PrepareQueuedFrame(Core::System& system)
       }
       if (resimulating)
       {
-        RecordResimEvent(
-            ResimEventCategory::FrameSetup,
-            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                 std::chrono::steady_clock::now() - frame_setup_start)
-                                 .count()));
+        RecordResimEvent(ResimEventCategory::FrameSetup,
+                         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - frame_setup_start)
+                                              .count()));
       }
       return true;
     }
@@ -2910,10 +2891,9 @@ void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 ad
 
   const u8* const data = system.GetMemory().GetPointerForRangeReadOnly(address, size);
   const u64 data_hash = data ? XXH3_64bits(data, size) : 0;
-  g_manager.host_memory_writes.push_back(
-      HostMemoryWriteEvent{source, address, size, g_manager.frame_execution_gekko_frame,
-                           Rollback::IsResimulating(), system.GetCoreTiming().GetTicks(),
-                           data_hash, source_offset});
+  g_manager.host_memory_writes.push_back(HostMemoryWriteEvent{
+      source, address, size, g_manager.frame_execution_gekko_frame, Rollback::IsResimulating(),
+      system.GetCoreTiming().GetTicks(), data_hash, source_offset});
   while (g_manager.host_memory_writes.size() > 512)
     g_manager.host_memory_writes.pop_front();
 }
@@ -2929,8 +2909,7 @@ void RunPendingVIBoundary(Core::System& system)
   const auto& initial_ppc = system.GetPPCState();
   if (initial_ppc.npc == 0)
   {
-    NOTICE_LOG_FMT(CORE,
-                   "GekkoNet: Ignoring pre-execution VI boundary (pc={:08x}, npc={:08x})",
+    NOTICE_LOG_FMT(CORE, "GekkoNet: Ignoring pre-execution VI boundary (pc={:08x}, npc={:08x})",
                    initial_ppc.pc, initial_ppc.npc);
     return;
   }

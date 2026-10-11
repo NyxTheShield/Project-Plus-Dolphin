@@ -148,15 +148,12 @@ void NetPlayDialog::CreateMainLayout()
          "also sets Rollback Frames to 5."));
   m_frame_boundary_label = new QLabel(tr("Frame Boundary:"));
   m_frame_boundary_combo = new QComboBox;
-  m_frame_boundary_combo->addItem(tr("Brawl Hook (0x80017504)"), 0);
   m_frame_boundary_combo->addItem(tr("VI Begin Field"), 1);
   m_frame_boundary_combo->addItem(tr("VI End Field"), 2);
   m_frame_boundary_combo->addItem(tr("VI New Field"), 3);
   m_frame_boundary_combo->setToolTip(
       tr("Select the emulated frame boundary used by GekkoNet. The host shares this selection "
          "with every client when the session starts. VI New Field is the default."));
-  m_frame_boundary_label->setVisible(false);
-  m_frame_boundary_combo->setVisible(false);
   m_quit_button = new QPushButton(tr("Quit"));
   m_brawlmusic_off = new QCheckBox(tr("Client Side Music Off"));
   m_spectator_mode = new QCheckBox(tr("Spectator"));

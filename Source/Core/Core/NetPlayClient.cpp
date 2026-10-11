@@ -2119,8 +2119,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   const bool rollback_stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
   const bool native_stress = Config::Get(Config::NETPLAY_ROLLBACK_NATIVE_STRESS);
   const bool simulate_remote_p2 =
-      m_local_player->IsHost() && m_players.size() == 1 &&
-      !native_stress &&
+      m_local_player->IsHost() && m_players.size() == 1 && !native_stress &&
       (Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2) || rollback_stress_test);
 
   m_net_settings.local_player_id = m_local_player->pid;
@@ -2155,13 +2154,22 @@ bool NetPlayClient::StartGame(const std::string& path)
   const bool compare_confirmed_ram = Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
   const bool stop_ram_compare_on_mismatch =
       Config::Get(Config::NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH);
+  if (m_net_settings.rollback_frame_boundary <
+          static_cast<u8>(Rollback::FrameBoundary::VIBeginField) ||
+      m_net_settings.rollback_frame_boundary > static_cast<u8>(Rollback::FrameBoundary::VINewField))
+  {
+    ERROR_LOG_FMT(NETPLAY, "GekkoNet: host sent invalid VI frame boundary {}",
+                  m_net_settings.rollback_frame_boundary);
+    return false;
+  }
+  const auto frame_boundary =
+      static_cast<Rollback::FrameBoundary>(m_net_settings.rollback_frame_boundary);
 
-  if (!Rollback::StartGekkoSession("Project+", m_current_game, num_players, local_seat,
-                                   m_rollback_player_endpoints, local_delay, prediction_window,
-                                   debug_p2_cstick, simulate_remote_p2, rollback_stress_test,
-                                   stress_inputs, native_stress, stress_interval,
-                                   compare_confirmed_ram,
-                                   stop_ram_compare_on_mismatch))
+  if (!Rollback::StartGekkoSession(
+          "Project+", m_current_game, num_players, local_seat, m_rollback_player_endpoints,
+          local_delay, prediction_window, frame_boundary, debug_p2_cstick, simulate_remote_p2,
+          rollback_stress_test, stress_inputs, native_stress, stress_interval,
+          compare_confirmed_ram, stop_ram_compare_on_mismatch))
   {
     ERROR_LOG_FMT(NETPLAY, "GekkoNet: failed to start native UDP rollback session");
     return false;

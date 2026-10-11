@@ -64,11 +64,11 @@ void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 ad
 
 // Session management. Dolphin negotiates endpoints in the lobby; GekkoNet owns gameplay traffic.
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
-                       const std::vector<std::string>& player_endpoints,
-                       int local_delay, int prediction_window, bool debug_p2_cstick,
+                       const std::vector<std::string>& player_endpoints, int local_delay,
+                       int prediction_window, FrameBoundary frame_boundary, bool debug_p2_cstick,
                        bool simulate_remote_p2, bool stress_test, bool stress_inputs,
-                       bool native_stress, u32 stress_interval,
-                       bool compare_confirmed_ram, bool stop_ram_compare_on_mismatch);
+                       bool native_stress, u32 stress_interval, bool compare_confirmed_ram,
+                       bool stop_ram_compare_on_mismatch);
 void StopGekkoSession();
 bool IsGekkoSessionActive();
 bool IsGekkoFrameBoundary(FrameBoundary boundary);
