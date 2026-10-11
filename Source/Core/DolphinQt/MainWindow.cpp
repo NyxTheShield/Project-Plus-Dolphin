@@ -2222,12 +2222,10 @@ void MainWindow::PollManagedNetPlayReady()
         ping, m_managed_session->input_delay_reduction);
     if (!m_managed_session->test_solo && !m_managed_session->stress_test)
     {
-      // The rollback window is shared, while input-delay presets are local. Size the shared window
-      // against Aggressive, the lowest-delay preset, so every client's prediction budget covers
-      // the same host-measured round trip.
-      const u32 aggressive_delay = NetPlay::GetGekkoInputDelayForPing(ping, 4);
+      // Both the selected preset and the ping are session-wide for managed matchmaking. Expand the
+      // shared prediction window only when the negotiated delay does not cover this round trip.
       while (rollback_window < 10 && static_cast<u64>(ping) * 3 >
-                                         static_cast<u64>(aggressive_delay + rollback_window) * 100)
+                                         static_cast<u64>(delay + rollback_window) * 100)
       {
         ++rollback_window;
       }
@@ -2331,8 +2329,8 @@ bool MainWindow::NetPlayJoin()
     return false;
   }
 
-  // Publish this client's independent GekkoNet input-delay setting. Legacy fixed-delay NetPlay
-  // initialized this indirectly from the minimum buffer, but rollback has no such relationship.
+  // Publish this client's GekkoNet input-delay setting. Managed matchmaking has already negotiated
+  // one preset for the session; legacy fixed-delay NetPlay remains independent of this value.
   Settings::Instance().GetNetPlayClient()->AdjustPlayerPadBufferSize(
       Config::Get(Config::NETPLAY_ROLLBACK_INPUT_DELAY));
 

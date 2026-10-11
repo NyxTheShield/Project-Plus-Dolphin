@@ -1695,14 +1695,13 @@ static void SubmitLocalInput()
   {
     local_status = Pad::GetStatus(LOCAL_PAD);
   }
-  const bool p2_input_spam_active =
-      g_manager.local_player == 2 && g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
-  if (g_manager.debug_p2_cstick && p2_input_spam_active)
+  const bool input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
+  if (g_manager.debug_p2_cstick && input_spam_active)
   {
     ApplyDebugCStickPattern(&local_status,
                             g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
   }
-  if (g_manager.stress_inputs && !g_manager.simulate_remote_p2 && p2_input_spam_active)
+  if (g_manager.stress_inputs && !g_manager.simulate_remote_p2 && input_spam_active)
   {
     ApplyStressCStickPattern(&local_status,
                              g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);

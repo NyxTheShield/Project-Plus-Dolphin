@@ -751,8 +751,8 @@ void NetPlayServer::SetGekkoInputDelay(unsigned int delay)
   SendAsyncToClients(std::move(spac));
 }
 
-// Managed clients choose their own latency preset. Send the measured session ping so every client
-// can derive its local input delay without making the host's preset authoritative.
+// The matchmaking ticket gives every managed client the same negotiated latency preset. Send the
+// host-measured session ping so each peer derives the same input delay from the same inputs.
 void NetPlayServer::SetManagedGekkoPing(unsigned int ping)
 {
   sf::Packet spac;
