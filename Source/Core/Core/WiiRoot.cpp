@@ -111,13 +111,13 @@ static void RestoreFile(const std::string& path_in_nand)
     DeleteBackupFile(file_name);
 }
 
-static void CopySave(FS::FileSystem* source, FS::FileSystem* dest, const u64 title_id)
+static bool CopySave(FS::FileSystem* source, FS::FileSystem* dest, const u64 title_id)
 {
   dest->CreateFullPath(IOS::PID_KERNEL, IOS::PID_KERNEL, Common::GetTitleDataPath(title_id) + '/',
                        0, {FS::Mode::ReadWrite, FS::Mode::ReadWrite, FS::Mode::ReadWrite});
   const auto source_save = WiiSave::MakeNandStorage(source, title_id);
   const auto dest_save = WiiSave::MakeNandStorage(dest, title_id);
-  WiiSave::Copy(source_save.get(), dest_save.get());
+  return WiiSave::Copy(source_save.get(), dest_save.get()) == WiiSave::CopyResult::Success;
 }
 
 static bool CopyNandFile(FS::FileSystem* source_fs, const std::string& source_file,
@@ -182,6 +182,20 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
     auto& sync_titles = boot_session_data.GetWiiSyncTitles();
 
     auto* source_fs = sync_fs ? sync_fs : configured_fs.get();
+    const auto bundled_fs = std::make_unique<FS::HostFileSystem>(
+        File::GetSysDirectory() + NETPLAY_SAVE_DIR);
+    const auto copy_save = [&](u64 title) {
+      if (CopySave(source_fs, session_fs, title))
+        return;
+
+      if (!sync_fs && CopySave(bundled_fs.get(), session_fs, title))
+      {
+        INFO_LOG_FMT(CORE,
+                     "Wii Save Init: Used bundled deterministic save for {:016x} because the "
+                     "configured save is absent or invalid.",
+                     title);
+      }
+    };
     INFO_LOG_FMT(CORE, "Wii Save Init: Copying from {} to session_fs.",
                  sync_fs ? "sync_fs" : "configured_fs");
 
@@ -189,14 +203,14 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
     if (movie.IsMovieActive() && !NetPlay::IsNetPlayRunning())
     {
       INFO_LOG_FMT(CORE, "Wii Save Init: Copying {0:016x}.", title_id);
-      CopySave(source_fs, session_fs, title_id);
+      copy_save(title_id);
     }
     else
     {
       for (const u64 title : sync_titles)
       {
         INFO_LOG_FMT(CORE, "Wii Save Init: Copying {0:016x}.", title);
-        CopySave(source_fs, session_fs, title);
+        copy_save(title);
       }
     }
 

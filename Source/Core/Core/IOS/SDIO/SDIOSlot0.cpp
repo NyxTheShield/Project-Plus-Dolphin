@@ -29,8 +29,7 @@ SDIOSlot0Device::SDIOSlot0Device(EmulationKernel& ios, const std::string& device
     : EmulationDevice(ios, device_name),
       m_sdhc_supported(HasFeature(ios.GetVersion(), Feature::SDv2))
 {
-  if (!Config::Get(Config::MAIN_ALLOW_SD_WRITES))
-    INFO_LOG_FMT(IOS_SD, "Writes to SD card disabled by user");
+  INFO_LOG_FMT(IOS_SD, "Writes to SD card are disabled in this build");
 
   m_config_callback_id =
       CPUThreadConfigCallback::AddConfigChangedCallback([this] { RefreshConfig(); });
@@ -102,32 +101,11 @@ void SDIOSlot0Device::EventNotify()
 void SDIOSlot0Device::OpenInternal()
 {
   const std::string filename = File::GetUserPath(F_WIISDCARDIMAGE_IDX);
-  // A rollback session keeps one verified card handle open. Reopening it during every state load
-  // makes host-file state depend on how often each peer rolled back.
-  if (Rollback::IsGekkoSessionActive() && !Config::Get(Config::MAIN_WII_SD_CARD))
+  if (!Config::Get(Config::MAIN_WII_SD_CARD))
     return;
-  if (Rollback::IsGekkoSessionActive() && !Config::Get(Config::MAIN_ALLOW_SD_WRITES))
-  {
-    m_card.Open(filename, "rb");
-    if (!m_card)
-      ERROR_LOG_FMT(IOS_SD, "Rollback: could not open the session SD card image {}", filename);
-    return;
-  }
-  m_card.Open(filename, "r+b");
+  m_card.Open(filename, "rb");
   if (!m_card)
-  {
-    WARN_LOG_FMT(IOS_SD, "Failed to open SD Card image, trying to create a new 128 MB image...");
-    if (Common::SDCardCreate(128, filename))
-    {
-      INFO_LOG_FMT(IOS_SD, "Successfully created {}", filename);
-      m_card.Open(filename, "r+b");
-    }
-    if (!m_card)
-    {
-      ERROR_LOG_FMT(IOS_SD, "Could not open SD Card image or create a new one, are you running "
-                            "from a read-only directory?");
-    }
-  }
+    ERROR_LOG_FMT(IOS_SD, "Could not open read-only SD card image {}", filename);
 }
 
 std::optional<IPCReply> SDIOSlot0Device::Open(const OpenRequest& request)
@@ -337,26 +315,8 @@ s32 SDIOSlot0Device::ExecuteCommand(const Request& request, u32 buffer_in, u32 b
     INFO_LOG_FMT(IOS_SD, "{}Write {} Block(s) from {:#010x} bsize {} to offset {:#010x}!",
                  req.isDMA ? "DMA " : "", req.blocks, req.addr, req.bsize, req.arg);
 
-    if (!Config::Get(Config::MAIN_ALLOW_SD_WRITES))
-    {
-      ERROR_LOG_FMT(IOS_SD, "Write attempted while locked.");
-      ret = RET_LOCKED;
-    }
-    else
-    {
-      const u32 size = req.bsize * req.blocks;
-      const u64 address = GetAddressFromRequest(req.arg);
-
-      if (!m_card.Seek(address, File::SeekOrigin::Begin))
-        ERROR_LOG_FMT(IOS_SD, "Seek failed");
-
-      if (!m_card.WriteBytes(memory.GetPointerForRangeReadOnly(req.addr, size), size))
-      {
-        ERROR_LOG_FMT(IOS_SD, "Write Failed - error: {}, eof: {}", std::ferror(m_card.GetHandle()),
-                      std::feof(m_card.GetHandle()));
-        ret = RET_FAIL;
-      }
-    }
+    ERROR_LOG_FMT(IOS_SD, "Write attempted while locked.");
+    ret = RET_LOCKED;
   }
     memory.Write_U32(0x900, buffer_out);
     break;
@@ -518,7 +478,7 @@ IPCReply SDIOSlot0Device::GetStatus(const IOCtlRequest& request)
   // Evaluate whether a card is currently inserted (config value).
   // Make sure we don't modify m_status so we don't lose track of whether the card is SDHC.
   const bool sd_card_inserted = Config::Get(Config::MAIN_WII_SD_CARD);
-  const bool sd_card_locked = !Config::Get(Config::MAIN_ALLOW_SD_WRITES);
+  constexpr bool sd_card_locked = true;
   const u32 status = sd_card_inserted ?
                          (m_status | CARD_INSERTED | (sd_card_locked ? CARD_LOCKED : 0)) :
                          CARD_NOT_EXIST;

@@ -62,7 +62,6 @@ private:
 
   // SD Card Settings
   ConfigBool* m_sd_card_checkbox;
-  ConfigBool* m_allow_sd_writes_checkbox;
   ConfigBool* m_sync_sd_folder_checkbox;
   ConfigChoiceMap<u64>* m_sd_card_size_combo;
   ConfigUserPath* m_sd_raw_edit;

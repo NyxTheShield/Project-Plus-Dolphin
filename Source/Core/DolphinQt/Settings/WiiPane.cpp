@@ -175,10 +175,7 @@ void WiiPane::CreateSDCard()
   int row = 0;
   m_sd_card_checkbox = new ConfigBool(tr("Insert SD Card"), Config::MAIN_WII_SD_CARD);
   m_sd_card_checkbox->SetDescription(tr("Supports SD and SDHC. Default size is 128 MB."));
-  m_allow_sd_writes_checkbox =
-      new ConfigBool(tr("Allow Writes to SD Card"), Config::MAIN_ALLOW_SD_WRITES);
-  sd_settings_group_layout->addWidget(m_sd_card_checkbox, row, 0, 1, 1);
-  sd_settings_group_layout->addWidget(m_allow_sd_writes_checkbox, row, 1, 1, 1);
+  sd_settings_group_layout->addWidget(m_sd_card_checkbox, row, 0, 1, 2);
   ++row;
 
   {

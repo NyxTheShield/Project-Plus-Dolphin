@@ -100,6 +100,7 @@ void SetGekkoLocalDelay(int local_delay);
 bool BeginNetplayReplayRecording(const std::string& game_key);
 bool SaveNetplayReplay(const std::string& path);
 bool LoadNetplayReplay(const std::string& path);
+bool StartNetplayReplaySession();
 std::string GetNetplayReplayGameID();
 int GetNetplayReplayPlayerCount();
 u64 GetNetplayReplayInitialRTC();

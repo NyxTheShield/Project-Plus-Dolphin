@@ -549,28 +549,6 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
   const bool delete_savestate =
       boot_session_data.GetDeleteSavestate() == DeleteSavestateAfterBoot::Yes;
 
-  bool sync_sd_folder = system.IsWii() && Config::Get(Config::MAIN_WII_SD_CARD) &&
-                        Config::Get(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC);
-  if (sync_sd_folder)
-  {
-    sync_sd_folder = Common::SyncSDFolderToSDImage([] { return false; }, Core::WantsDeterminism());
-  }
-
-  Common::ScopeGuard sd_folder_sync_guard{[sync_sd_folder] {
-    if (sync_sd_folder && Config::Get(Config::MAIN_ALLOW_SD_WRITES))
-    {
-      const bool sync_ok = Common::SyncSDImageToSDFolder([] { return false; });
-      if (!sync_ok)
-      {
-        PanicAlertFmtT(
-            "Failed to sync SD card with folder. All changes made this session will be "
-            "discarded on next boot if you do not manually re-issue a resync in Config > "
-            "Wii > SD Card Settings > {0}!",
-            Common::GetStringT(Common::SD_UNPACK_TEXT));
-      }
-    }
-  }};
-
   // Wiimote input config is loaded in OnESTitleChanged
 
   FreeLook::LoadInputConfig();

@@ -456,6 +456,7 @@ struct GekkoManager
 
   std::atomic<bool> netplay_replay_recording{false};
   std::atomic<bool> netplay_replay_playing{false};
+  bool netplay_replay_session = false;
   int netplay_replay_players = 0;
   FrameBoundary netplay_replay_boundary = FrameBoundary::VINewField;
   std::string netplay_replay_game_id;
@@ -1342,8 +1343,7 @@ GCPadStatus DecodePad(const WirePad& pad)
 
 std::optional<GCPadStatus> GetRollbackPad(int port)
 {
-  if (!g_manager.active.load(std::memory_order_relaxed) &&
-      !g_manager.netplay_replay_playing.load(std::memory_order_relaxed))
+  if (!g_manager.active.load(std::memory_order_relaxed))
     return std::nullopt;
 
   if (port >= 0 && port < MAX_PORTS)
@@ -1607,10 +1607,7 @@ bool IsGekkoSessionActive()
 
 bool IsGekkoFrameBoundary(FrameBoundary boundary)
 {
-  return (g_manager.active.load(std::memory_order_acquire) &&
-          g_manager.frame_boundary == boundary) ||
-         (g_manager.netplay_replay_playing.load(std::memory_order_acquire) &&
-          g_manager.netplay_replay_boundary == boundary);
+  return g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary;
 }
 
 void SetGekkoLocalDelay(int local_delay)
@@ -1639,9 +1636,11 @@ void SetGekkoLocalDelay(int local_delay)
                  previous_delay, clamped_delay, g_manager.local_input_frame);
 }
 
-bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
-                       const std::vector<std::string>& player_endpoints, int local_delay,
-                       int prediction_window, const GekkoSessionOptions& options)
+static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, int players,
+                                  int local_player,
+                                  const std::vector<std::string>& player_endpoints, int local_delay,
+                                  int prediction_window, const GekkoSessionOptions& options,
+                                  bool replay_playback)
 {
   StopGekkoSession();
 
@@ -1651,6 +1650,14 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Invalid session parameters (players={}, local={})", players,
                   local_player);
+    return false;
+  }
+  if (replay_playback &&
+      (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed) ||
+       g_manager.netplay_replay_playback_frames.empty() ||
+       players != g_manager.netplay_replay_players))
+  {
+    ERROR_LOG_FMT(CORE, "GekkoNet: Invalid Netplay Replay session state");
     return false;
   }
   if (options.simulate_remote_p2 && (players != 2 || local_player != 1))
@@ -1705,9 +1712,10 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   gekko_start(g_manager.session, &config);
 
   GekkoNetAdapter* adapter = nullptr;
-  if (options.native_stress)
+  if (replay_playback || options.native_stress)
   {
-    // GekkoStressSession is intentionally local and does not use a transport adapter.
+    // Local-only Gekko sessions do not need a transport adapter. Replay playback supplies every
+    // actor's input from the NPR stream; native stress generates its input locally.
   }
   else if (options.simulate_remote_p2)
     adapter = &s_main_simulated_adapter;
@@ -1722,13 +1730,14 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     adapter = &s_shared_adapter;
   }
 
-  if (!options.native_stress && !adapter)
+  if (!replay_playback && !options.native_stress && !adapter)
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create network adapter");
     gekko_destroy(&g_manager.session);
     return false;
   }
-  g_manager.native_adapter_active = !options.native_stress && !options.simulate_remote_p2;
+  g_manager.native_adapter_active =
+      !replay_playback && !options.native_stress && !options.simulate_remote_p2;
   if (adapter)
     gekko_net_adapter_set(g_manager.session, adapter);
   const auto destroy_failed_session = [&] {
@@ -1747,7 +1756,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // Capture the first local device before NetPlay's boot layer remaps local SI devices to their
   // in-game seats. This remains port 0 on every client regardless of its network player number.
   g_manager.local_uses_gc_adapter =
+      !replay_playback &&
       Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_WIIU_ADAPTER;
+  g_manager.netplay_replay_session = replay_playback;
   g_manager.debug_p2_cstick = options.debug_p2_cstick;
   g_manager.simulate_remote_p2 = options.simulate_remote_p2;
   g_manager.stress_test = options.stress_test;
@@ -1867,7 +1878,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
 
   for (int p = 1; p <= players; ++p)
   {
-    if (p == local_player)
+    if (replay_playback || p == local_player)
     {
       const int handle = gekko_add_actor(g_manager.session, GekkoLocalPlayer, nullptr);
       if (handle < 0)
@@ -1876,9 +1887,11 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
         destroy_failed_session();
         return false;
       }
-      g_manager.local_handle = handle;
+      if (p == local_player)
+        g_manager.local_handle = handle;
       g_manager.player_handles[p - 1] = handle;
-      gekko_set_local_delay(g_manager.session, handle, static_cast<unsigned char>(clamped_delay));
+      gekko_set_local_delay(g_manager.session, handle,
+                            static_cast<unsigned char>(replay_playback ? 0 : clamped_delay));
     }
     else if (options.simulate_remote_p2 && p == 2)
     {
@@ -2003,6 +2016,35 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   return true;
 }
 
+bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
+                       const std::vector<std::string>& player_endpoints, int local_delay,
+                       int prediction_window, const GekkoSessionOptions& options)
+{
+  return StartGekkoSessionImpl(game_name, session_id, players, local_player, player_endpoints,
+                               local_delay, prediction_window, options, false);
+}
+
+bool StartNetplayReplaySession()
+{
+  int players = 0;
+  FrameBoundary boundary = FrameBoundary::VINewField;
+  {
+    std::lock_guard lk(g_manager.mutex);
+    if (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed) ||
+        g_manager.netplay_replay_playback_frames.empty())
+    {
+      return false;
+    }
+    players = g_manager.netplay_replay_players;
+    boundary = g_manager.netplay_replay_boundary;
+  }
+
+  GekkoSessionOptions options{};
+  options.frame_boundary = boundary;
+  options.late_vi_guard = true;
+  return StartGekkoSessionImpl("Netplay Replay", 0, players, 1, {}, 0, 10, options, true);
+}
+
 void StopGekkoSession()
 {
   std::lock_guard lk(g_manager.mutex);
@@ -2011,6 +2053,7 @@ void StopGekkoSession()
 
   g_manager.stop_requested.store(true, std::memory_order_relaxed);
   g_manager.active.store(false, std::memory_order_release);
+  g_manager.netplay_replay_session = false;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_guard_requested.store(false, std::memory_order_relaxed);
@@ -2085,8 +2128,13 @@ static void ApplyStressCStickPattern(GCPadStatus* status, u64 frame)
   status->substickY = static_cast<u8>(GCPadStatus::C_STICK_CENTER_Y + y);
 }
 
-static void SubmitLocalInput()
+static bool SubmitNetplayReplayInputs();
+
+static bool SubmitLocalInput()
 {
+  if (g_manager.netplay_replay_session)
+    return SubmitNetplayReplayInputs();
+
   g_controller_interface.SetCurrentInputChannel(ciface::InputChannel::SerialInterface);
   g_controller_interface.UpdateInput();
 
@@ -2169,6 +2217,7 @@ static void SubmitLocalInput()
   }
   ++g_manager.local_input_frame;
   s_simulated_link_frame = g_manager.local_input_frame;
+  return true;
 }
 
 static void PumpSimulatedPeer()
@@ -3071,9 +3120,11 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
 
   // Submit before polling so this boundary's inputs are eligible to be sent immediately. The
   // simulated peer uses the same GekkoNet path, with packets released after the configured delay.
-  SubmitLocalInput();
+  if (!SubmitLocalInput())
+    return;
   PumpSimulatedPeer();
-  gekko_network_poll(g_manager.session);
+  if (!g_manager.netplay_replay_session)
+    gekko_network_poll(g_manager.session);
 
   // A peer mismatch notification can arrive during the poll above. Restore and dump immediately
   // at this safe boundary, then pause instead of waiting for another Gekko advance.
@@ -3170,27 +3221,31 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     // timer spins for this short interval and preserves the intended 100 us polling cadence.
     g_manager.wait_timer.SleepUntil(Clock::now() + std::chrono::microseconds(WAIT_SLEEP_US));
     PumpSimulatedPeer();
-    gekko_network_poll(g_manager.session);
+    if (!g_manager.netplay_replay_session)
+      gekko_network_poll(g_manager.session);
   }
 }
 
-static bool ApplyNetplayReplayFrame(Core::System& system)
+static bool SubmitNetplayReplayInputs()
 {
-  std::lock_guard lk(g_manager.mutex);
-  if (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed))
+  if (!g_manager.netplay_replay_session ||
+      !g_manager.netplay_replay_playing.load(std::memory_order_relaxed))
     return false;
 
   if (g_manager.netplay_replay_playback_index >= g_manager.netplay_replay_playback_frames.size())
   {
     g_manager.netplay_replay_playing.store(false, std::memory_order_release);
+    g_manager.stop_requested.store(true, std::memory_order_relaxed);
+    auto& system = Core::System::GetInstance();
     system.GetCPU().Break();
     Core::DisplayMessage("Netplay Replay ended", 3000);
-    return true;
+    return false;
   }
 
+  auto& system = Core::System::GetInstance();
   const bool first_playback_frame = g_manager.netplay_replay_playback_index == 0;
   const auto& [frame, inputs] =
-      g_manager.netplay_replay_playback_frames[g_manager.netplay_replay_playback_index++];
+      g_manager.netplay_replay_playback_frames[g_manager.netplay_replay_playback_index];
   if (first_playback_frame && g_manager.netplay_replay_initial_digest_valid)
   {
     RamDigest actual{};
@@ -3223,9 +3278,18 @@ static bool ApplyNetplayReplayFrame(Core::System& system)
     WirePad wire{};
     std::memcpy(&wire, inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
                 sizeof(wire));
-    g_manager.latched_pads[port] = DecodePad(wire);
+    const int handle = g_manager.player_handles[port];
+    if (handle < 0)
+    {
+      ERROR_LOG_FMT(CORE, "Netplay Replay: missing Gekko actor for port {}", port + 1);
+      g_manager.stop_requested.store(true, std::memory_order_relaxed);
+      return false;
+    }
+    gekko_add_local_input(g_manager.session, handle, &wire);
   }
-  DEBUG_LOG_FMT(CORE, "Netplay Replay: applied recorded frame {} ({}/{})", frame,
+  ++g_manager.netplay_replay_playback_index;
+  ++g_manager.local_input_frame;
+  DEBUG_LOG_FMT(CORE, "Netplay Replay: submitted recorded frame {} to GekkoNet ({}/{})", frame,
                 g_manager.netplay_replay_playback_index,
                 g_manager.netplay_replay_playback_frames.size());
   return true;
@@ -3233,16 +3297,6 @@ static bool ApplyNetplayReplayFrame(Core::System& system)
 
 void OnFrameBoundary(const Core::CPUThreadGuard& guard)
 {
-  if (g_manager.netplay_replay_playing.load(std::memory_order_acquire) &&
-      g_manager.netplay_replay_boundary == FrameBoundary::BrawlHook)
-  {
-    auto& system = guard.GetSystem();
-    const u32 opcode = system.GetMemory().Read_U32(BRAWL_FRAME_HOOK_ADDR & 0x1FFFFFFF);
-    if (opcode == BRAWL_EXPECTED_OPCODE)
-      ApplyNetplayReplayFrame(system);
-    return;
-  }
-
   ProcessFrameBoundary(guard, FrameBoundary::BrawlHook);
   if (IsGekkoSessionActive() && g_manager.frame_boundary == FrameBoundary::BrawlHook &&
       !IsResimulating())
@@ -3254,11 +3308,7 @@ void OnFrameBoundary(const Core::CPUThreadGuard& guard)
 
 void SignalVIBoundary(FrameBoundary boundary)
 {
-  const bool live_session =
-      g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary;
-  const bool replay = g_manager.netplay_replay_playing.load(std::memory_order_acquire) &&
-                      g_manager.netplay_replay_boundary == boundary;
-  if (live_session || replay)
+  if (g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary)
   {
     g_manager.precise_vi_tail.store(false, std::memory_order_release);
     g_manager.vi_boundary_pending.store(true, std::memory_order_release);
@@ -3273,11 +3323,8 @@ bool IsVIBoundaryPending()
 void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
                             bool next_is_new_field)
 {
-  const bool live_session = g_manager.active.load(std::memory_order_acquire);
-  const bool replay = g_manager.netplay_replay_playing.load(std::memory_order_acquire);
-  const bool active = live_session || replay;
-  const FrameBoundary selected_boundary =
-      replay ? g_manager.netplay_replay_boundary : g_manager.frame_boundary;
+  const bool active = g_manager.active.load(std::memory_order_acquire);
+  const FrameBoundary selected_boundary = g_manager.frame_boundary;
   const bool selected = (selected_boundary == FrameBoundary::VIBeginField && next_is_begin_field) ||
                         (selected_boundary == FrameBoundary::VIEndField && next_is_end_field) ||
                         (selected_boundary == FrameBoundary::VINewField && next_is_new_field);
@@ -3300,9 +3347,7 @@ bool ConsumePreciseVIGuardRequest()
 
 void ArmPreciseVITailFromGuard()
 {
-  if ((g_manager.active.load(std::memory_order_acquire) ||
-       g_manager.netplay_replay_playing.load(std::memory_order_acquire)) &&
-      g_manager.late_vi_guard)
+  if (g_manager.active.load(std::memory_order_acquire) && g_manager.late_vi_guard)
     g_manager.precise_vi_tail.store(true, std::memory_order_release);
 }
 
@@ -3352,12 +3397,6 @@ void RunPendingVIBoundary(Core::System& system)
   }
 
   const Core::CPUThreadGuard guard(system);
-  if (g_manager.netplay_replay_playing.load(std::memory_order_acquire))
-  {
-    ApplyNetplayReplayFrame(system);
-    return;
-  }
-
   ProcessFrameBoundary(guard, g_manager.frame_boundary);
   if (IsGekkoSessionActive() && !IsResimulating())
   {

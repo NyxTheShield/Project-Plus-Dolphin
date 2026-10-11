@@ -1910,6 +1910,7 @@ void MainWindow::StartManagedNetPlay()
 
     Config::SetCurrent(Config::MAIN_WII_SD_CARD, sd_card_path.has_value());
     Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
+    Config::SetCurrent(Config::MAIN_ALLOW_SD_WRITES, false);
     Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
     File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
     const int replay_players = Rollback::GetNetplayReplayPlayerCount();
@@ -1918,6 +1919,12 @@ void MainWindow::StartManagedNetPlay()
       Config::SetCurrent(Config::GetInfoForSIDevice(port),
                          port < replay_players ? SerialInterface::SIDEVICE_GC_CONTROLLER :
                                                  SerialInterface::SIDEVICE_NONE);
+    }
+    if (!Rollback::StartNetplayReplaySession())
+    {
+      Rollback::StopNetplayReplay();
+      FailManagedSession("The Netplay Replay session could not be started");
+      return;
     }
     auto boot_session_data = std::make_unique<BootSessionData>();
     boot_session_data->SetNetplayReplay(true);

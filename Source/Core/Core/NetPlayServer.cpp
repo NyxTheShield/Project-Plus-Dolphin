@@ -58,6 +58,7 @@
 #include "Core/HW/WiimoteEmu/DesiredWiimoteState.h"
 #include "Core/IOS/ES/ES.h"
 #include "Core/IOS/FS/FileSystem.h"
+#include "Core/IOS/FS/HostBackend/FS.h"
 #include "Core/IOS/IOS.h"
 #include "Core/IOS/Uids.h"
 #include "Core/NetPlayClient.h"  //for NetPlayUI
@@ -1681,10 +1682,45 @@ struct SaveSyncInfo
   std::shared_ptr<const UICommon::GameFile> game;
   bool has_wii_save = false;
   std::unique_ptr<IOS::HLE::FS::FileSystem> configured_fs;
+  std::unique_ptr<IOS::HLE::FS::FileSystem> bundled_fs;
   std::optional<std::vector<u8>> mii_data;
   std::vector<std::pair<u64, WiiSave::StoragePointer>> wii_saves;
   std::optional<DiscIO::Riivolution::SavegameRedirect> redirected_save;
 };
+
+static bool IsReadableWiiSave(const WiiSave::StoragePointer& save)
+{
+  return save && save->ReadHeader().has_value() && save->ReadBkHeader().has_value() &&
+         save->ReadFiles().has_value();
+}
+
+static std::vector<u64> GetBundledWiiSaveTitles(IOS::HLE::FS::FileSystem* fs)
+{
+  std::vector<u64> titles;
+  const auto title_types = fs->ReadDirectory(IOS::PID_KERNEL, IOS::PID_KERNEL, "/title");
+  if (!title_types)
+    return titles;
+
+  for (const std::string& type_name : *title_types)
+  {
+    u32 type = 0;
+    if (type_name.size() != 8 || !TryParse(type_name, &type, 16))
+      continue;
+
+    const auto title_names = fs->ReadDirectory(IOS::PID_KERNEL, IOS::PID_KERNEL,
+                                               fmt::format("/title/{}", type_name));
+    if (!title_names)
+      continue;
+
+    for (const std::string& title_name : *title_names)
+    {
+      u32 identifier = 0;
+      if (title_name.size() == 8 && TryParse(title_name, &identifier, 16))
+        titles.push_back(static_cast<u64>(type) << 32 | identifier);
+    }
+  }
+  return titles;
+}
 
 // called from ---GUI--- thread
 bool NetPlayServer::RequestStartGame()
@@ -1960,6 +1996,27 @@ std::optional<SaveSyncInfo> NetPlayServer::CollectSaveSyncInfo()
     ++sync_info.save_count;
 
     sync_info.configured_fs = IOS::HLE::FS::MakeFileSystem(IOS::HLE::FS::Location::Configured);
+    sync_info.bundled_fs = std::make_unique<IOS::HLE::FS::HostFileSystem>(
+        File::GetSysDirectory() + NETPLAY_SAVE_DIR);
+    const auto select_save = [&](u64 title) {
+      auto configured_save = WiiSave::MakeNandStorage(sync_info.configured_fs.get(), title);
+      if (IsReadableWiiSave(configured_save))
+        return configured_save;
+
+      auto bundled_save = WiiSave::MakeNandStorage(sync_info.bundled_fs.get(), title);
+      if (IsReadableWiiSave(bundled_save))
+      {
+        INFO_LOG_FMT(NETPLAY,
+                     "Using bundled deterministic Wii save for title {:016x} because the "
+                     "configured save is absent or invalid.",
+                     title);
+        return bundled_save;
+      }
+
+      INFO_LOG_FMT(NETPLAY, "Skipping Wii save of title {:016x}.", title);
+      return WiiSave::StoragePointer{};
+    };
+
     // A launcher ELF/DOL does not identify the Wii title it will eventually boot. Synchronizing no
     // titles makes the client use an empty temporary NAND while the host uses its configured NAND.
     // In that case the only deterministic general solution is to collect all installed Wii saves.
@@ -1974,26 +2031,26 @@ std::optional<SaveSyncInfo> NetPlayServer::CollectSaveSyncInfo()
                      "title cannot be inferred");
       }
       IOS::HLE::Kernel ios;
-      for (const u64 title : ios.GetESCore().GetInstalledTitles())
+      std::vector<u64> titles = ios.GetESCore().GetInstalledTitles();
+      std::vector<u64> bundled_titles = GetBundledWiiSaveTitles(sync_info.bundled_fs.get());
+      titles.insert(titles.end(), bundled_titles.begin(), bundled_titles.end());
+      std::ranges::sort(titles);
+      titles.erase(std::ranges::unique(titles).begin(), titles.end());
+
+      for (const u64 title : titles)
       {
-        auto save = WiiSave::MakeNandStorage(sync_info.configured_fs.get(), title);
-        if (save && save->ReadHeader().has_value() && save->ReadBkHeader().has_value() &&
-            save->ReadFiles().has_value())
-        {
+        auto save = select_save(title);
+        if (save)
           sync_info.wii_saves.emplace_back(title, std::move(save));
-        }
-        else
-        {
-          INFO_LOG_FMT(NETPLAY, "Skipping Wii save of title {:016x}.", title);
-        }
       }
     }
     else if (sync_info.game->GetPlatform() == DiscIO::Platform::WiiDisc ||
              sync_info.game->GetPlatform() == DiscIO::Platform::WiiWAD)
     {
-      auto save =
-          WiiSave::MakeNandStorage(sync_info.configured_fs.get(), sync_info.game->GetTitleID());
-      sync_info.wii_saves.emplace_back(sync_info.game->GetTitleID(), std::move(save));
+      const u64 title = sync_info.game->GetTitleID();
+      auto save = select_save(title);
+      if (save)
+        sync_info.wii_saves.emplace_back(title, std::move(save));
     }
 
     {
