@@ -78,7 +78,7 @@ const Info<bool> NETPLAY_ROLLBACK_DEEP_LOGGING{
 const Info<bool> NETPLAY_ROLLBACK_COARSE_FIFO_TIMING{
     {System::Main, "NetPlay", "RollbackCoarseFifoTiming"}, false};
 const Info<bool> NETPLAY_ROLLBACK_LATE_VI_GUARD{
-    {System::Main, "NetPlay", "RollbackLateVIGuard"}, false};
+    {System::Main, "NetPlay", "RollbackLateVIGuard"}, true};
 
 const Info<bool> NETPLAY_SAVEDATA_LOAD{{System::Main, "NetPlay", "SyncSaves"}, true};
 const Info<bool> NETPLAY_SAVEDATA_WRITE{{System::Main, "NetPlay", "WriteSaveData"}, false};

@@ -296,7 +296,7 @@ private:
     bool compare_confirmed_ram = false;
     bool deep_logging = false;
     bool coarse_fifo_timing = false;
-    bool late_vi_guard = false;
+    bool late_vi_guard = true;
     bool latency_sampling_started = false;
     bool start_requested = false;
     bool started_reported = false;

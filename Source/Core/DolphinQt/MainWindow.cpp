@@ -2007,9 +2007,9 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING,
                      m_managed_session->coarse_fifo_timing);
   const auto late_vi_guard_it = ticket.find("late_vi_guard");
-  m_managed_session->late_vi_guard =
-      late_vi_guard_it != ticket.end() && late_vi_guard_it->second.is<bool>() &&
-      late_vi_guard_it->second.get<bool>();
+  m_managed_session->late_vi_guard = late_vi_guard_it == ticket.end() ||
+                                     !late_vi_guard_it->second.is<bool>() ||
+                                     late_vi_guard_it->second.get<bool>();
   Config::SetCurrent(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD,
                      m_managed_session->late_vi_guard);
   if (m_managed_session->test_solo)

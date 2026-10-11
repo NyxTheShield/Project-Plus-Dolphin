@@ -1604,7 +1604,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       g_manager.full_scan_benchmark,
       g_manager.full_scan_keep_tracking,
       g_manager.compare_confirmed_ram, FrameBoundaryName(g_manager.frame_boundary));
-  NOTICE_LOG_FMT(CORE, "GekkoNet optimization experiment: coarse_fifo_timing={}, late_vi_guard={}",
+  NOTICE_LOG_FMT(CORE, "GekkoNet optimization settings: coarse_fifo_timing={}, late_vi_guard={}",
                  UseCoarseFifoTiming(), g_manager.late_vi_guard);
   return true;
 }
