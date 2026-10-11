@@ -71,6 +71,9 @@ typedef struct GekkoConfig {
     bool limited_saving;
     bool desync_detection;
     unsigned int check_distance;
+    // Stress sessions roll back every N visible frames. Zero preserves the legacy every-frame
+    // behavior for callers built against an older zero-initialized configuration.
+    unsigned int stress_interval;
 } GekkoConfig;
 
 typedef enum GekkoPlayerType {

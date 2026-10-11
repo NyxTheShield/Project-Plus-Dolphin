@@ -286,7 +286,7 @@ void NetPlayDialog::CreateMainLayout()
          "GekkoNet remains responsible for detecting and requesting every rollback."));
   m_rollback_stress_test_action->setCheckable(true);
   m_rollback_tracked_bitmap_clear_action =
-      m_other_menu->addAction(tr("Rollback Benchmark: Clear Only Tracked RAM Bitmap"));
+      m_other_menu->addAction(tr("Rollback Optimization: Clear Only Tracked RAM Bitmap"));
   m_rollback_tracked_bitmap_clear_action->setToolTip(
       tr("On restore, clear only the bitmap entries for MEM1 and MEM2 instead of the entire "
          "512 MB address-indexed bitmap. No other restore behavior changes. The selection is "

@@ -203,6 +203,7 @@ void JitArm64::GenerateAsm()
 
   SetJumpTarget(to_start_of_timing_slice);
   ABI_CallFunction(&CoreTiming::GlobalAdvance);
+  FixupBranch precise_tail_exit = CBNZ(ARM64Reg::W0);
 
   // When we've just entered the jit we need to update the membase
   // GlobalAdvance also checks exceptions after which we need to
@@ -224,6 +225,7 @@ void JitArm64::GenerateAsm()
   }
 
   dispatcher_exit = GetCodePtr();
+  SetJumpTarget(precise_tail_exit);
   SetJumpTarget(exit);
 
   // Reset the stack pointer, since the BLR optimization may have pushed things onto the stack

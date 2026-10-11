@@ -926,10 +926,15 @@ void JitArm64::DumpCode(const u8* start, const u8* end)
 void JitArm64::Run()
 {
   ProtectStack();
-  m_system.GetJitInterface().UpdateMembase();
 
   CompiledCode pExecAddr = (CompiledCode)enter_code;
-  pExecAddr();
+  do
+  {
+    // A precise VI tail can load a rollback snapshot before re-entering the JIT. Refresh the
+    // fixed fastmem base from the restored MSR/MMU state on every entry, not only the first one.
+    m_system.GetJitInterface().UpdateMembase();
+    pExecAddr();
+  } while (CoreTiming::RunPreciseVITail());
 
   UnprotectStack();
 }

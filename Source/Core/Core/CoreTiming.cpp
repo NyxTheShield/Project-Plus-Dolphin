@@ -828,24 +828,67 @@ void CoreTimingManager::SetFakeTBStartTicks(u64 val)
   m_globals.fake_TB_start_ticks = val;
 }
 
-void GlobalAdvance()
+// RunPreciseVITail can finish Advance() and prepare a timing slice while the generated JIT loop is
+// not on the host stack. Re-entering the loop must dispatch that slice rather than advancing over
+// it. This is CPU-thread-only state.
+static bool s_resume_prepared_timing_slice = false;
+
+bool GlobalAdvance()
 {
   auto& system = Core::System::GetInstance();
   auto& core_timing = system.GetCoreTiming();
   auto& ppc_state = system.GetPPCState();
 
-  for (;;)
+  if (s_resume_prepared_timing_slice)
+  {
+    s_resume_prepared_timing_slice = false;
+  }
+  else
   {
     core_timing.Advance();
-    // A rollback load replaces CoreTiming state. Do it only after Advance has fully returned, never
-    // while Advance still owns local state derived from the timeline being replaced.
-    Rollback::RunPendingVIBoundary(system);
+  }
+
+  // A boundary can load a snapshot, including PowerPC host bookkeeping. Return from generated JIT
+  // code before doing that work; restoring it while the old JIT frame is live corrupts that frame.
+  if (Rollback::IsVIBoundaryPending())
+    return true;
+
+  return Rollback::IsPreciseVITailArmed() && ppc_state.npc != 0 &&
+         system.GetCPU().GetState() == CPU::State::Running;
+}
+
+bool RunPreciseVITail()
+{
+  auto& system = Core::System::GetInstance();
+  auto& core_timing = system.GetCoreTiming();
+  auto& ppc_state = system.GetPPCState();
+  bool prepared_timing_slice = false;
+
+  const auto finish = [&] {
+    if (!prepared_timing_slice || system.GetCPU().GetState() != CPU::State::Running)
+      return false;
+
+    s_resume_prepared_timing_slice = true;
+    return true;
+  };
+
+  for (;;)
+  {
+    if (Rollback::IsVIBoundaryPending())
+    {
+      // GlobalAdvance has completely returned to C++ at this point, so replacing CoreTiming and
+      // PowerPC state cannot invalidate locals or stack bookkeeping owned by generated JIT code.
+      Rollback::RunPendingVIBoundary(system);
+      prepared_timing_slice = true;
+    }
 
     if (!Rollback::IsPreciseVITailArmed() || ppc_state.npc == 0 ||
         system.GetCPU().GetState() != CPU::State::Running)
     {
-      return;
+      return finish();
     }
+
+    prepared_timing_slice = true;
 
     const auto tail_start = std::chrono::steady_clock::now();
     const u64 start_tick = core_timing.GetTicks();
@@ -879,6 +922,7 @@ void GlobalAdvance()
 
     // The interpreter exhausted this timing slice. Advance again here rather than returning to the
     // JIT, which would otherwise execute one whole block before checking the expired downcount.
+    core_timing.Advance();
   }
 }
 

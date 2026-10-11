@@ -558,7 +558,8 @@ void EmuCodeBlock::SafeLoadToReg(X64Reg reg_value, const Gen::OpArg& opAddress, 
   if (opAddress.IsImm())
   {
     u32 address = opAddress.Imm32() + offset;
-    SafeLoadToRegImmediate(reg_value, address, accessSize, registersInUse, signExtend);
+    SafeLoadToRegImmediate(reg_value, address, accessSize, registersInUse, signExtend,
+                           force_slow_access);
     return;
   }
 
@@ -636,17 +637,19 @@ void EmuCodeBlock::SafeLoadToReg(X64Reg reg_value, const Gen::OpArg& opAddress, 
 }
 
 void EmuCodeBlock::SafeLoadToRegImmediate(X64Reg reg_value, u32 address, int accessSize,
-                                          BitSet32 registersInUse, bool signExtend)
+                                          BitSet32 registersInUse, bool signExtend,
+                                          bool force_slow_access)
 {
   // If the address is known to be RAM, just load it directly.
-  if (m_jit.jo.fastmem_arena && m_jit.m_mmu.IsOptimizableRAMAddress(address, accessSize))
+  if (!force_slow_access && m_jit.jo.fastmem_arena &&
+      m_jit.m_mmu.IsOptimizableRAMAddress(address, accessSize))
   {
     UnsafeLoadToReg(reg_value, Imm32(address), accessSize, 0, signExtend);
     return;
   }
 
   // If the address maps to an MMIO register, inline MMIO read code.
-  u32 mmioAddress = m_jit.m_mmu.IsOptimizableMMIOAccess(address, accessSize);
+  u32 mmioAddress = force_slow_access ? 0 : m_jit.m_mmu.IsOptimizableMMIOAccess(address, accessSize);
   if (accessSize != 64 && mmioAddress)
   {
     auto& memory = m_jit.m_system.GetMemory();

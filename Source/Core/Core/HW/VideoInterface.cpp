@@ -913,6 +913,10 @@ void VideoInterfaceManager::Update(u64 ticks)
 
   const bool is_at_field_boundary =
       m_half_line_count == odd_field_begin || m_half_line_count == even_field_begin;
+  const bool is_at_begin_field = m_half_line_count == m_odd_field_first_hl ||
+                                 m_half_line_count == m_even_field_first_hl;
+  const bool gekko_uses_begin_field =
+      Rollback::IsGekkoFrameBoundary(Rollback::FrameBoundary::VIBeginField);
 
   // Movie's frame counter should be updated before actually rendering the frame,
   // in case frame counter display is enabled
@@ -963,13 +967,27 @@ void VideoInterfaceManager::Update(u64 ticks)
     m_half_line_of_next_si_poll += 2 * si.GetPollXLines();
   }
 
+  // At the Begin Field rollback boundary, Gekko selects the frame's input after this VI callback
+  // returns. Re-phase Dolphin's serialized SI poll to consume that input after the boundary rather
+  // than performing a second, untracked controller relatch from the rollback dispatcher.
+  if (gekko_uses_begin_field && is_at_begin_field)
+    m_half_line_of_next_si_poll = m_half_line_count + NUM_HALF_LINES_FOR_SI_POLL;
+
   // If this half-line is at the actual boundary of either field, schedule an SI poll to happen
   // some number of half-lines in the future
 
   if (is_at_field_boundary)
   {
-    // first results start at vsync
-    m_half_line_of_next_si_poll = m_half_line_count + NUM_HALF_LINES_FOR_SI_POLL;
+    if (gekko_uses_begin_field)
+    {
+      // Disable the usual VSync-relative poll until Begin Field establishes the new phase.
+      m_half_line_of_next_si_poll = GetHalfLinesPerEvenField() + GetHalfLinesPerOddField();
+    }
+    else
+    {
+      // first results start at vsync
+      m_half_line_of_next_si_poll = m_half_line_count + NUM_HALF_LINES_FOR_SI_POLL;
+    }
   }
 
   // Move to the next half-line and potentially roll-over the count to zero. If we've reached

@@ -142,6 +142,7 @@ private:
   ConnectionError OnConnect(ENetPeer* socket, sf::Packet& received_packet);
   unsigned int OnDisconnect(const Client& player);
   unsigned int OnData(sf::Packet& packet, Client& player);
+  void EndPresentationPause();
 
   void OnTraversalStateChanged() override;
   void OnConnectReady(ENetAddress) override {}
@@ -192,6 +193,9 @@ private:
 
   std::unordered_map<u32, std::vector<std::pair<PlayerId, u64>>> m_timebase_by_frame;
   bool m_desync_detected = false;
+  u32 m_presentation_pause_generation = 0;
+  PlayerId m_presentation_pause_requester = 0;
+  std::unordered_set<PlayerId> m_presentation_pause_acks;
 
   struct
   {

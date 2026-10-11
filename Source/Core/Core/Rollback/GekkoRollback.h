@@ -67,9 +67,11 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
                        const std::vector<std::string>& player_endpoints,
                        int local_delay, int prediction_window, bool debug_p2_cstick,
                        bool simulate_remote_p2, bool stress_test, bool stress_inputs,
+                       bool native_stress, u32 stress_interval,
                        bool compare_confirmed_ram, bool stop_ram_compare_on_mismatch);
 void StopGekkoSession();
 bool IsGekkoSessionActive();
+bool IsGekkoFrameBoundary(FrameBoundary boundary);
 void SetGekkoLocalDelay(int local_delay);
 
 }  // namespace Rollback

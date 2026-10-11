@@ -6,6 +6,8 @@
 #include <SFML/Network/Packet.hpp>
 #include <array>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -154,6 +156,7 @@ public:
   void SendChatMessage(const std::string& msg);
   void RequestStopGame();
   void SendPowerButtonEvent();
+  bool RunSynchronizedPresentationChange(const std::function<void()>& change);
   void RequestGolfControl(PlayerId pid);
   void RequestGolfControl();
   std::string GetCurrentGolfer();
@@ -347,6 +350,9 @@ private:
   void OnStartGame(sf::Packet& packet);
   void OnStopGame(sf::Packet& packet);
   void OnPowerButton();
+  void OnPresentationPauseBegin(sf::Packet& packet);
+  void OnPresentationPauseReady(sf::Packet& packet);
+  void OnPresentationPauseEnd(sf::Packet& packet);
   void OnPing(sf::Packet& packet);
   void OnPlayerPingData(sf::Packet& packet);
   void OnDesyncDetected(sf::Packet& packet);
@@ -405,6 +411,14 @@ private:
   // Wii sync data is consumed by BootSessionData. Require SetWiiSyncData to run again before
   // every subsequent boot instead of silently falling back to each peer's configured NAND.
   bool m_wii_sync_data_ready = false;
+
+  std::mutex m_presentation_pause_mutex;
+  std::condition_variable m_presentation_pause_cv;
+  u32 m_presentation_pause_generation = 0;
+  PlayerId m_presentation_pause_requester = 0;
+  bool m_presentation_pause_active = false;
+  bool m_presentation_pause_ready = false;
+  bool m_presentation_pause_was_running = false;
 };
 
 void NetPlay_Enable(NetPlayClient* const np);

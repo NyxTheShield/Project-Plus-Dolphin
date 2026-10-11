@@ -226,6 +226,7 @@ namespace Gekko {
         std::vector<Player> _locals;
 
         u32 _check_distance;
+        u32 _stress_interval;
 
         std::map<Frame, u32> _checksum_history;
     };

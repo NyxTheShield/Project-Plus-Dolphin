@@ -553,6 +553,9 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
 {
   const PlayerId pid = player.pid;
 
+  if (m_presentation_pause_requester != 0)
+    EndPresentationPause();
+
   if (m_is_running)
   {
     for (PlayerId& mapping : m_pad_map)
@@ -1137,6 +1140,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     if (!m_is_running)
       break;
 
+    EndPresentationPause();
     m_is_running = false;
 
     // tell clients to stop game
@@ -1177,6 +1181,58 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     sf::Packet spac;
     spac << MessageID::PowerButton;
     SendToClients(spac, player.pid);
+  }
+  break;
+
+  case MessageID::PresentationPauseRequest:
+  {
+    if (!m_is_running || m_presentation_pause_requester != 0 ||
+        !PlayerHasControllerMapped(player.pid))
+      break;
+
+    ++m_presentation_pause_generation;
+    if (m_presentation_pause_generation == 0)
+      ++m_presentation_pause_generation;
+    m_presentation_pause_requester = player.pid;
+    m_presentation_pause_acks.clear();
+
+    sf::Packet response;
+    response << MessageID::PresentationPauseBegin << m_presentation_pause_generation << player.pid;
+    SendToClients(response);
+    INFO_LOG_FMT(NETPLAY, "Beginning presentation pause {} for player {}",
+                 m_presentation_pause_generation, player.pid);
+  }
+  break;
+
+  case MessageID::PresentationPauseAck:
+  {
+    u32 generation;
+    packet >> generation;
+    if (m_presentation_pause_requester == 0 || generation != m_presentation_pause_generation)
+      break;
+
+    m_presentation_pause_acks.insert(player.pid);
+    if (m_presentation_pause_acks.size() == m_players.size())
+    {
+      if (const auto it = m_players.find(m_presentation_pause_requester); it != m_players.end())
+      {
+        sf::Packet response;
+        response << MessageID::PresentationPauseReady << generation;
+        Send(it->second.socket, response);
+      }
+    }
+  }
+  break;
+
+  case MessageID::PresentationPauseEnd:
+  {
+    u32 generation;
+    packet >> generation;
+    if (player.pid == m_presentation_pause_requester &&
+        generation == m_presentation_pause_generation)
+    {
+      EndPresentationPause();
+    }
   }
   break;
 
@@ -2382,6 +2438,19 @@ u64 NetPlayServer::GetInitialNetPlayRTC() const
     return Config::Get(Config::MAIN_CUSTOM_RTC_VALUE);
 
   return Common::Timer::GetLocalTimeSinceJan1970();
+}
+
+void NetPlayServer::EndPresentationPause()
+{
+  if (m_presentation_pause_requester == 0)
+    return;
+
+  sf::Packet response;
+  response << MessageID::PresentationPauseEnd << m_presentation_pause_generation;
+  SendToClients(response);
+  INFO_LOG_FMT(NETPLAY, "Ending presentation pause {}", m_presentation_pause_generation);
+  m_presentation_pause_requester = 0;
+  m_presentation_pause_acks.clear();
 }
 
 // called from multiple threads

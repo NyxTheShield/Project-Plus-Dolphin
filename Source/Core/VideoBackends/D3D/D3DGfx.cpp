@@ -185,9 +185,9 @@ void Gfx::OnConfigChanged(u32 bits)
 void Gfx::CheckForSwapChainChanges()
 {
   const bool surface_changed = g_presenter->SurfaceChangedTestAndClear();
-  const bool surface_resized =
-      g_presenter->SurfaceResizedTestAndClear() || m_swap_chain->CheckForFullscreenChange();
-  if (!surface_changed && !surface_resized)
+  const bool surface_resized = g_presenter->SurfaceResizedTestAndClear();
+  const bool fullscreen_changed = m_swap_chain->CheckForFullscreenChange();
+  if (!surface_changed && !surface_resized && !fullscreen_changed)
     return;
 
   if (surface_changed)
@@ -267,7 +267,12 @@ void Gfx::WaitForGPUIdle()
 void Gfx::SetFullscreen(bool enable_fullscreen)
 {
   if (m_swap_chain)
+  {
     m_swap_chain->SetFullscreen(enable_fullscreen);
+    // Finish the mode change while emulation is paused instead of deferring the swap-chain resize
+    // until the next emulated frame.
+    CheckForSwapChainChanges();
+  }
 }
 
 bool Gfx::IsFullscreen() const

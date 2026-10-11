@@ -1925,6 +1925,37 @@ void MainWindow::StartManagedNetPlay()
       stress_inputs_it->second.get<bool>();
   Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_INPUTS,
                      m_managed_session->stress_inputs);
+  const auto native_stress_it = ticket.find("native_stress");
+  m_managed_session->native_stress =
+      native_stress_it != ticket.end() && native_stress_it->second.is<bool>() &&
+      native_stress_it->second.get<bool>();
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_NATIVE_STRESS,
+                     m_managed_session->native_stress);
+  const auto stress_interval_it = ticket.find("stress_interval");
+  if (stress_interval_it != ticket.end() && stress_interval_it->second.is<double>())
+  {
+    const double interval = stress_interval_it->second.get<double>();
+    if (interval >= 1.0 && interval <= 600.0)
+      m_managed_session->stress_interval = static_cast<u32>(interval);
+  }
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL,
+                     m_managed_session->stress_interval);
+  const auto rollback_frames_it = ticket.find("stress_rollback_frames");
+  if (rollback_frames_it != ticket.end() && rollback_frames_it->second.is<double>())
+  {
+    const double frames = rollback_frames_it->second.get<double>();
+    if (frames >= 1.0 && frames <= 10.0)
+      m_managed_session->rollback_window_override = static_cast<u32>(frames);
+  }
+  const auto frame_boundary_it = ticket.find("frame_boundary");
+  if (frame_boundary_it != ticket.end() && frame_boundary_it->second.is<double>())
+  {
+    const double boundary = frame_boundary_it->second.get<double>();
+    if (boundary >= 0.0 && boundary <= 3.0)
+      m_managed_session->frame_boundary = static_cast<u32>(boundary);
+  }
+  Config::SetCurrent(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY,
+                     m_managed_session->frame_boundary);
   const auto full_scan_it = ticket.find("full_scan_benchmark");
   m_managed_session->full_scan_benchmark =
       full_scan_it != ticket.end() && full_scan_it->second.is<bool>() &&
@@ -1965,14 +1996,17 @@ void MainWindow::StartManagedNetPlay()
                      m_managed_session->compare_confirmed_ram);
   if (m_managed_session->test_solo)
   {
-    // Fake matchmaking is a rollback reproduction harness: the visible one-player lobby receives
-    // an in-process P2 whose inputs arrive one rollback window late. This exercises the normal
-    // Gekko event and Orca snapshot paths without requiring a second Dolphin process.
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2, true);
+    // Fake matchmaking supports both the simulated-P2 network harness and GekkoNet's native
+    // input-neutral stress session. Both exercise Dolphin's normal Orca snapshot event path.
+    Config::SetCurrent(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2,
+                       !m_managed_session->native_stress);
     Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_TEST, true);
-    INFO_LOG_FMT(NETPLAY,
-                 "Managed solo test: enabling forced rollback every frame at the negotiated "
-                 "rollback-window depth");
+    INFO_LOG_FMT(
+        NETPLAY,
+        "Managed solo test: enabling {} rollback every {} frame(s) at {}-frame depth",
+        m_managed_session->native_stress ? "native Gekko stress-session" : "simulated-peer",
+        m_managed_session->native_stress ? m_managed_session->stress_interval : 1,
+        m_managed_session->rollback_window_override.value_or(2));
   }
   else if (m_managed_session->stress_test)
   {
@@ -2181,8 +2215,8 @@ void MainWindow::PollManagedNetPlayReady()
       return;
     }
 
-    unsigned int rollback_window =
-        m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5;
+    unsigned int rollback_window = m_managed_session->rollback_window_override.value_or(
+        m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5);
     const u32 ping = client->GetPlayersMaxPing();
     const u32 delay = NetPlay::GetGekkoInputDelayForPing(
         ping, m_managed_session->input_delay_reduction);

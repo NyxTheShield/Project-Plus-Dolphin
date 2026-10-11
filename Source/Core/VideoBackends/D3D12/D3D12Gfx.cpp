@@ -375,9 +375,9 @@ bool Gfx::BindBackbuffer(const ClearColor& clear_color)
 void Gfx::CheckForSwapChainChanges()
 {
   const bool surface_changed = g_presenter->SurfaceChangedTestAndClear();
-  const bool surface_resized =
-      g_presenter->SurfaceResizedTestAndClear() || m_swap_chain->CheckForFullscreenChange();
-  if (!surface_changed && !surface_resized)
+  const bool surface_resized = g_presenter->SurfaceResizedTestAndClear();
+  const bool fullscreen_changed = m_swap_chain->CheckForFullscreenChange();
+  if (!surface_changed && !surface_resized && !fullscreen_changed)
     return;
 
   // The swap chain could be in use from a previous frame.

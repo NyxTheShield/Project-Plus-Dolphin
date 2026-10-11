@@ -68,6 +68,8 @@ void Jit64AsmRoutineManager::Generate()
   ABI_PushRegistersAndAdjustStack({}, 0);
   ABI_CallFunction(CoreTiming::GlobalAdvance);
   ABI_PopRegistersAndAdjustStack({}, 0);
+  TEST(8, R(ABI_RETURN), R(ABI_RETURN));
+  FixupBranch precise_tail_exit = J_CC(CC_NZ, Jump::Near);
 
   // When we've just entered the jit we need to update the membase
   // GlobalAdvance also checks exceptions after which we need to
@@ -234,6 +236,7 @@ void Jit64AsmRoutineManager::Generate()
 
   // Landing pad for drec space
   dispatcher_exit = GetCodePtr();
+  SetJumpTarget(precise_tail_exit);
   if (enable_debugging)
     SetJumpTarget(dbg_exit);
 

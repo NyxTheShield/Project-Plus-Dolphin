@@ -54,7 +54,7 @@ public:
   void Shutdown() override;
 
   bool HandleFault(uintptr_t access_address, SContext* ctx) override;
-  bool BackPatch(SContext* ctx);
+  bool BackPatch(uintptr_t access_address, SContext* ctx);
 
   void EnableOptimization();
   void EnableBlockLink();

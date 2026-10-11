@@ -100,7 +100,8 @@ enum class FromThread
 };
 
 // helpers until the JIT is updated to use the instance
-void GlobalAdvance();
+bool GlobalAdvance();
+bool RunPreciseVITail();
 void GlobalIdle();
 
 class CoreTimingManager

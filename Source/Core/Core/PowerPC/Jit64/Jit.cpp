@@ -4,6 +4,7 @@
 #include "Core/PowerPC/Jit64/Jit.h"
 
 #include <chrono>
+#include <limits>
 #include <map>
 #include <span>
 #include <sstream>
@@ -23,6 +24,7 @@
 #include "Common/HostDisassembler.h"
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
+#include "Common/StringUtil.h"
 #include "Common/Swap.h"
 #include "Common/x64ABI.h"
 #include "Core/Core.h"
@@ -159,27 +161,62 @@ bool Jit64::HandleFault(uintptr_t access_address, SContext* ctx)
                    ctx->CTX_PC, access_address, memory_base, ppc_state.msr.DR);
     }
 
-    return BackPatch(ctx);
+    const bool handled = BackPatch(access_address, ctx);
+    if (!handled)
+    {
+      ERROR_LOG_FMT(DYNA_REC,
+                    "Jit64 fastmem recovery failed: host_pc={:#018x}, access={:#018x}, "
+                    "memory_base={:#018x}, MSR.DR={}",
+                    ctx->CTX_PC, access_address, memory_base, ppc_state.msr.DR);
+    }
+    return handled;
   }
 
   return false;
 }
 
-bool Jit64::BackPatch(SContext* ctx)
+bool Jit64::BackPatch(uintptr_t access_address, SContext* ctx)
 {
   u8* codePtr = reinterpret_cast<u8*>(ctx->CTX_PC);
 
   if (!IsInSpace(codePtr))
+  {
+    ERROR_LOG_FMT(DYNA_REC,
+                  "Jit64 backpatch rejected host PC outside main JIT space: host_pc={}, access={:#018x}",
+                  fmt::ptr(codePtr), access_address);
     return false;  // this will become a regular crash real soon after this
+  }
 
   auto it = m_back_patch_info.find(codePtr);
   if (it == m_back_patch_info.end())
   {
-    PanicAlertFmt("BackPatch: no register use entry for address {}", fmt::ptr(codePtr));
+    uintptr_t nearest_pc = 0;
+    uintptr_t nearest_distance = std::numeric_limits<uintptr_t>::max();
+    for (const auto& [candidate, unused] : m_back_patch_info)
+    {
+      const uintptr_t candidate_pc = reinterpret_cast<uintptr_t>(candidate);
+      const uintptr_t distance = candidate_pc > ctx->CTX_PC ? candidate_pc - ctx->CTX_PC :
+                                                               ctx->CTX_PC - candidate_pc;
+      if (distance < nearest_distance)
+      {
+        nearest_pc = candidate_pc;
+        nearest_distance = distance;
+      }
+    }
+    ERROR_LOG_FMT(DYNA_REC,
+                  "Jit64 backpatch metadata missing: host_pc={}, access={:#018x}, entries={}, "
+                  "nearest_pc={:#018x}, nearest_distance={:#x}, bytes={}",
+                  fmt::ptr(codePtr), access_address, m_back_patch_info.size(), nearest_pc,
+                  nearest_distance, HexDump(codePtr, 16));
     return false;
   }
 
   TrampolineInfo& info = it->second;
+  ERROR_LOG_FMT(DYNA_REC,
+                "Jit64 fastmem fault recovery: host_pc={}, access={:#018x}, guest_pc={:#010x}, "
+                "region_start={}, region_len={}, read={}, access_size={}",
+                fmt::ptr(codePtr), access_address, info.pc, fmt::ptr(info.start), info.len, info.read,
+                info.accessSize);
 
   u8* exceptionHandler = nullptr;
   if (jo.memcheck)
@@ -202,6 +239,15 @@ bool Jit64::BackPatch(SContext* ctx)
 
   // Generate the trampoline.
   const u8* trampoline = trampolines.GenerateTrampoline(info);
+  if (!trampoline)
+  {
+    ERROR_LOG_FMT(DYNA_REC,
+                  "Jit64 trampoline generation failed: host_pc={}, access={:#018x}, guest_pc={:#010x}",
+                  fmt::ptr(codePtr), access_address, info.pc);
+    js.generatingTrampoline = false;
+    js.trampolineExceptionHandler = nullptr;
+    return false;
+  }
   js.generatingTrampoline = false;
   js.trampolineExceptionHandler = nullptr;
 
@@ -736,10 +782,15 @@ void Jit64::WriteExternalExceptionExit()
 void Jit64::Run()
 {
   ProtectStack();
-  m_system.GetJitInterface().UpdateMembase();
 
   CompiledCode pExecAddr = (CompiledCode)asm_routines.enter_code;
-  pExecAddr();
+  do
+  {
+    // A precise VI tail can load a rollback snapshot before re-entering the JIT. Refresh the
+    // fixed fastmem base from the restored MSR/MMU state on every entry, not only the first one.
+    m_system.GetJitInterface().UpdateMembase();
+    pExecAddr();
+  } while (CoreTiming::RunPreciseVITail());
 
   UnprotectStack();
 }

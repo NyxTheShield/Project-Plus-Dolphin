@@ -418,6 +418,9 @@ struct GekkoManager
   bool simulate_remote_p2 = false;
   bool stress_test = false;
   bool stress_inputs = false;
+  bool native_stress = false;
+  u32 stress_interval = 1;
+  u32 stress_rollback_frames = 0;
   bool tracked_bitmap_clear = false;
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
@@ -1197,6 +1200,12 @@ bool IsGekkoSessionActive()
   return g_manager.active.load(std::memory_order_relaxed);
 }
 
+bool IsGekkoFrameBoundary(FrameBoundary boundary)
+{
+  return g_manager.active.load(std::memory_order_acquire) &&
+         g_manager.frame_boundary == boundary;
+}
+
 void SetGekkoLocalDelay(int local_delay)
 {
   const int clamped_delay = std::clamp(local_delay, 0, 60);
@@ -1226,7 +1235,8 @@ void SetGekkoLocalDelay(int local_delay)
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
                        const std::vector<std::string>& player_endpoints, int local_delay,
                        int prediction_window, bool debug_p2_cstick, bool simulate_remote_p2,
-                       bool stress_test, bool stress_inputs, bool compare_confirmed_ram,
+                       bool stress_test, bool stress_inputs, bool native_stress,
+                       u32 stress_interval, bool compare_confirmed_ram,
                        bool stop_ram_compare_on_mismatch)
 {
   StopGekkoSession();
@@ -1244,7 +1254,15 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     ERROR_LOG_FMT(CORE, "GekkoNet: simulated remote player 2 requires a two-player host session");
     return false;
   }
-  if (!gekko_create(&g_manager.session, GekkoGameSession))
+  if (native_stress && (!stress_test || simulate_remote_p2 || players != 1 || local_player != 1))
+  {
+    ERROR_LOG_FMT(CORE,
+                  "GekkoNet: native stress requires a one-player stress session without a "
+                  "simulated peer");
+    return false;
+  }
+  if (!gekko_create(&g_manager.session,
+                    native_stress ? GekkoStressSession : GekkoGameSession))
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create session");
     return false;
@@ -1273,12 +1291,22 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // Dolphin's rollback snapshots deliberately do not provide hashes to GekkoNet, so its checksum
   // comparison cannot produce meaningful desync results.
   config.desync_detection = false;
-  config.check_distance = 10;
+  // StressSession loads the state at current-check_distance, then advances from the following
+  // frame through current-1. Therefore its replay count is check_distance-1; add one so the
+  // harness's RollbackFrames value means the number of frames actually re-executed.
+  config.check_distance = native_stress ?
+                              static_cast<unsigned int>(clamped_rollback_window + 1) :
+                              10;
+  config.stress_interval = std::max(1u, stress_interval);
 
   gekko_start(g_manager.session, &config);
 
   GekkoNetAdapter* adapter = nullptr;
-  if (simulate_remote_p2)
+  if (native_stress)
+  {
+    // GekkoStressSession is intentionally local and does not use a transport adapter.
+  }
+  else if (simulate_remote_p2)
     adapter = &s_main_simulated_adapter;
   else
   {
@@ -1291,14 +1319,15 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     adapter = &s_shared_adapter;
   }
 
-  if (!adapter)
+  if (!native_stress && !adapter)
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create network adapter");
     gekko_destroy(&g_manager.session);
     return false;
   }
-  g_manager.native_adapter_active = !simulate_remote_p2;
-  gekko_net_adapter_set(g_manager.session, adapter);
+  g_manager.native_adapter_active = !native_stress && !simulate_remote_p2;
+  if (adapter)
+    gekko_net_adapter_set(g_manager.session, adapter);
   const auto destroy_failed_session = [&] {
     gekko_destroy(&g_manager.session);
     if (g_manager.native_adapter_active)
@@ -1320,11 +1349,18 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.simulate_remote_p2 = simulate_remote_p2;
   g_manager.stress_test = stress_test;
   g_manager.stress_inputs = stress_inputs;
+  g_manager.native_stress = native_stress;
+  g_manager.stress_interval = std::max(1u, stress_interval);
+  g_manager.stress_rollback_frames =
+      stress_test ? static_cast<u32>(clamped_rollback_window) : 0;
   g_manager.compare_confirmed_ram = compare_confirmed_ram && !simulate_remote_p2 && players > 1;
   g_manager.stop_ram_compare_on_mismatch =
       stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
   g_manager.ram_diagnostic_dumped = false;
-  g_manager.frame_boundary = FrameBoundary::VINewField;
+  const u32 configured_frame_boundary =
+      std::min(Config::Get(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY),
+               static_cast<u32>(FrameBoundary::VINewField));
+  g_manager.frame_boundary = static_cast<FrameBoundary>(configured_frame_boundary);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.configured_local_delay = clamped_delay;
   g_manager.session_id = session_id;
@@ -1487,9 +1523,11 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // For a real two-process benchmark, delay only the P2 -> P1 receive path. Delaying both
   // directions also delays acknowledgements and can make Gekko batch traffic instead of exposing
   // a clean, repeatable remote-input misprediction. P2 still generates the stress input locally.
-  s_stress_mode = stress_test && (simulate_remote_p2 || local_player == 1);
+  s_stress_mode = !native_stress && stress_test && (simulate_remote_p2 || local_player == 1);
   s_stress_packet_delay_frames =
-      stress_test ? static_cast<u64>(clamped_rollback_window + clamped_delay + 1) : 0;
+      stress_test && !native_stress ?
+          static_cast<u64>(clamped_rollback_window + clamped_delay + 1) :
+          0;
 
   if (simulate_remote_p2)
   {
@@ -1541,7 +1579,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       "delay={}, "
       "rollback_window={}, gekko_prediction_window={}, local_input_source={}, "
       "debug_p2_cstick={}, simulate_remote_p2={}, simulated_one_way_latency_ms={}, "
-      "stress_enabled={}, stress_inputs={}, stress_input_period_frames={}, stress_rollback_frames={}, "
+      "stress_enabled={}, native_stress={}, stress_inputs={}, stress_input_period_frames={}, "
+      "stress_rollback_frames={}, "
       "tracked_bitmap_clear={}, "
       "full_scan_benchmark={}, full_scan_keep_tracking={}, compare_confirmed_ram={}, "
       "frame_boundary={})",
@@ -1549,7 +1588,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       clamped_prediction,
       g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad", debug_p2_cstick,
       simulate_remote_p2, simulate_remote_p2 && !stress_test ? SIMULATED_P2_LATENCY.count() : 0,
-      stress_test, stress_inputs, STRESS_INPUT_PERIOD_FRAMES, clamped_rollback_window,
+      stress_test, native_stress, stress_inputs,
+      native_stress ? std::max(1u, stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
+      clamped_rollback_window,
       g_manager.tracked_bitmap_clear,
       g_manager.full_scan_benchmark,
       g_manager.full_scan_keep_tracking,
@@ -2061,7 +2102,9 @@ static void MaybeLogPerformance(Core::System& system)
       (dirty_pages.dirty_pages - g_manager.perf_dirty_pages_start.dirty_pages) -
           (dirty_pages.pages_recorded - g_manager.perf_dirty_pages_start.pages_recorded),
       udp.sent, udp.received, udp.rejected, gekko_frames_ahead(g_manager.session),
-      g_manager.stress_test, STRESS_INPUT_PERIOD_FRAMES,
+      g_manager.stress_test,
+      g_manager.native_stress ? g_manager.stress_interval : STRESS_INPUT_PERIOD_FRAMES,
+      g_manager.native_stress ? g_manager.stress_rollback_frames :
       g_manager.stress_test ?
           s_stress_packet_delay_frames - static_cast<u64>(g_manager.configured_local_delay) - 1 :
           0,
@@ -2446,8 +2489,6 @@ static bool PrepareQueuedFrame(Core::System& system)
       g_manager.frame_execution_event_start = GetResimEventStats();
       const auto frame_setup_start =
           resimulating ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-      // VI boundaries select the next rollback input before VI's normally scheduled SI poll.
-      // Relatching here would expose it immediately at a JIT-dependent guest instruction.
       if (g_manager.frame_boundary == FrameBoundary::BrawlHook)
         system.GetSerialInterface().RelatchInputs();
       if (g_manager.compare_confirmed_ram)

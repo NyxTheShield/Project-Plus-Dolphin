@@ -1,4 +1,5 @@
 #include "session.h"
+#include <algorithm>
 #include <cassert>
 
 
@@ -7,6 +8,7 @@ Gekko::StressSession::StressSession()
     _config = GekkoConfig();
     _sync = SyncSystem();
     _check_distance = 0;
+    _stress_interval = 1;
 }
 
 void Gekko::StressSession::Init(GekkoConfig* config)
@@ -15,6 +17,7 @@ void Gekko::StressSession::Init(GekkoConfig* config)
 
     // check distance
     _check_distance = _config.check_distance;
+    _stress_interval = std::max(1u, _config.stress_interval);
 
     // setup input buffer for the players
     _sync.Init(_config.num_players, _config.input_size);
@@ -78,7 +81,8 @@ GekkoGameEvent** Gekko::StressSession::UpdateSession(i32* count)
     _game_events.Reset();
 
     Frame current = _sync.GetCurrentFrame();
-    if (_check_distance > 0 && current > _check_distance) {
+    if (_check_distance > 0 && current > _check_distance &&
+        (static_cast<u32>(current) % _stress_interval) == 0) {
         // once whe have gone far enough forward start rollback back and comparing checksums
         for (Frame check_frame = current - _check_distance; check_frame < current; check_frame++) {
             CheckForDesyncs(check_frame);

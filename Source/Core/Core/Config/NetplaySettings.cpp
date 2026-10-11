@@ -59,8 +59,12 @@ const Info<bool> NETPLAY_ROLLBACK_STRESS_TEST{
     {System::Main, "NetPlay", "RollbackStressTest7F3F"}, false};
 const Info<bool> NETPLAY_ROLLBACK_STRESS_INPUTS{
     {System::Main, "NetPlay", "RollbackStressInputs"}, false};
+const Info<bool> NETPLAY_ROLLBACK_NATIVE_STRESS{
+    {System::Main, "NetPlay", "RollbackNativeStress"}, false};
+const Info<u32> NETPLAY_ROLLBACK_STRESS_INTERVAL{
+    {System::Main, "NetPlay", "RollbackStressInterval"}, 1};
 const Info<bool> NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR{
-    {System::Main, "NetPlay", "RollbackTrackedBitmapClear"}, false};
+    {System::Main, "NetPlay", "RollbackTrackedBitmapClear"}, true};
 const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK{
     {System::Main, "NetPlay", "RollbackFullScanBenchmark"}, false};
 const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING{
