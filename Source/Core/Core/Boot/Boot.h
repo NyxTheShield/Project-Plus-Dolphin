@@ -92,6 +92,9 @@ public:
   const NetPlay::NetSettings* GetNetplaySettings() const;
   void SetNetplaySettings(std::unique_ptr<NetPlay::NetSettings> netplay_settings);
 
+  bool IsNetplayReplay() const;
+  void SetNetplayReplay(bool netplay_replay);
+
 private:
   std::optional<std::string> m_savestate_path;
   DeleteSavestateAfterBoot m_delete_savestate = DeleteSavestateAfterBoot::No;
@@ -102,6 +105,7 @@ private:
   WiiSyncCleanupFunction m_wii_sync_cleanup;
 
   std::unique_ptr<NetPlay::NetSettings> m_netplay_settings;
+  bool m_netplay_replay = false;
 };
 
 struct BootParameters

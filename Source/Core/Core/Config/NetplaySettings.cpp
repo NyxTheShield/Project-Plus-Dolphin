@@ -57,8 +57,6 @@ const Info<bool> NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2{
     {System::Main, "NetPlay", "RollbackSimulateRemoteP2"}, false};
 const Info<bool> NETPLAY_ROLLBACK_STRESS_TEST{
     {System::Main, "NetPlay", "RollbackStressTest7F3F"}, false};
-const Info<bool> NETPLAY_ROLLBACK_STRESS_INPUTS{
-    {System::Main, "NetPlay", "RollbackStressInputs"}, false};
 const Info<bool> NETPLAY_ROLLBACK_NATIVE_STRESS{
     {System::Main, "NetPlay", "RollbackNativeStress"}, false};
 const Info<u32> NETPLAY_ROLLBACK_STRESS_INTERVAL{

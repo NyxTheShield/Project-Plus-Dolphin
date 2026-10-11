@@ -181,6 +181,16 @@ void BootSessionData::SetNetplaySettings(std::unique_ptr<NetPlay::NetSettings> n
   m_netplay_settings = std::move(netplay_settings);
 }
 
+bool BootSessionData::IsNetplayReplay() const
+{
+  return m_netplay_replay;
+}
+
+void BootSessionData::SetNetplayReplay(bool netplay_replay)
+{
+  m_netplay_replay = netplay_replay;
+}
+
 BootParameters::BootParameters(Parameters&& parameters_, BootSessionData boot_session_data_)
     : parameters(std::move(parameters_)), boot_session_data(std::move(boot_session_data_))
 {

@@ -27,23 +27,26 @@
 #include <arm64intr.h>
 #endif
 
-#include <gekkonet.h>
 #include <fmt/format.h>
+#include <gekkonet.h>
 #include <xxh3.h>
 
 #include "Common/Config/Config.h"
 #include "Common/ENet.h"
-#include "Common/FileUtil.h"
 #include "Common/FPURoundMode.h"
+#include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
 #include "Common/Timer.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
+#include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/HW/CPU.h"
 #include "Core/HW/DSP.h"
 #include "Core/HW/GCPad.h"
+#include "Core/HW/EXI/EXI_DeviceIPL.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
@@ -51,6 +54,7 @@
 #include "Core/HW/VideoInterface.h"
 #include "Core/IOS/FS/HostBackend/FS.h"
 #include "Core/IOS/IOS.h"
+#include "Core/IOS/Uids.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -84,14 +88,22 @@ constexpr std::string_view SIMULATED_P2_ADDRESS = "in-process-p2";
 constexpr u32 BRAWL_FRAME_HOOK_ADDR = 0x80017504;
 constexpr u32 BRAWL_EXPECTED_OPCODE = 0x90170100;  // stw r0, 0x100(r23)
 constexpr std::array<u8, 4> RAM_DIAGNOSTIC_MAGIC{'R', 'M', 'D', 'G'};
+constexpr std::array<char, 8> NETPLAY_REPLAY_MAGIC{'B', 'B', 'N', 'P', 'R', '\0', '\r', '\n'};
+constexpr u32 NETPLAY_REPLAY_VERSION = 2;
+constexpr u8 NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES = 1;
+constexpr u8 NETPLAY_REPLAY_HAS_SYSCONF = 2;
+constexpr u8 NETPLAY_REPLAY_MEM1_PAGE_SHIFT = 12;
+constexpr std::size_t NETPLAY_REPLAY_MEM1_PAGE_SIZE =
+    std::size_t{1} << NETPLAY_REPLAY_MEM1_PAGE_SHIFT;
+constexpr std::size_t NETPLAY_REPLAY_SYSCONF_SIZE = 0x4000;
 constexpr u8 RAM_DIAGNOSTIC_VERSION = 4;
 constexpr u8 RAM_DIAGNOSTIC_DIGEST = 1;
 constexpr u8 RAM_DIAGNOSTIC_MISMATCH = 2;
 constexpr std::size_t RAM_DIAGNOSTIC_PACKET_SIZE =
     112 + State::ROLLBACK_STATE_SECTION_COUNT * sizeof(u64);
 constexpr std::array<std::string_view, State::ROLLBACK_STATE_SECTION_COUNT>
-    ROLLBACK_STATE_SECTION_NAMES{"Movie", "VideoBackend", "CoreTiming", "HW", "PowerPC",
-                                 "Wiimote", "Gecko"};
+    ROLLBACK_STATE_SECTION_NAMES{"Movie",   "VideoBackend", "CoreTiming", "HW",
+                                 "PowerPC", "Wiimote",      "Gecko"};
 
 bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram);
 
@@ -222,8 +234,8 @@ GekkoNetResult** SharedAdapterReceive(int* length)
     if (HandleRamDiagnosticDatagram(datagram))
       continue;
 
-    const bool is_input_packet = !datagram.payload.empty() &&
-                                 datagram.payload.front() == GEKKO_INPUT_PACKET_TYPE;
+    const bool is_input_packet =
+        !datagram.payload.empty() && datagram.payload.front() == GEKKO_INPUT_PACKET_TYPE;
     if (s_stress_mode && s_stress_frame_delay_active && is_input_packet)
     {
       s_delayed_native_packets.push_back(
@@ -244,8 +256,7 @@ GekkoNetResult** SharedAdapterReceive(int* length)
   while (!s_delayed_native_packets.empty() &&
          s_delayed_native_packets.front().delivery_frame <= s_simulated_link_frame)
   {
-    Common::ENet::RollbackDatagram datagram =
-        std::move(s_delayed_native_packets.front().datagram);
+    Common::ENet::RollbackDatagram datagram = std::move(s_delayed_native_packets.front().datagram);
     s_delayed_native_packets.pop_front();
     auto* result = static_cast<GekkoNetResult*>(std::malloc(sizeof(GekkoNetResult)));
     result->addr.size = sizeof(ENetAddress);
@@ -417,7 +428,7 @@ struct GekkoManager
   bool debug_p2_cstick = false;
   bool simulate_remote_p2 = false;
   bool stress_test = false;
-  bool stress_inputs = false;
+  bool enable_random_inputs = false;
   bool native_stress = false;
   u32 stress_interval = 1;
   u32 stress_rollback_frames = 0;
@@ -442,6 +453,21 @@ struct GekkoManager
   std::array<GCPadStatus, MAX_PORTS> latched_pads{};
   std::atomic<bool> active{false};
   std::atomic<bool> stop_requested{false};
+
+  std::atomic<bool> netplay_replay_recording{false};
+  std::atomic<bool> netplay_replay_playing{false};
+  int netplay_replay_players = 0;
+  FrameBoundary netplay_replay_boundary = FrameBoundary::VINewField;
+  std::string netplay_replay_game_id;
+  std::string netplay_replay_game_key;
+  std::map<s32, std::vector<u8>> netplay_replay_frames;
+  std::vector<std::pair<s32, std::vector<u8>>> netplay_replay_playback_frames;
+  std::size_t netplay_replay_playback_index = 0;
+  u64 netplay_replay_initial_rtc = 0;
+  RamDigest netplay_replay_initial_digest{};
+  bool netplay_replay_initial_digest_valid = false;
+  std::vector<u64> netplay_replay_initial_mem1_page_hashes;
+  std::vector<u8> netplay_replay_sysconf;
 
   std::map<int, RamDigest> ram_digests;
   std::map<std::pair<int, int>, RamDigest> remote_ram_digests;
@@ -536,6 +562,35 @@ struct GekkoManager
   u64 perf_real_gaps_over_50_ms = 0;
 };
 
+#pragma pack(push, 1)
+struct NetplayReplayHeader
+{
+  std::array<char, 8> magic{};
+  u32 version = NETPLAY_REPLAY_VERSION;
+  u32 players = 0;
+  u32 frame_boundary = 0;
+  u32 bytes_per_frame = 0;
+  u64 frame_count = 0;
+  std::array<char, 6> game_id{};
+  std::array<char, 24> game_key{};
+  std::array<u8, 2> reserved{};
+  u64 initial_rtc = 0;
+  u64 initial_root = 0;
+  u64 initial_mem1 = 0;
+  u64 initial_mem2 = 0;
+  u64 initial_aram = 0;
+  u64 initial_fake_vmem = 0;
+  u64 initial_l1 = 0;
+  s64 initial_core_ticks = 0;
+  u64 initial_timebase = 0;
+  u64 initial_fake_tb_start_value = 0;
+  s64 initial_fake_tb_start_ticks = 0;
+  u32 initial_decrementer = 0;
+  s32 first_frame = -1;
+};
+#pragma pack(pop)
+static_assert(sizeof(NetplayReplayHeader) == 160);
+
 GekkoManager g_manager;
 
 void LogStartFrameStateDigest(Core::System& system, int frame)
@@ -559,22 +614,33 @@ void LogStartFrameStateDigest(Core::System& system, int frame)
   if (g_manager.last_advance_has_start)
   {
     const auto& ppc = system.GetPPCState();
-    NOTICE_LOG_FMT(
-        CORE,
-        "GekkoNet state trace: START save frame {} state={:016x} sections "
-        "Movie={:016x},Video={:016x},CoreTiming={:016x},HW={:016x},PowerPC={:016x},"
-        "Wiimote={:016x},Gecko={:016x}; ticks={}, timebase={}, pc={:08x}, npc={:08x}",
-        frame, XXH3_64bits(state.data(), state.size()), sections[0], sections[1], sections[2],
-        sections[3], sections[4], sections[5], sections[6], system.GetCoreTiming().GetTicks(),
-        system.GetPowerPC().ReadFullTimeBaseValue(), ppc.pc, ppc.npc);
+    NOTICE_LOG_FMT(CORE,
+                   "GekkoNet state trace: START save frame {} state={:016x} sections "
+                   "Movie={:016x},Video={:016x},CoreTiming={:016x},HW={:016x},PowerPC={:016x},"
+                   "Wiimote={:016x},Gecko={:016x}; ticks={}, timebase={}, pc={:08x}, npc={:08x}",
+                   frame, XXH3_64bits(state.data(), state.size()), sections[0], sections[1],
+                   sections[2], sections[3], sections[4], sections[5], sections[6],
+                   system.GetCoreTiming().GetTicks(), system.GetPowerPC().ReadFullTimeBaseValue(),
+                   ppc.pc, ppc.npc);
   }
 
   if (frame >= 278 && frame <= 281)
   {
     static constexpr std::array<std::string_view, State::ROLLBACK_HW_SECTION_COUNT> names{
-        "Memory", "MemoryInterface", "VideoInterface", "SerialInterface",
-        "ProcessorInterface", "DSP", "DVDInterface", "GPFifo", "ExpansionInterface",
-        "AudioInterface", "HSP", "WiiIPC", "IOSHLE", "WIIHW"};
+        "Memory",
+        "MemoryInterface",
+        "VideoInterface",
+        "SerialInterface",
+        "ProcessorInterface",
+        "DSP",
+        "DVDInterface",
+        "GPFifo",
+        "ExpansionInterface",
+        "AudioInterface",
+        "HSP",
+        "WiiIPC",
+        "IOSHLE",
+        "WIIHW"};
     std::string hashes;
     std::size_t start = layout.section_ends[2];
     for (std::size_t i = 0; i < names.size(); ++i)
@@ -592,8 +658,8 @@ void LogStartFrameStateDigest(Core::System& system, int frame)
   if ((frame >= 0 && frame <= 10) || (frame >= 278 && frame <= 281))
   {
     static constexpr std::array<std::string_view, State::ROLLBACK_PPC_SECTION_COUNT> names{
-        "GPR", "PC", "CR", "Scalar", "FPR", "SR", "SPR", "TLB", "PageTable",
-        "Reserve", "ICache", "DCache", "MMU", "JIT"};
+        "GPR", "PC",        "CR",      "Scalar", "FPR",    "SR",  "SPR",
+        "TLB", "PageTable", "Reserve", "ICache", "DCache", "MMU", "JIT"};
     std::string hashes;
     std::size_t start = layout.section_ends[3];
     for (std::size_t i = 0; i < names.size(); ++i)
@@ -640,7 +706,8 @@ void RecordDiagnosticEvent(Core::System& system, const QueuedEvent& event)
   diagnostic.frame = event.frame;
   diagnostic.rolling_back = event.rolling_back;
   diagnostic.running_ahead = event.running_ahead;
-  diagnostic.inputs = event.inputs.empty() ? 0 : XXH3_64bits(event.inputs.data(), event.inputs.size());
+  diagnostic.inputs =
+      event.inputs.empty() ? 0 : XXH3_64bits(event.inputs.data(), event.inputs.size());
   diagnostic.ticks = system.GetCoreTiming().GetTicks();
   if (IOS::HLE::FS::HostFileSystem* nand = HostNand(system))
     diagnostic.nand_mark = nand->LastJournalMark();
@@ -708,8 +775,7 @@ u64 ReadU64(const u8* in)
   return value;
 }
 
-std::array<u8, RAM_DIAGNOSTIC_PACKET_SIZE> MakeRamDiagnosticPacket(u8 type,
-                                                                   const RamDigest& digest)
+std::array<u8, RAM_DIAGNOSTIC_PACKET_SIZE> MakeRamDiagnosticPacket(u8 type, const RamDigest& digest)
 {
   std::array<u8, RAM_DIAGNOSTIC_PACKET_SIZE> packet{};
   std::copy(RAM_DIAGNOSTIC_MAGIC.begin(), RAM_DIAGNOSTIC_MAGIC.end(), packet.begin());
@@ -767,11 +833,11 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
                    local.decrementer, remote.decrementer);
   }
   const bool ram_matches = local.root == remote.root;
-  const bool timing_matches =
-      local.core_ticks == remote.core_ticks && local.timebase == remote.timebase &&
-      local.fake_tb_start_value == remote.fake_tb_start_value &&
-      local.fake_tb_start_ticks == remote.fake_tb_start_ticks &&
-      local.decrementer == remote.decrementer;
+  const bool timing_matches = local.core_ticks == remote.core_ticks &&
+                              local.timebase == remote.timebase &&
+                              local.fake_tb_start_value == remote.fake_tb_start_value &&
+                              local.fake_tb_start_ticks == remote.fake_tb_start_ticks &&
+                              local.decrementer == remote.decrementer;
   // PointerWrap serializes some trivially-copyable structs with their alignment padding. For
   // example, IOS FSCore::Handle has two padding bytes between gid and uid whose values can differ
   // even though every meaningful field matches. Keep the state and section hashes in the report,
@@ -795,8 +861,7 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
   if (!g_manager.first_ram_mismatch_frame || remote.frame < *g_manager.first_ram_mismatch_frame)
     g_manager.first_ram_mismatch_frame = remote.frame;
 
-  if (!g_manager.ram_mismatch_details_frame ||
-      remote.frame < *g_manager.ram_mismatch_details_frame)
+  if (!g_manager.ram_mismatch_details_frame || remote.frame < *g_manager.ram_mismatch_details_frame)
   {
     g_manager.ram_mismatch_details_frame = remote.frame;
     NOTICE_LOG_FMT(
@@ -809,11 +874,11 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
         "DEC {:#x}/{:#x}; differing state sections [{}]",
         remote.frame, remote_player, local.root, remote.root, local.mem1, remote.mem1, local.mem2,
         remote.mem2, local.aram, remote.aram, local.fake_vmem, remote.fake_vmem, local.l1,
-        remote.l1, local.state, remote.state,
-        local.inputs == remote.inputs ? "match" : "DIFFER", local.inputs, remote.inputs,
-        local.core_ticks, remote.core_ticks, local.timebase, remote.timebase,
-        local.fake_tb_start_value, remote.fake_tb_start_value, local.fake_tb_start_ticks,
-        remote.fake_tb_start_ticks, local.decrementer, remote.decrementer, differing_sections);
+        remote.l1, local.state, remote.state, local.inputs == remote.inputs ? "match" : "DIFFER",
+        local.inputs, remote.inputs, local.core_ticks, remote.core_ticks, local.timebase,
+        remote.timebase, local.fake_tb_start_value, remote.fake_tb_start_value,
+        local.fake_tb_start_ticks, remote.fake_tb_start_ticks, local.decrementer,
+        remote.decrementer, differing_sections);
     LogDiagnosticEventHistory();
   }
 
@@ -836,10 +901,10 @@ void CompareRamDigest(int remote_player, const ENetAddress* sender, const RamDig
   if (g_manager.stop_ram_compare_on_mismatch)
   {
     g_manager.compare_confirmed_ram = false;
-    OSD::AddTypedMessage(OSD::MessageType::RollbackVerification,
-                         fmt::format("RAM mismatch at frame {} - verification disabled",
-                                     remote.frame),
-                         std::numeric_limits<u32>::max(), OSD::Color::RED);
+    OSD::AddTypedMessage(
+        OSD::MessageType::RollbackVerification,
+        fmt::format("RAM mismatch at frame {} - verification disabled", remote.frame),
+        std::numeric_limits<u32>::max(), OSD::Color::RED);
     NOTICE_LOG_FMT(CORE,
                    "Rollback RAM diagnostic: mismatch recorded at frame {}; verification "
                    "disabled and live emulation will continue",
@@ -880,10 +945,10 @@ bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
     if (g_manager.stop_ram_compare_on_mismatch)
     {
       g_manager.compare_confirmed_ram = false;
-      OSD::AddTypedMessage(OSD::MessageType::RollbackVerification,
-                           fmt::format("RAM mismatch at frame {} - verification disabled",
-                                       remote.frame),
-                           std::numeric_limits<u32>::max(), OSD::Color::RED);
+      OSD::AddTypedMessage(
+          OSD::MessageType::RollbackVerification,
+          fmt::format("RAM mismatch at frame {} - verification disabled", remote.frame),
+          std::numeric_limits<u32>::max(), OSD::Color::RED);
       NOTICE_LOG_FMT(CORE,
                      "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
                      "verification disabled and live emulation will continue",
@@ -891,8 +956,9 @@ bool HandleRamDiagnosticDatagram(const Common::ENet::RollbackDatagram& datagram)
     }
     else
     {
-      NOTICE_LOG_FMT(CORE, "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
-                           "pausing to restore and dump it",
+      NOTICE_LOG_FMT(CORE,
+                     "Rollback RAM diagnostic: player {} reported mismatch frame {}; "
+                     "pausing to restore and dump it",
                      remote_player, remote.frame);
     }
     return true;
@@ -932,13 +998,106 @@ void FillRamRegionHashes(Core::System& system, RamDigest* digest)
     auto& dsp = system.GetDSP();
     digest->aram = XXH3_64bits(dsp.GetARAMPtr(), dsp.GetARAMSize());
   }
-  digest->fake_vmem = memory.GetFakeVMEM() ?
-                          XXH3_64bits(memory.GetFakeVMEM(), memory.GetFakeVMemSize()) :
-                          0;
+  digest->fake_vmem =
+      memory.GetFakeVMEM() ? XXH3_64bits(memory.GetFakeVMEM(), memory.GetFakeVMemSize()) : 0;
   digest->l1 = XXH3_64bits(memory.GetL1Cache(), memory.GetL1CacheSize());
   const std::array<u64, 5> regions{digest->mem1, digest->mem2, digest->aram, digest->fake_vmem,
                                    digest->l1};
   digest->root = XXH3_64bits(regions.data(), sizeof(regions));
+}
+
+std::vector<u64> HashMem1Pages(Core::System& system)
+{
+  auto& memory = system.GetMemory();
+  const u8* const ram = memory.GetRAM();
+  const std::size_t ram_size = memory.GetRamSize();
+  const std::size_t page_count =
+      (ram_size + NETPLAY_REPLAY_MEM1_PAGE_SIZE - 1) / NETPLAY_REPLAY_MEM1_PAGE_SIZE;
+  std::vector<u64> hashes(page_count);
+  for (std::size_t page = 0; page < page_count; ++page)
+  {
+    const std::size_t offset = page * NETPLAY_REPLAY_MEM1_PAGE_SIZE;
+    const std::size_t size = std::min(NETPLAY_REPLAY_MEM1_PAGE_SIZE, ram_size - offset);
+    hashes[page] = XXH3_64bits(ram + offset, size);
+  }
+  return hashes;
+}
+
+std::vector<u8> ReadReplaySysconf(Core::System& system)
+{
+  auto* const ios = system.GetIOS();
+  if (!ios)
+    return {};
+  const auto fs = ios->GetFS();
+  const auto file = fs->OpenFile(IOS::PID_KERNEL, IOS::PID_KERNEL, "/shared2/sys/SYSCONF",
+                                 IOS::HLE::FS::Mode::Read);
+  if (!file)
+    return {};
+  const auto status = file->GetStatus();
+  if (!status || status->size != NETPLAY_REPLAY_SYSCONF_SIZE)
+    return {};
+  std::vector<u8> bytes(NETPLAY_REPLAY_SYSCONF_SIZE);
+  if (!file->Read(bytes.data(), bytes.size()))
+    return {};
+  return bytes;
+}
+
+void LogNetplayReplayMem1PageDifferences(Core::System& system,
+                                         const std::vector<u64>& expected_hashes)
+{
+  if (expected_hashes.empty())
+    return;
+
+  const std::vector<u64> actual_hashes = HashMem1Pages(system);
+  if (actual_hashes.size() != expected_hashes.size())
+  {
+    NOTICE_LOG_FMT(CORE, "Netplay Replay MEM1 page map size mismatch: expected={} actual={}",
+                   expected_hashes.size(), actual_hashes.size());
+    return;
+  }
+
+  std::size_t mismatch_count = 0;
+  std::size_t range_start = 0;
+  bool in_range = false;
+  std::vector<std::pair<std::size_t, std::size_t>> ranges;
+  for (std::size_t page = 0; page <= expected_hashes.size(); ++page)
+  {
+    const bool mismatch =
+        page < expected_hashes.size() && expected_hashes[page] != actual_hashes[page];
+    if (mismatch)
+    {
+      ++mismatch_count;
+      if (!in_range)
+      {
+        range_start = page;
+        in_range = true;
+      }
+    }
+    else if (in_range)
+    {
+      ranges.emplace_back(range_start, page - 1);
+      in_range = false;
+    }
+  }
+
+  std::string range_text;
+  constexpr std::size_t MAX_LOGGED_RANGES = 32;
+  for (std::size_t i = 0; i < std::min(ranges.size(), MAX_LOGGED_RANGES); ++i)
+  {
+    const u32 start = Memory::MEM1_BASE_ADDR +
+                      static_cast<u32>(ranges[i].first * NETPLAY_REPLAY_MEM1_PAGE_SIZE);
+    const u32 end = Memory::MEM1_BASE_ADDR +
+                    static_cast<u32>((ranges[i].second + 1) * NETPLAY_REPLAY_MEM1_PAGE_SIZE - 1);
+    if (!range_text.empty())
+      range_text += ", ";
+    range_text += fmt::format("{:#010x}-{:#010x}", start, end);
+  }
+  if (ranges.size() > MAX_LOGGED_RANGES)
+    range_text += fmt::format(", ... {} more ranges", ranges.size() - MAX_LOGGED_RANGES);
+
+  NOTICE_LOG_FMT(CORE,
+                 "Netplay Replay MEM1 page comparison: mismatched_pages={}/{} ranges={} [{}]",
+                 mismatch_count, expected_hashes.size(), ranges.size(), range_text);
 }
 
 void VerifyRestoredRam(Core::System& system, int frame)
@@ -966,8 +1125,8 @@ void VerifyRestoredRam(Core::System& system, int frame)
   const s64 snapshot_key = static_cast<s64>(frame) + 1;
   const std::optional<u64> expected_nand = g_manager.ring->NandJournalMarkForFrame(snapshot_key);
   IOS::HLE::FS::HostFileSystem* nand = HostNand(system);
-  const std::optional<u64> actual_nand = nand ? std::optional<u64>(nand->LastJournalMark()) :
-                                               std::nullopt;
+  const std::optional<u64> actual_nand =
+      nand ? std::optional<u64>(nand->LastJournalMark()) : std::nullopt;
   NOTICE_LOG_FMT(
       CORE,
       "Rollback restore diagnostic: RESTORE MISMATCH frame {} key {} root {:016x}/{:016x}; "
@@ -1064,8 +1223,7 @@ void CompareSettledRamDigests()
 
 void SendConfirmedRamDigests()
 {
-  if (!g_manager.compare_confirmed_ram || !g_manager.session ||
-      g_manager.remote_endpoints.empty())
+  if (!g_manager.compare_confirmed_ram || !g_manager.session || g_manager.remote_endpoints.empty())
   {
     return;
   }
@@ -1125,12 +1283,10 @@ bool DumpFirstRamMismatch(Core::System& system)
     aram_ok = WriteRamRegion(base + "-aram.bin", dsp.GetARAMPtr(), dsp.GetARAMSize());
   }
   const bool fake_vmem_ok =
-      !memory.GetFakeVMEM() || WriteRamRegion(base + "-fakevmem.bin", memory.GetFakeVMEM(),
-                                              memory.GetFakeVMemSize());
-  const bool l1_ok =
-      WriteRamRegion(base + "-l1.bin", memory.GetL1Cache(), memory.GetL1CacheSize());
-  const std::span<const u8> state =
-      g_manager.ring->StateForFrame(static_cast<s64>(frame) + 1);
+      !memory.GetFakeVMEM() ||
+      WriteRamRegion(base + "-fakevmem.bin", memory.GetFakeVMEM(), memory.GetFakeVMemSize());
+  const bool l1_ok = WriteRamRegion(base + "-l1.bin", memory.GetL1Cache(), memory.GetL1CacheSize());
+  const std::span<const u8> state = g_manager.ring->StateForFrame(static_cast<s64>(frame) + 1);
   const bool state_ok =
       !state.empty() && WriteRamRegion(base + "-state.bin", state.data(), state.size());
 
@@ -1186,7 +1342,8 @@ GCPadStatus DecodePad(const WirePad& pad)
 
 std::optional<GCPadStatus> GetRollbackPad(int port)
 {
-  if (!g_manager.active.load(std::memory_order_relaxed))
+  if (!g_manager.active.load(std::memory_order_relaxed) &&
+      !g_manager.netplay_replay_playing.load(std::memory_order_relaxed))
     return std::nullopt;
 
   if (port >= 0 && port < MAX_PORTS)
@@ -1197,6 +1354,252 @@ std::optional<GCPadStatus> GetRollbackPad(int port)
   return std::nullopt;
 }
 
+bool BeginNetplayReplayRecording(const std::string& game_key)
+{
+  std::lock_guard lk(g_manager.mutex);
+  if (!g_manager.active.load(std::memory_order_relaxed) || !g_manager.session ||
+      g_manager.players < 1 || g_manager.players > MAX_PORTS)
+  {
+    return false;
+  }
+
+  g_manager.netplay_replay_frames.clear();
+  g_manager.netplay_replay_players = g_manager.players;
+  g_manager.netplay_replay_boundary = g_manager.frame_boundary;
+  g_manager.netplay_replay_game_id = SConfig::GetInstance().GetGameID();
+  g_manager.netplay_replay_game_key = game_key;
+  g_manager.netplay_replay_initial_rtc =
+      ExpansionInterface::CEXIIPL::NetPlay_GetEmulatedTime();
+  g_manager.netplay_replay_initial_digest = {};
+  g_manager.netplay_replay_initial_digest_valid = false;
+  g_manager.netplay_replay_initial_mem1_page_hashes.clear();
+  g_manager.netplay_replay_sysconf.clear();
+  g_manager.netplay_replay_recording = true;
+  return true;
+}
+
+bool SaveNetplayReplay(const std::string& path)
+{
+  std::lock_guard lk(g_manager.mutex);
+  if (!g_manager.netplay_replay_recording.load(std::memory_order_relaxed) ||
+      g_manager.netplay_replay_frames.empty())
+    return false;
+
+  File::IOFile file(path, "wb");
+  if (!file)
+    return false;
+
+  NetplayReplayHeader header{};
+  header.magic = NETPLAY_REPLAY_MAGIC;
+  header.players = static_cast<u32>(g_manager.netplay_replay_players);
+  header.frame_boundary = static_cast<u32>(g_manager.netplay_replay_boundary);
+  header.bytes_per_frame = header.players * sizeof(WirePad);
+  header.frame_count = g_manager.netplay_replay_frames.size();
+  const std::string& game_id = g_manager.netplay_replay_game_id;
+  std::memcpy(header.game_id.data(), game_id.data(),
+              std::min(game_id.size(), header.game_id.size()));
+  std::memcpy(header.game_key.data(), g_manager.netplay_replay_game_key.data(),
+              std::min(g_manager.netplay_replay_game_key.size(), header.game_key.size()));
+  const RamDigest& initial = g_manager.netplay_replay_initial_digest;
+  header.initial_rtc = g_manager.netplay_replay_initial_rtc;
+  header.initial_root = initial.root;
+  header.initial_mem1 = initial.mem1;
+  header.initial_mem2 = initial.mem2;
+  header.initial_aram = initial.aram;
+  header.initial_fake_vmem = initial.fake_vmem;
+  header.initial_l1 = initial.l1;
+  header.initial_core_ticks = initial.core_ticks;
+  header.initial_timebase = initial.timebase;
+  header.initial_fake_tb_start_value = initial.fake_tb_start_value;
+  header.initial_fake_tb_start_ticks = initial.fake_tb_start_ticks;
+  header.initial_decrementer = initial.decrementer;
+  header.first_frame = g_manager.netplay_replay_frames.begin()->first;
+  if (!g_manager.netplay_replay_initial_mem1_page_hashes.empty())
+  {
+    header.reserved[0] |= NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES;
+    header.reserved[1] = NETPLAY_REPLAY_MEM1_PAGE_SHIFT;
+  }
+  if (g_manager.netplay_replay_sysconf.size() == NETPLAY_REPLAY_SYSCONF_SIZE)
+    header.reserved[0] |= NETPLAY_REPLAY_HAS_SYSCONF;
+
+  if (!file.WriteArray(&header, 1))
+    return false;
+  if ((header.reserved[0] & NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES) != 0)
+  {
+    const u32 page_count =
+        static_cast<u32>(g_manager.netplay_replay_initial_mem1_page_hashes.size());
+    if (!file.WriteArray(&page_count, 1) ||
+        !file.WriteArray(g_manager.netplay_replay_initial_mem1_page_hashes.data(), page_count))
+    {
+      return false;
+    }
+  }
+  if ((header.reserved[0] & NETPLAY_REPLAY_HAS_SYSCONF) != 0)
+  {
+    const u32 sysconf_size = static_cast<u32>(g_manager.netplay_replay_sysconf.size());
+    if (!file.WriteArray(&sysconf_size, 1) ||
+        !file.WriteBytes(g_manager.netplay_replay_sysconf.data(), sysconf_size))
+    {
+      return false;
+    }
+  }
+  for (const auto& [frame, inputs] : g_manager.netplay_replay_frames)
+  {
+    if (inputs.size() != header.bytes_per_frame || !file.WriteArray(&frame, 1) ||
+        !file.WriteBytes(inputs.data(), inputs.size()))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool LoadNetplayReplay(const std::string& path)
+{
+  File::IOFile file(path, "rb");
+  NetplayReplayHeader header{};
+  if (!file || !file.ReadArray(&header, 1) || header.magic != NETPLAY_REPLAY_MAGIC ||
+      header.version != NETPLAY_REPLAY_VERSION || header.players < 1 ||
+      header.players > MAX_PORTS ||
+      header.frame_boundary > static_cast<u32>(FrameBoundary::VINewField) ||
+      header.bytes_per_frame != header.players * sizeof(WirePad) || header.frame_count > 10'000'000)
+  {
+    return false;
+  }
+
+  std::vector<u64> initial_mem1_page_hashes;
+  if ((header.reserved[0] & NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES) != 0)
+  {
+    if (header.reserved[1] != NETPLAY_REPLAY_MEM1_PAGE_SHIFT)
+      return false;
+    u32 page_count = 0;
+    constexpr u32 MAX_MEM1_PAGE_COUNT =
+        Memory::MEM1_SIZE_MAX / NETPLAY_REPLAY_MEM1_PAGE_SIZE;
+    if (!file.ReadArray(&page_count, 1) || page_count == 0 || page_count > MAX_MEM1_PAGE_COUNT)
+      return false;
+    initial_mem1_page_hashes.resize(page_count);
+    if (!file.ReadArray(initial_mem1_page_hashes.data(), page_count))
+      return false;
+  }
+
+  std::vector<u8> replay_sysconf;
+  if ((header.reserved[0] & NETPLAY_REPLAY_HAS_SYSCONF) != 0)
+  {
+    u32 sysconf_size = 0;
+    if (!file.ReadArray(&sysconf_size, 1) || sysconf_size != NETPLAY_REPLAY_SYSCONF_SIZE)
+      return false;
+    replay_sysconf.resize(sysconf_size);
+    if (!file.ReadBytes(replay_sysconf.data(), replay_sysconf.size()))
+      return false;
+  }
+
+  std::vector<std::pair<s32, std::vector<u8>>> frames;
+  frames.reserve(static_cast<std::size_t>(header.frame_count));
+  for (u64 i = 0; i < header.frame_count; ++i)
+  {
+    s32 frame = 0;
+    std::vector<u8> inputs(header.bytes_per_frame);
+    if (!file.ReadArray(&frame, 1) || !file.ReadBytes(inputs.data(), inputs.size()))
+      return false;
+    if (!frames.empty() && frame <= frames.back().first)
+      return false;
+    frames.emplace_back(frame, std::move(inputs));
+  }
+
+  std::lock_guard lk(g_manager.mutex);
+  g_manager.netplay_replay_recording = false;
+  g_manager.netplay_replay_playing = true;
+  g_manager.netplay_replay_players = static_cast<int>(header.players);
+  g_manager.netplay_replay_boundary = static_cast<FrameBoundary>(header.frame_boundary);
+  const auto game_id_end = std::find(header.game_id.begin(), header.game_id.end(), '\0');
+  g_manager.netplay_replay_game_id.assign(
+      header.game_id.data(), static_cast<std::size_t>(game_id_end - header.game_id.begin()));
+  const auto game_key_end = std::find(header.game_key.begin(), header.game_key.end(), '\0');
+  g_manager.netplay_replay_game_key.assign(
+      header.game_key.data(), static_cast<std::size_t>(game_key_end - header.game_key.begin()));
+  g_manager.netplay_replay_playback_frames = std::move(frames);
+  g_manager.netplay_replay_playback_index = 0;
+  g_manager.netplay_replay_initial_rtc = header.initial_rtc;
+  g_manager.netplay_replay_initial_digest.frame = header.first_frame;
+  g_manager.netplay_replay_initial_digest.root = header.initial_root;
+  g_manager.netplay_replay_initial_digest.mem1 = header.initial_mem1;
+  g_manager.netplay_replay_initial_digest.mem2 = header.initial_mem2;
+  g_manager.netplay_replay_initial_digest.aram = header.initial_aram;
+  g_manager.netplay_replay_initial_digest.fake_vmem = header.initial_fake_vmem;
+  g_manager.netplay_replay_initial_digest.l1 = header.initial_l1;
+  g_manager.netplay_replay_initial_digest.core_ticks = header.initial_core_ticks;
+  g_manager.netplay_replay_initial_digest.timebase = header.initial_timebase;
+  g_manager.netplay_replay_initial_digest.fake_tb_start_value =
+      header.initial_fake_tb_start_value;
+  g_manager.netplay_replay_initial_digest.fake_tb_start_ticks = header.initial_fake_tb_start_ticks;
+  g_manager.netplay_replay_initial_digest.decrementer = header.initial_decrementer;
+  g_manager.netplay_replay_initial_digest_valid = true;
+  g_manager.netplay_replay_initial_mem1_page_hashes = std::move(initial_mem1_page_hashes);
+  g_manager.netplay_replay_sysconf = std::move(replay_sysconf);
+  g_manager.latched_pads.fill(GCPadStatus{});
+  g_manager.late_vi_guard = true;
+  g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
+  g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
+  g_manager.precise_vi_guard_requested.store(false, std::memory_order_relaxed);
+  NOTICE_LOG_FMT(CORE, "Loaded Netplay Replay with {} frames, {} players, boundary={}",
+                 header.frame_count, header.players,
+                 FrameBoundaryName(g_manager.netplay_replay_boundary));
+  return true;
+}
+
+bool IsNetplayReplayRecording()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_recording.load(std::memory_order_relaxed);
+}
+
+std::string GetNetplayReplayGameID()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_game_id;
+}
+
+int GetNetplayReplayPlayerCount()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_players;
+}
+
+u64 GetNetplayReplayInitialRTC()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_initial_rtc;
+}
+
+std::vector<u8> GetNetplayReplaySysconf()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_sysconf;
+}
+
+bool IsNetplayReplayPlaying()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_playing.load(std::memory_order_relaxed);
+}
+
+void StopNetplayReplay()
+{
+  std::lock_guard lk(g_manager.mutex);
+  g_manager.netplay_replay_recording = false;
+  g_manager.netplay_replay_playing = false;
+  g_manager.netplay_replay_frames.clear();
+  g_manager.netplay_replay_playback_frames.clear();
+  g_manager.netplay_replay_playback_index = 0;
+  g_manager.netplay_replay_initial_rtc = 0;
+  g_manager.netplay_replay_initial_digest = {};
+  g_manager.netplay_replay_initial_digest_valid = false;
+  g_manager.netplay_replay_initial_mem1_page_hashes.clear();
+  g_manager.netplay_replay_sysconf.clear();
+  g_manager.netplay_replay_game_id.clear();
+  g_manager.netplay_replay_game_key.clear();
+}
+
 bool IsGekkoSessionActive()
 {
   return g_manager.active.load(std::memory_order_relaxed);
@@ -1204,8 +1607,10 @@ bool IsGekkoSessionActive()
 
 bool IsGekkoFrameBoundary(FrameBoundary boundary)
 {
-  return g_manager.active.load(std::memory_order_acquire) &&
-         g_manager.frame_boundary == boundary;
+  return (g_manager.active.load(std::memory_order_acquire) &&
+          g_manager.frame_boundary == boundary) ||
+         (g_manager.netplay_replay_playing.load(std::memory_order_acquire) &&
+          g_manager.netplay_replay_boundary == boundary);
 }
 
 void SetGekkoLocalDelay(int local_delay)
@@ -1256,9 +1661,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   if (options.native_stress &&
       (!options.stress_test || options.simulate_remote_p2 || players != 1 || local_player != 1))
   {
-    ERROR_LOG_FMT(CORE,
-                  "GekkoNet: native stress requires a one-player stress session without a "
-                  "simulated peer");
+    ERROR_LOG_FMT(CORE, "GekkoNet: native stress requires a one-player stress session without a "
+                        "simulated peer");
     return false;
   }
   if (!gekko_create(&g_manager.session,
@@ -1273,9 +1677,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // Gekko allows prediction only while prediction_window > frames_already_predicted. The stress
   // transport therefore gets one internal prediction slot beyond the selected rollback distance,
   // or both simulated peers can reach the cap and stop the emulated clock that releases packets.
-  const int clamped_prediction = options.stress_test ?
-                                     clamped_rollback_window + clamped_delay + 2 :
-                                     clamped_rollback_window;
+  const int clamped_prediction =
+      options.stress_test ? clamped_rollback_window + clamped_delay + 2 : clamped_rollback_window;
 
   GekkoConfig config{};
   config.num_players = static_cast<unsigned char>(players);
@@ -1295,9 +1698,8 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // StressSession loads the state at current-check_distance, then advances from the following
   // frame through current-1. Therefore its replay count is check_distance-1; add one so the
   // harness's RollbackFrames value means the number of frames actually re-executed.
-  config.check_distance = options.native_stress ?
-                              static_cast<unsigned int>(clamped_rollback_window + 1) :
-                              10;
+  config.check_distance =
+      options.native_stress ? static_cast<unsigned int>(clamped_rollback_window + 1) : 10;
   config.stress_interval = std::max(1u, options.stress_interval);
 
   gekko_start(g_manager.session, &config);
@@ -1349,7 +1751,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.debug_p2_cstick = options.debug_p2_cstick;
   g_manager.simulate_remote_p2 = options.simulate_remote_p2;
   g_manager.stress_test = options.stress_test;
-  g_manager.stress_inputs = options.stress_inputs;
+  g_manager.enable_random_inputs = options.enable_random_inputs;
   g_manager.native_stress = options.native_stress;
   g_manager.stress_interval = std::max(1u, options.stress_interval);
   g_manager.stress_rollback_frames =
@@ -1527,13 +1929,12 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   ResetSimulatedLink();
   // For a real two-process benchmark, delay only the P2 -> P1 receive path. Delaying both
   // directions also delays acknowledgements and can make Gekko batch traffic instead of exposing
-  // a clean, repeatable remote-input misprediction. P2 still generates the stress input locally.
+  // a clean, repeatable remote-input misprediction.
   s_stress_mode = !options.native_stress && options.stress_test &&
                   (options.simulate_remote_p2 || local_player == 1);
-  s_stress_packet_delay_frames =
-      options.stress_test && !options.native_stress ?
-          static_cast<u64>(clamped_rollback_window + clamped_delay + 1) :
-          0;
+  s_stress_packet_delay_frames = options.stress_test && !options.native_stress ?
+                                     static_cast<u64>(clamped_rollback_window + clamped_delay + 1) :
+                                     0;
 
   if (options.simulate_remote_p2)
   {
@@ -1568,11 +1969,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   g_manager.tracked_bitmap_clear = options.tracked_bitmap_clear;
   g_manager.full_scan_benchmark = options.full_scan_benchmark;
   g_manager.full_scan_keep_tracking = options.full_scan_keep_tracking;
-  g_manager.ring = std::make_unique<SnapshotRing>(RING_SNAPSHOT_SLOTS,
-                                                  g_manager.tracked_bitmap_clear,
-                                                  g_manager.full_scan_benchmark,
-                                                  g_manager.full_scan_keep_tracking,
-                                                  options.compare_confirmed_ram);
+  g_manager.ring = std::make_unique<SnapshotRing>(
+      RING_SNAPSHOT_SLOTS, g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark,
+      g_manager.full_scan_keep_tracking, options.compare_confirmed_ram);
   g_manager.stop_requested.store(false, std::memory_order_relaxed);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
@@ -1585,23 +1984,20 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       "delay={}, "
       "rollback_window={}, gekko_prediction_window={}, local_input_source={}, "
       "debug_p2_cstick={}, simulate_remote_p2={}, simulated_one_way_latency_ms={}, "
-      "stress_enabled={}, native_stress={}, stress_inputs={}, stress_input_period_frames={}, "
+      "stress_enabled={}, native_stress={}, random_inputs={}, stress_input_period_frames={}, "
       "stress_rollback_frames={}, "
       "tracked_bitmap_clear={}, "
       "full_scan_benchmark={}, full_scan_keep_tracking={}, compare_confirmed_ram={}, "
       "frame_boundary={})",
       game_name, players, local_player, session_id, clamped_delay, clamped_rollback_window,
-      clamped_prediction,
-      g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad", options.debug_p2_cstick,
-      options.simulate_remote_p2,
+      clamped_prediction, g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad",
+      options.debug_p2_cstick, options.simulate_remote_p2,
       options.simulate_remote_p2 && !options.stress_test ? SIMULATED_P2_LATENCY.count() : 0,
-      options.stress_test, options.native_stress, options.stress_inputs,
+      options.stress_test, options.native_stress, options.enable_random_inputs,
       options.native_stress ? std::max(1u, options.stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
-      clamped_rollback_window,
-      g_manager.tracked_bitmap_clear,
-      g_manager.full_scan_benchmark,
-      g_manager.full_scan_keep_tracking,
-      g_manager.compare_confirmed_ram, FrameBoundaryName(g_manager.frame_boundary));
+      clamped_rollback_window, g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark,
+      g_manager.full_scan_keep_tracking, g_manager.compare_confirmed_ram,
+      FrameBoundaryName(g_manager.frame_boundary));
   NOTICE_LOG_FMT(CORE, "GekkoNet optimization settings: coarse_fifo_timing={}, late_vi_guard={}",
                  UseCoarseFifoTiming(), g_manager.late_vi_guard);
   return true;
@@ -1712,10 +2108,9 @@ static void SubmitLocalInput()
   // setting. Matchmaking can assign either local process to either seat.
   if (g_manager.debug_p2_cstick && g_manager.local_player == 2 && input_spam_active)
   {
-    ApplyDebugCStickPattern(&local_status,
-                            g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
+    ApplyDebugCStickPattern(&local_status, g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
   }
-  if (g_manager.stress_inputs && !g_manager.simulate_remote_p2 && input_spam_active)
+  if (g_manager.enable_random_inputs && input_spam_active)
   {
     ApplyStressCStickPattern(&local_status,
                              g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
@@ -1753,8 +2148,7 @@ static void SubmitLocalInput()
   // Keep the raw host sample beside the Gekko frame on which it was submitted. When Gekko later
   // emits the local player's input for an Advance event, this lets diagnostics verify the actual
   // delay behavior instead of merely reporting the configured value.
-  g_manager.sampled_local_inputs.push_back(
-      {static_cast<s64>(g_manager.local_input_frame), wire});
+  g_manager.sampled_local_inputs.push_back({static_cast<s64>(g_manager.local_input_frame), wire});
 
   gekko_add_local_input(g_manager.session, g_manager.local_handle, &wire);
 
@@ -1833,6 +2227,48 @@ static void LatchInputs(const unsigned char* raw_inputs)
   }
 }
 
+static void RecordNetplayReplayFrame(Core::System& system, s32 frame)
+{
+  if (!g_manager.netplay_replay_recording.load(std::memory_order_relaxed))
+    return;
+
+  if (!g_manager.netplay_replay_initial_digest_valid)
+  {
+    RamDigest& initial = g_manager.netplay_replay_initial_digest;
+    initial = {};
+    initial.frame = frame;
+    FillRamRegionHashes(system, &initial);
+    auto& core_timing = system.GetCoreTiming();
+    initial.core_ticks = core_timing.GetTicks();
+    initial.timebase = system.GetPowerPC().ReadFullTimeBaseValue();
+    initial.fake_tb_start_value = core_timing.GetFakeTBStartValue();
+    initial.fake_tb_start_ticks = core_timing.GetFakeTBStartTicks();
+    initial.decrementer = system.GetSystemTimers().GetFakeDecrementer();
+    g_manager.netplay_replay_initial_mem1_page_hashes = HashMem1Pages(system);
+    g_manager.netplay_replay_sysconf = ReadReplaySysconf(system);
+    g_manager.netplay_replay_initial_digest_valid = true;
+    NOTICE_LOG_FMT(CORE,
+                   "Netplay Replay base recorded: frame={} root={:016x} MEM1={:016x} "
+                   "MEM2={:016x} L1={:016x} ticks={} TB={:#x} RTC={} SYSCONF={}",
+                   frame, initial.root, initial.mem1, initial.mem2, initial.l1,
+                   initial.core_ticks, initial.timebase, g_manager.netplay_replay_initial_rtc,
+                   g_manager.netplay_replay_sysconf.size());
+  }
+
+  std::vector<u8> inputs(static_cast<std::size_t>(g_manager.netplay_replay_players) *
+                         sizeof(WirePad));
+  for (int port = 0; port < g_manager.netplay_replay_players; ++port)
+  {
+    const WirePad wire = EncodePad(g_manager.latched_pads[port]);
+    std::memcpy(inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad), &wire,
+                sizeof(wire));
+  }
+
+  // A corrected resimulation emits the same logical frame again. Assignment deliberately replaces
+  // the predicted version, leaving the file with one final port-ordered input set per frame.
+  g_manager.netplay_replay_frames[frame] = std::move(inputs);
+}
+
 static bool InputsEqual(const WirePad& lhs, const WirePad& rhs)
 {
   return std::memcmp(&lhs, &rhs, sizeof(WirePad)) == 0;
@@ -1858,11 +2294,11 @@ static void MeasureLocalInputDelay(int advance_frame, const std::vector<unsigned
       static_cast<s64>(advance_frame) - g_manager.configured_local_delay;
   if (expected_sample_frame >= 0)
   {
-    const auto expected = std::find_if(
-        g_manager.sampled_local_inputs.begin(), g_manager.sampled_local_inputs.end(),
-        [expected_sample_frame](const SampledLocalInput& sample) {
-          return sample.frame == expected_sample_frame;
-        });
+    const auto expected =
+        std::find_if(g_manager.sampled_local_inputs.begin(), g_manager.sampled_local_inputs.end(),
+                     [expected_sample_frame](const SampledLocalInput& sample) {
+                       return sample.frame == expected_sample_frame;
+                     });
     if (expected == g_manager.sampled_local_inputs.end())
     {
       ++g_manager.perf_delay_missing;
@@ -2041,13 +2477,11 @@ static void MaybeLogPerformance(Core::System& system)
                   ResimEventCategory::GuestCpu)]) /
                   1'000'000.0,
               g_manager.perf_replay_exec_count),
-      average(std::max(
-                  0.0,
-                  g_manager.perf_replay_exec_ms -
-                      static_cast<double>(std::accumulate(
-                          g_manager.perf_replay_events.nanoseconds.begin(),
-                          g_manager.perf_replay_events.nanoseconds.end(), u64{0})) /
-                          1'000'000.0),
+      average(std::max(0.0, g_manager.perf_replay_exec_ms -
+                                static_cast<double>(std::accumulate(
+                                    g_manager.perf_replay_events.nanoseconds.begin(),
+                                    g_manager.perf_replay_events.nanoseconds.end(), u64{0})) /
+                                    1'000'000.0),
               g_manager.perf_replay_exec_count),
       average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(
                   ResimEventCategory::FrameSetup)]) /
@@ -2057,8 +2491,8 @@ static void MaybeLogPerformance(Core::System& system)
                   ResimEventCategory::CoreTiming)]) /
                   1'000'000.0,
               g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(
-                  ResimEventCategory::Fifo)]) /
+      average(static_cast<double>(g_manager.perf_replay_events
+                                      .nanoseconds[static_cast<size_t>(ResimEventCategory::Fifo)]) /
                   1'000'000.0,
               g_manager.perf_replay_exec_count),
       average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<size_t>(
@@ -2099,9 +2533,8 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.perf_local_byte_changes[1], g_manager.perf_local_byte_changes[2],
       g_manager.perf_local_byte_changes[3], g_manager.perf_local_byte_changes[4],
       g_manager.perf_local_byte_changes[5], g_manager.perf_local_byte_changes[6],
-      g_manager.perf_local_byte_changes[7],
-      g_manager.configured_local_delay, g_manager.perf_delay_matches,
-      g_manager.perf_delay_checks, g_manager.perf_delay_mismatches,
+      g_manager.perf_local_byte_changes[7], g_manager.configured_local_delay,
+      g_manager.perf_delay_matches, g_manager.perf_delay_checks, g_manager.perf_delay_mismatches,
       g_manager.perf_delay_missing,
       average(static_cast<double>(g_manager.perf_delay_transition_frames),
               g_manager.perf_delay_transitions),
@@ -2118,9 +2551,9 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.stress_test,
       g_manager.native_stress ? g_manager.stress_interval : STRESS_INPUT_PERIOD_FRAMES,
       g_manager.native_stress ? g_manager.stress_rollback_frames :
-      g_manager.stress_test ?
-          s_stress_packet_delay_frames - static_cast<u64>(g_manager.configured_local_delay) - 1 :
-          0,
+      g_manager.stress_test   ? s_stress_packet_delay_frames -
+                                  static_cast<u64>(g_manager.configured_local_delay) - 1 :
+                              0,
       g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark);
 
   NOTICE_LOG_FMT(CORE,
@@ -2139,10 +2572,8 @@ static void MaybeLogPerformance(Core::System& system)
       average(static_cast<double>(throttle.normal_requested_ns) / 1'000'000.0,
               throttle.normal_calls),
       static_cast<double>(throttle.normal_requested_max_ns) / 1'000'000.0,
-      average(static_cast<double>(throttle.normal_actual_ns) / 1'000'000.0,
-              throttle.normal_calls),
-      static_cast<double>(throttle.normal_actual_max_ns) / 1'000'000.0,
-      throttle.post_burst_calls,
+      average(static_cast<double>(throttle.normal_actual_ns) / 1'000'000.0, throttle.normal_calls),
+      static_cast<double>(throttle.normal_actual_max_ns) / 1'000'000.0, throttle.post_burst_calls,
       average(static_cast<double>(throttle.post_burst_requested_ns) / 1'000'000.0,
               throttle.post_burst_calls),
       static_cast<double>(throttle.post_burst_requested_max_ns) / 1'000'000.0,
@@ -2161,8 +2592,8 @@ static void MaybeLogPerformance(Core::System& system)
       average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
                   ResimEventCategory::FrameSetup)]),
               g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::Fifo)]),
+      average(static_cast<double>(g_manager.perf_replay_events
+                                      .callbacks[static_cast<size_t>(ResimEventCategory::Fifo)]),
               g_manager.perf_replay_exec_count),
       average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
                   ResimEventCategory::VideoInterface)]),
@@ -2170,14 +2601,14 @@ static void MaybeLogPerformance(Core::System& system)
       average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
                   ResimEventCategory::DspAudio)]),
               g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::IosIpc)]),
+      average(static_cast<double>(g_manager.perf_replay_events
+                                      .callbacks[static_cast<size_t>(ResimEventCategory::IosIpc)]),
               g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::Devices)]),
+      average(static_cast<double>(g_manager.perf_replay_events
+                                      .callbacks[static_cast<size_t>(ResimEventCategory::Devices)]),
               g_manager.perf_replay_exec_count),
-      average(static_cast<double>(g_manager.perf_replay_events.callbacks[static_cast<size_t>(
-                  ResimEventCategory::Other)]),
+      average(static_cast<double>(g_manager.perf_replay_events
+                                      .callbacks[static_cast<size_t>(ResimEventCategory::Other)]),
               g_manager.perf_replay_exec_count));
 
   NOTICE_LOG_FMT(
@@ -2199,26 +2630,24 @@ static void MaybeLogPerformance(Core::System& system)
                                0.0 :
                                100.0 * static_cast<double>(hotspot.nanoseconds) /
                                    static_cast<double>(guest_total_nanoseconds);
-    NOTICE_LOG_FMT(
-        CORE,
-        "GekkoNet replay CPU hotspot: pc={:08x} '{}' {:.3f} ms/frame ({:.1f}% CPU/JIT), "
-        "{:.1f} slices/frame, {:.0f} guest cycles/frame",
-        hotspot.pc, system.GetPPCSymbolDB().GetDescription(hotspot.pc),
-        average(static_cast<double>(hotspot.nanoseconds) / 1'000'000.0,
-                g_manager.perf_replay_exec_count),
-        percent, average(static_cast<double>(hotspot.slices), g_manager.perf_replay_exec_count),
-        average(static_cast<double>(hotspot.cycles), g_manager.perf_replay_exec_count));
+    NOTICE_LOG_FMT(CORE,
+                   "GekkoNet replay CPU hotspot: pc={:08x} '{}' {:.3f} ms/frame ({:.1f}% CPU/JIT), "
+                   "{:.1f} slices/frame, {:.0f} guest cycles/frame",
+                   hotspot.pc, system.GetPPCSymbolDB().GetDescription(hotspot.pc),
+                   average(static_cast<double>(hotspot.nanoseconds) / 1'000'000.0,
+                           g_manager.perf_replay_exec_count),
+                   percent,
+                   average(static_cast<double>(hotspot.slices), g_manager.perf_replay_exec_count),
+                   average(static_cast<double>(hotspot.cycles), g_manager.perf_replay_exec_count));
   }
 
-  const double save_known_ms = g_manager.perf_save_phases.state_ms +
-                               g_manager.perf_save_phases.dirty_pages_ms +
-                               g_manager.perf_save_phases.l1_ms +
-                               g_manager.perf_save_phases.journal_ms;
-  const double load_known_ms = g_manager.perf_load_phases.dirty_pages_ms +
-                               g_manager.perf_load_phases.jit_ms +
-                               g_manager.perf_load_phases.l1_ms +
-                               g_manager.perf_load_phases.state_ms +
-                               g_manager.perf_load_phases.journal_ms;
+  const double save_known_ms =
+      g_manager.perf_save_phases.state_ms + g_manager.perf_save_phases.dirty_pages_ms +
+      g_manager.perf_save_phases.l1_ms + g_manager.perf_save_phases.journal_ms;
+  const double load_known_ms =
+      g_manager.perf_load_phases.dirty_pages_ms + g_manager.perf_load_phases.jit_ms +
+      g_manager.perf_load_phases.l1_ms + g_manager.perf_load_phases.state_ms +
+      g_manager.perf_load_phases.journal_ms;
   NOTICE_LOG_FMT(
       CORE,
       "GekkoNet snapshot phases: save state {:.3f} dirty {:.3f} l1 {:.3f} journal {:.3f} "
@@ -2229,8 +2658,7 @@ static void MaybeLogPerformance(Core::System& system)
       average(g_manager.perf_save_phases.dirty_pages_ms, g_manager.perf_save_count),
       average(g_manager.perf_save_phases.l1_ms, g_manager.perf_save_count),
       average(g_manager.perf_save_phases.journal_ms, g_manager.perf_save_count),
-      average(std::max(0.0, g_manager.perf_save_ms - save_known_ms),
-              g_manager.perf_save_count),
+      average(std::max(0.0, g_manager.perf_save_ms - save_known_ms), g_manager.perf_save_count),
       average(static_cast<double>(g_manager.perf_save_phases.state_bytes),
               g_manager.perf_save_count) /
           1024.0,
@@ -2239,8 +2667,7 @@ static void MaybeLogPerformance(Core::System& system)
       average(g_manager.perf_load_phases.l1_ms, g_manager.perf_load_count),
       average(g_manager.perf_load_phases.state_ms, g_manager.perf_load_count),
       average(g_manager.perf_load_phases.journal_ms, g_manager.perf_load_count),
-      average(std::max(0.0, g_manager.perf_load_ms - load_known_ms),
-              g_manager.perf_load_count),
+      average(std::max(0.0, g_manager.perf_load_ms - load_known_ms), g_manager.perf_load_count),
       average(static_cast<double>(g_manager.perf_load_phases.changed_blocks),
               g_manager.perf_load_count),
       average(static_cast<double>(g_manager.perf_load_phases.changed_cache_lines),
@@ -2345,8 +2772,7 @@ static bool PrepareQueuedFrame(Core::System& system)
         {
           ++g_manager.perf_replay_save_count;
           g_manager.perf_replay_save_ms += elapsed;
-          g_manager.perf_replay_save_max_ms =
-              std::max(g_manager.perf_replay_save_max_ms, elapsed);
+          g_manager.perf_replay_save_max_ms = std::max(g_manager.perf_replay_save_max_ms, elapsed);
           g_manager.current_burst_save_ms += elapsed;
         }
         if (event.checksum)
@@ -2409,8 +2835,7 @@ static bool PrepareQueuedFrame(Core::System& system)
       std::pair<u32, u32> si1_before{};
       if (g_manager.compare_confirmed_ram)
       {
-        g_manager.last_advance_input_hash =
-            XXH3_64bits(event.inputs.data(), event.inputs.size());
+        g_manager.last_advance_input_hash = XXH3_64bits(event.inputs.data(), event.inputs.size());
         for (int p = 0; p < g_manager.players; ++p)
         {
           const int handle = g_manager.player_handles[p];
@@ -2431,6 +2856,7 @@ static bool PrepareQueuedFrame(Core::System& system)
       if (!resimulating)
         MeasureLocalInputDelay(event.frame, event.inputs);
       LatchInputs(event.inputs.data());
+      RecordNetplayReplayFrame(system, event.frame);
       Rollback::SetResimulating(resimulating);
       if (!resimulating && g_manager.throttle_reference_before_load)
       {
@@ -2461,8 +2887,7 @@ static bool PrepareQueuedFrame(Core::System& system)
         g_manager.perf_burst_save_max_ms =
             std::max(g_manager.perf_burst_save_max_ms, g_manager.current_burst_save_ms);
         g_manager.perf_burst_other_ms += other_ms;
-        g_manager.perf_burst_other_max_ms =
-            std::max(g_manager.perf_burst_other_max_ms, other_ms);
+        g_manager.perf_burst_other_max_ms = std::max(g_manager.perf_burst_other_max_ms, other_ms);
         g_manager.perf_rollback_depth_total += g_manager.current_rollback_replays;
         g_manager.perf_rollback_depth_max =
             std::max(g_manager.perf_rollback_depth_max, g_manager.current_rollback_replays);
@@ -2546,11 +2971,10 @@ static bool PrepareQueuedFrame(Core::System& system)
       }
       if (resimulating && IsDetailedResimProfilingEnabled())
       {
-        RecordResimEvent(
-            ResimEventCategory::FrameSetup,
-            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                 std::chrono::steady_clock::now() - frame_setup_start)
-                                 .count()));
+        RecordResimEvent(ResimEventCategory::FrameSetup,
+                         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - frame_setup_start)
+                                              .count()));
       }
       return true;
     }
@@ -2750,8 +3174,75 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
   }
 }
 
+static bool ApplyNetplayReplayFrame(Core::System& system)
+{
+  std::lock_guard lk(g_manager.mutex);
+  if (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed))
+    return false;
+
+  if (g_manager.netplay_replay_playback_index >= g_manager.netplay_replay_playback_frames.size())
+  {
+    g_manager.netplay_replay_playing.store(false, std::memory_order_release);
+    system.GetCPU().Break();
+    Core::DisplayMessage("Netplay Replay ended", 3000);
+    return true;
+  }
+
+  const bool first_playback_frame = g_manager.netplay_replay_playback_index == 0;
+  const auto& [frame, inputs] =
+      g_manager.netplay_replay_playback_frames[g_manager.netplay_replay_playback_index++];
+  if (first_playback_frame && g_manager.netplay_replay_initial_digest_valid)
+  {
+    RamDigest actual{};
+    actual.frame = frame;
+    FillRamRegionHashes(system, &actual);
+    auto& core_timing = system.GetCoreTiming();
+    actual.core_ticks = core_timing.GetTicks();
+    actual.timebase = system.GetPowerPC().ReadFullTimeBaseValue();
+    actual.fake_tb_start_value = core_timing.GetFakeTBStartValue();
+    actual.fake_tb_start_ticks = core_timing.GetFakeTBStartTicks();
+    actual.decrementer = system.GetSystemTimers().GetFakeDecrementer();
+    const RamDigest& expected = g_manager.netplay_replay_initial_digest;
+    NOTICE_LOG_FMT(
+        CORE,
+        "Netplay Replay base comparison: frame={}/{} root={:016x}/{:016x} match={} "
+        "MEM1={:016x}/{:016x} MEM2={:016x}/{:016x} ARAM={:016x}/{:016x} "
+        "FakeVMEM={:016x}/{:016x} L1={:016x}/{:016x} ticks={}/{} TB={:#x}/{:#x} "
+        "fake-TB-value={:#x}/{:#x} fake-TB-ticks={}/{} DEC={:#x}/{:#x} RTC={}",
+        expected.frame, frame, expected.root, actual.root, expected.root == actual.root,
+        expected.mem1, actual.mem1, expected.mem2, actual.mem2, expected.aram, actual.aram,
+        expected.fake_vmem, actual.fake_vmem, expected.l1, actual.l1, expected.core_ticks,
+        actual.core_ticks, expected.timebase, actual.timebase, expected.fake_tb_start_value,
+        actual.fake_tb_start_value, expected.fake_tb_start_ticks, actual.fake_tb_start_ticks,
+        expected.decrementer, actual.decrementer, g_manager.netplay_replay_initial_rtc);
+    LogNetplayReplayMem1PageDifferences(system,
+                                        g_manager.netplay_replay_initial_mem1_page_hashes);
+  }
+  for (int port = 0; port < g_manager.netplay_replay_players; ++port)
+  {
+    WirePad wire{};
+    std::memcpy(&wire, inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
+                sizeof(wire));
+    g_manager.latched_pads[port] = DecodePad(wire);
+  }
+  DEBUG_LOG_FMT(CORE, "Netplay Replay: applied recorded frame {} ({}/{})", frame,
+                g_manager.netplay_replay_playback_index,
+                g_manager.netplay_replay_playback_frames.size());
+  return true;
+}
+
 void OnFrameBoundary(const Core::CPUThreadGuard& guard)
 {
+  if (g_manager.netplay_replay_playing.load(std::memory_order_acquire) &&
+      g_manager.netplay_replay_boundary == FrameBoundary::BrawlHook)
+  {
+    auto& system = guard.GetSystem();
+    const u32 opcode = system.GetMemory().Read_U32(BRAWL_FRAME_HOOK_ADDR & 0x1FFFFFFF);
+    if (opcode == BRAWL_EXPECTED_OPCODE)
+      ApplyNetplayReplayFrame(system);
+    return;
+  }
+
   ProcessFrameBoundary(guard, FrameBoundary::BrawlHook);
   if (IsGekkoSessionActive() && g_manager.frame_boundary == FrameBoundary::BrawlHook &&
       !IsResimulating())
@@ -2763,7 +3254,11 @@ void OnFrameBoundary(const Core::CPUThreadGuard& guard)
 
 void SignalVIBoundary(FrameBoundary boundary)
 {
-  if (g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary)
+  const bool live_session =
+      g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary;
+  const bool replay = g_manager.netplay_replay_playing.load(std::memory_order_acquire) &&
+                      g_manager.netplay_replay_boundary == boundary;
+  if (live_session || replay)
   {
     g_manager.precise_vi_tail.store(false, std::memory_order_release);
     g_manager.vi_boundary_pending.store(true, std::memory_order_release);
@@ -2778,11 +3273,14 @@ bool IsVIBoundaryPending()
 void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
                             bool next_is_new_field)
 {
-  const bool active = g_manager.active.load(std::memory_order_acquire);
-  const bool selected =
-      (g_manager.frame_boundary == FrameBoundary::VIBeginField && next_is_begin_field) ||
-      (g_manager.frame_boundary == FrameBoundary::VIEndField && next_is_end_field) ||
-      (g_manager.frame_boundary == FrameBoundary::VINewField && next_is_new_field);
+  const bool live_session = g_manager.active.load(std::memory_order_acquire);
+  const bool replay = g_manager.netplay_replay_playing.load(std::memory_order_acquire);
+  const bool active = live_session || replay;
+  const FrameBoundary selected_boundary =
+      replay ? g_manager.netplay_replay_boundary : g_manager.frame_boundary;
+  const bool selected = (selected_boundary == FrameBoundary::VIBeginField && next_is_begin_field) ||
+                        (selected_boundary == FrameBoundary::VIEndField && next_is_end_field) ||
+                        (selected_boundary == FrameBoundary::VINewField && next_is_new_field);
   if (active && selected && g_manager.late_vi_guard)
   {
     g_manager.precise_vi_tail.store(false, std::memory_order_release);
@@ -2802,7 +3300,9 @@ bool ConsumePreciseVIGuardRequest()
 
 void ArmPreciseVITailFromGuard()
 {
-  if (g_manager.active.load(std::memory_order_acquire) && g_manager.late_vi_guard)
+  if ((g_manager.active.load(std::memory_order_acquire) ||
+       g_manager.netplay_replay_playing.load(std::memory_order_acquire)) &&
+      g_manager.late_vi_guard)
     g_manager.precise_vi_tail.store(true, std::memory_order_release);
 }
 
@@ -2828,10 +3328,9 @@ void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 ad
 
   const u8* const data = system.GetMemory().GetPointerForRangeReadOnly(address, size);
   const u64 data_hash = data ? XXH3_64bits(data, size) : 0;
-  g_manager.host_memory_writes.push_back(
-      HostMemoryWriteEvent{source, address, size, g_manager.frame_execution_gekko_frame,
-                           Rollback::IsResimulating(), system.GetCoreTiming().GetTicks(),
-                           data_hash, source_offset});
+  g_manager.host_memory_writes.push_back(HostMemoryWriteEvent{
+      source, address, size, g_manager.frame_execution_gekko_frame, Rollback::IsResimulating(),
+      system.GetCoreTiming().GetTicks(), data_hash, source_offset});
   while (g_manager.host_memory_writes.size() > 512)
     g_manager.host_memory_writes.pop_front();
 }
@@ -2847,13 +3346,18 @@ void RunPendingVIBoundary(Core::System& system)
   const auto& initial_ppc = system.GetPPCState();
   if (initial_ppc.npc == 0)
   {
-    NOTICE_LOG_FMT(CORE,
-                   "GekkoNet: Ignoring pre-execution VI boundary (pc={:08x}, npc={:08x})",
+    NOTICE_LOG_FMT(CORE, "GekkoNet: Ignoring pre-execution VI boundary (pc={:08x}, npc={:08x})",
                    initial_ppc.pc, initial_ppc.npc);
     return;
   }
 
   const Core::CPUThreadGuard guard(system);
+  if (g_manager.netplay_replay_playing.load(std::memory_order_acquire))
+  {
+    ApplyNetplayReplayFrame(system);
+    return;
+  }
+
   ProcessFrameBoundary(guard, g_manager.frame_boundary);
   if (IsGekkoSessionActive() && !IsResimulating())
   {

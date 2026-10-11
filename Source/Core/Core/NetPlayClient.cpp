@@ -2066,6 +2066,8 @@ bool NetPlayClient::StartGame(const std::string& path)
 
   m_first_pad_status_received.fill(false);
 
+  // Dolphin movies remain an interactive NetPlay feature. Managed sessions use the separate
+  // Gekko-frame Netplay Replay format instead.
   if (m_dialog->IsRecording())
   {
     auto& movie = Core::System::GetInstance().GetMovie();
@@ -2125,7 +2127,6 @@ bool NetPlayClient::StartGame(const std::string& path)
     rollback_options.simulate_remote_p2 =
         Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
     rollback_options.stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
-    rollback_options.stress_inputs = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INPUTS);
     rollback_options.native_stress = Config::Get(Config::NETPLAY_ROLLBACK_NATIVE_STRESS);
     rollback_options.stress_interval = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL);
     rollback_options.compare_confirmed_ram =

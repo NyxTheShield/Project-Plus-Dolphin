@@ -68,9 +68,11 @@
 #include "Core/HW/GCPad.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI_Device.h"
+#include "Core/HW/SI/SI.h"
 #include "Core/HW/Wiimote.h"
 #include "Core/HotkeyManager.h"
 #include "Core/IOS/USB/Bluetooth/BTEmu.h"
+#include "Core/IOS/FS/FileSystem.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
@@ -447,11 +449,17 @@ void MainWindow::InitCoreCallbacks()
     if (state == Core::State::Uninitialized)
       OnStopComplete();
 
-    if (state == Core::State::Running && m_managed_session &&
-        !m_managed_session->started_reported)
+    if (state == Core::State::Running && m_managed_session && !m_managed_session->started_reported)
     {
       m_managed_session->started_reported = true;
       ReportManagedStatus("started");
+    }
+
+    if (state == Core::State::Running && m_managed_session &&
+        m_managed_session->enable_netplay_replays &&
+        !m_managed_session->netplay_replay_recording_started)
+    {
+      QTimer::singleShot(0, this, &MainWindow::TryStartManagedNetplayReplay);
     }
 
     if (state == Core::State::Running && m_fullscreen_requested)
@@ -1746,9 +1754,7 @@ void MainWindow::NetPlayInit()
 
   connect(m_netplay_dialog, &NetPlayDialog::Stop, this, &MainWindow::ForceStop);
   connect(m_netplay_dialog, &NetPlayDialog::ConnectionFailed, this,
-          [this](const QString& message) {
-            FailManagedSession(message.toStdString());
-          });
+          [this](const QString& message) { FailManagedSession(message.toStdString()); });
   connect(m_netplay_dialog, &NetPlayDialog::rejected, this, &MainWindow::NetPlayQuit);
   connect(m_netplay_setup_dialog, &NetPlaySetupDialog::Join, this, &MainWindow::NetPlayJoin);
   connect(m_netplay_setup_dialog, &NetPlaySetupDialog::Host, this, &MainWindow::NetPlayHost);
@@ -1783,6 +1789,31 @@ void MainWindow::FailManagedSession(const std::string& reason)
   m_managed_session->failure_reported = true;
   ReportManagedStatus("failed", reason);
   QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
+}
+
+void MainWindow::TryStartManagedNetplayReplay()
+{
+  if (!m_managed_session || !m_managed_session->enable_netplay_replays ||
+      m_managed_session->netplay_replay_recording_started)
+  {
+    return;
+  }
+
+  if (Core::GetState(m_system) != Core::State::Running || !Rollback::IsGekkoSessionActive())
+  {
+    QTimer::singleShot(50, this, &MainWindow::TryStartManagedNetplayReplay);
+    return;
+  }
+
+  if (!Rollback::BeginNetplayReplayRecording(m_managed_session->game))
+  {
+    ERROR_LOG_FMT(NETPLAY, "Could not start managed Netplay Replay recording");
+    return;
+  }
+
+  m_managed_session->netplay_replay_recording_started = true;
+  emit RecordingStatusChanged(true);
+  INFO_LOG_FMT(NETPLAY, "Started managed Netplay Replay recording");
 }
 
 void MainWindow::StartManagedNetPlay()
@@ -1825,6 +1856,80 @@ void MainWindow::StartManagedNetPlay()
   const auto replay_path = read_string("replay_path");
   const auto replay_output_path = read_string("replay_output_path");
 
+  if (mode == "netplay_replay")
+  {
+    if (match_id)
+      m_managed_session->match_id = *match_id;
+    if (status_path)
+      m_managed_session->status_path = *status_path;
+    if (!match_id || !game || !status_path || !replay_path || !File::Exists(*replay_path) ||
+        !Rollback::LoadNetplayReplay(*replay_path))
+    {
+      FailManagedSession("The Netplay Replay is invalid");
+      return;
+    }
+
+    std::string launch_path;
+    std::optional<std::string> sd_card_path;
+    if (*game == "Project+" || *game == "project-plus")
+    {
+      if (!brawl_iso_path || !project_plus_sd_path || !File::Exists(*project_plus_sd_path))
+      {
+        Rollback::StopNetplayReplay();
+        FailManagedSession("The configured Project+ files are missing");
+        return;
+      }
+      Config::SetCurrent(Config::MAIN_DEFAULT_ISO, *brawl_iso_path);
+      sd_card_path = *project_plus_sd_path;
+      launch_path =
+          Rollback::GetNetplayReplayGameID().rfind("RSB", 0) == 0 ?
+              *brawl_iso_path :
+              File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
+    }
+    else if (*game == "Brawl" || *game == "brawl")
+    {
+      if (!brawl_iso_path)
+      {
+        Rollback::StopNetplayReplay();
+        FailManagedSession("The configured Brawl ISO is missing");
+        return;
+      }
+      launch_path = *brawl_iso_path;
+      Config::SetCurrent(Config::MAIN_DEFAULT_ISO, *brawl_iso_path);
+    }
+    else if (game->rfind("dolphin:", 0) == 0 && custom_game_path && File::Exists(*custom_game_path))
+    {
+      launch_path = *custom_game_path;
+    }
+    else
+    {
+      Rollback::StopNetplayReplay();
+      FailManagedSession("The Netplay Replay game is unavailable");
+      return;
+    }
+
+    Config::SetCurrent(Config::MAIN_WII_SD_CARD, sd_card_path.has_value());
+    Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
+    Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
+    File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
+    const int replay_players = Rollback::GetNetplayReplayPlayerCount();
+    for (int port = 0; port < SerialInterface::MAX_SI_CHANNELS; ++port)
+    {
+      Config::SetCurrent(Config::GetInfoForSIDevice(port),
+                         port < replay_players ? SerialInterface::SIDEVICE_GC_CONTROLLER :
+                                                 SerialInterface::SIDEVICE_NONE);
+    }
+    auto boot_session_data = std::make_unique<BootSessionData>();
+    boot_session_data->SetNetplayReplay(true);
+    // The replay format does not yet contain a synchronized Wii save payload. Do not fabricate a
+    // title list here: doing so creates NAND paths that were absent from sessions whose negotiated
+    // sync-title list was empty, changing the frame-zero machine state before any replay input.
+    boot_session_data->SetWiiSyncData(nullptr, {}, "", [] {});
+    ReportManagedStatus("preparing");
+    StartGame(launch_path, ScanForSecondDisc::No, std::move(boot_session_data));
+    return;
+  }
+
   if (mode == "replay")
   {
     if (match_id)
@@ -1840,9 +1945,8 @@ void MainWindow::StartManagedNetPlay()
 
     const UICommon::GameFile brawl_iso(*brawl_iso_path);
     const std::string& brawl_game_id = brawl_iso.GetGameID();
-    if (!brawl_iso.IsValid() ||
-        (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
-         brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
+    if (!brawl_iso.IsValid() || (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
+                                 brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
     {
       FailManagedSession("The selected Brawl ISO is invalid");
       return;
@@ -1887,9 +1991,8 @@ void MainWindow::StartManagedNetPlay()
   if (status_path)
     m_managed_session->status_path = *status_path;
   if (!match_id || !player_id || !game || !rendezvous_address || !rendezvous_token ||
-      !status_path ||
-      seat_it == ticket.end() || !seat_it->second.is<double>() || players_it == ticket.end() ||
-      !players_it->second.is<picojson::array>())
+      !status_path || seat_it == ticket.end() || !seat_it->second.is<double>() ||
+      players_it == ticket.end() || !players_it->second.is<picojson::array>())
   {
     FailManagedSession("The matchmaking ticket is incomplete");
     m_managed_session.reset();
@@ -1908,6 +2011,7 @@ void MainWindow::StartManagedNetPlay()
   if (game_revision_it != ticket.end() && game_revision_it->second.is<double>())
     m_managed_session->game_revision = static_cast<u16>(game_revision_it->second.get<double>());
   m_managed_session->status_path = *status_path;
+  m_managed_session->replay_output_path = replay_output_path.value_or("");
   m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
   m_managed_session->player_count =
       static_cast<int>(players_it->second.get<picojson::array>().size());
@@ -1917,21 +2021,21 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
   const auto stress_test_it = ticket.find("stress_test");
-  m_managed_session->stress_test =
-      stress_test_it != ticket.end() && stress_test_it->second.is<bool>() &&
-      stress_test_it->second.get<bool>();
+  m_managed_session->stress_test = stress_test_it != ticket.end() &&
+                                   stress_test_it->second.is<bool>() &&
+                                   stress_test_it->second.get<bool>();
   const auto simulate_remote_p2_it = ticket.find("simulate_remote_p2");
-  m_managed_session->simulate_remote_p2 =
-      simulate_remote_p2_it != ticket.end() && simulate_remote_p2_it->second.is<bool>() &&
-      simulate_remote_p2_it->second.get<bool>();
-  const auto stress_inputs_it = ticket.find("stress_inputs");
-  m_managed_session->stress_inputs =
-      stress_inputs_it != ticket.end() && stress_inputs_it->second.is<bool>() &&
-      stress_inputs_it->second.get<bool>();
+  m_managed_session->simulate_remote_p2 = simulate_remote_p2_it != ticket.end() &&
+                                          simulate_remote_p2_it->second.is<bool>() &&
+                                          simulate_remote_p2_it->second.get<bool>();
+  const auto enable_random_inputs_it = ticket.find("enable_random_inputs");
+  m_managed_session->enable_random_inputs = enable_random_inputs_it != ticket.end() &&
+                                            enable_random_inputs_it->second.is<bool>() &&
+                                            enable_random_inputs_it->second.get<bool>();
   const auto native_stress_it = ticket.find("native_stress");
-  m_managed_session->native_stress =
-      native_stress_it != ticket.end() && native_stress_it->second.is<bool>() &&
-      native_stress_it->second.get<bool>();
+  m_managed_session->native_stress = native_stress_it != ticket.end() &&
+                                     native_stress_it->second.is<bool>() &&
+                                     native_stress_it->second.get<bool>();
   const auto stress_interval_it = ticket.find("stress_interval");
   if (stress_interval_it != ticket.end() && stress_interval_it->second.is<double>())
   {
@@ -1954,18 +2058,17 @@ void MainWindow::StartManagedNetPlay()
       m_managed_session->frame_boundary = static_cast<u32>(boundary);
   }
   const auto full_scan_it = ticket.find("full_scan_benchmark");
-  m_managed_session->full_scan_benchmark =
-      full_scan_it != ticket.end() && full_scan_it->second.is<bool>() &&
-      full_scan_it->second.get<bool>();
+  m_managed_session->full_scan_benchmark = full_scan_it != ticket.end() &&
+                                           full_scan_it->second.is<bool>() &&
+                                           full_scan_it->second.get<bool>();
   const auto full_scan_keep_tracking_it = ticket.find("full_scan_keep_tracking");
-  m_managed_session->full_scan_keep_tracking =
-      full_scan_keep_tracking_it != ticket.end() &&
-      full_scan_keep_tracking_it->second.is<bool>() &&
-      full_scan_keep_tracking_it->second.get<bool>();
+  m_managed_session->full_scan_keep_tracking = full_scan_keep_tracking_it != ticket.end() &&
+                                               full_scan_keep_tracking_it->second.is<bool>() &&
+                                               full_scan_keep_tracking_it->second.get<bool>();
   const auto tracked_bitmap_clear_it = ticket.find("tracked_bitmap_clear");
-  m_managed_session->tracked_bitmap_clear =
-      tracked_bitmap_clear_it == ticket.end() || !tracked_bitmap_clear_it->second.is<bool>() ||
-      tracked_bitmap_clear_it->second.get<bool>();
+  m_managed_session->tracked_bitmap_clear = tracked_bitmap_clear_it == ticket.end() ||
+                                            !tracked_bitmap_clear_it->second.is<bool>() ||
+                                            tracked_bitmap_clear_it->second.get<bool>();
   const auto input_delay_it = ticket.find("input_delay_override");
   if (input_delay_it != ticket.end() && input_delay_it->second.is<double>())
   {
@@ -1993,21 +2096,25 @@ void MainWindow::StartManagedNetPlay()
     }
   }
   const auto compare_ram_it = ticket.find("compare_confirmed_ram");
-  m_managed_session->compare_confirmed_ram =
-      compare_ram_it != ticket.end() && compare_ram_it->second.is<bool>() &&
-      compare_ram_it->second.get<bool>();
+  m_managed_session->compare_confirmed_ram = compare_ram_it != ticket.end() &&
+                                             compare_ram_it->second.is<bool>() &&
+                                             compare_ram_it->second.get<bool>();
   const auto stop_ram_compare_it = ticket.find("stop_ram_compare_on_mismatch");
-  m_managed_session->stop_ram_compare_on_mismatch =
-      stop_ram_compare_it != ticket.end() && stop_ram_compare_it->second.is<bool>() &&
-      stop_ram_compare_it->second.get<bool>();
+  m_managed_session->stop_ram_compare_on_mismatch = stop_ram_compare_it != ticket.end() &&
+                                                    stop_ram_compare_it->second.is<bool>() &&
+                                                    stop_ram_compare_it->second.get<bool>();
   const auto deep_logging_it = ticket.find("enable_deep_logging");
-  m_managed_session->deep_logging =
-      deep_logging_it != ticket.end() && deep_logging_it->second.is<bool>() &&
-      deep_logging_it->second.get<bool>();
+  m_managed_session->deep_logging = deep_logging_it != ticket.end() &&
+                                    deep_logging_it->second.is<bool>() &&
+                                    deep_logging_it->second.get<bool>();
+  const auto netplay_replays_it = ticket.find("enable_netplay_replays");
+  m_managed_session->enable_netplay_replays = netplay_replays_it != ticket.end() &&
+                                              netplay_replays_it->second.is<bool>() &&
+                                              netplay_replays_it->second.get<bool>();
   const auto coarse_fifo_it = ticket.find("coarse_fifo_timing");
-  m_managed_session->coarse_fifo_timing =
-      coarse_fifo_it != ticket.end() && coarse_fifo_it->second.is<bool>() &&
-      coarse_fifo_it->second.get<bool>();
+  m_managed_session->coarse_fifo_timing = coarse_fifo_it != ticket.end() &&
+                                          coarse_fifo_it->second.is<bool>() &&
+                                          coarse_fifo_it->second.get<bool>();
   const auto late_vi_guard_it = ticket.find("late_vi_guard");
   m_managed_session->late_vi_guard = late_vi_guard_it == ticket.end() ||
                                      !late_vi_guard_it->second.is<bool>() ||
@@ -2024,8 +2131,8 @@ void MainWindow::StartManagedNetPlay()
     const auto id = player.find("player_id");
     const auto name = player.find("display_name");
     const auto roster_seat = player.find("seat");
-    if (id == player.end() || !id->second.is<std::string>() ||
-        roster_seat == player.end() || !roster_seat->second.is<double>())
+    if (id == player.end() || !id->second.is<std::string>() || roster_seat == player.end() ||
+        !roster_seat->second.is<double>())
     {
       continue;
     }
@@ -2060,18 +2167,14 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_PLAYERS, players_formatted);
   Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_DIRECTORY, replay_output_path.value_or(""));
 
-  const bool valid_player_count = m_managed_session->player_count >= 2 &&
-                                  m_managed_session->player_count <= 4 &&
-                                  m_managed_session->seat >= 1 &&
-                                  m_managed_session->seat <= m_managed_session->player_count;
+  const bool valid_player_count =
+      m_managed_session->player_count >= 2 && m_managed_session->player_count <= 4 &&
+      m_managed_session->seat >= 1 && m_managed_session->seat <= m_managed_session->player_count;
   const bool valid_test_solo = m_managed_session->test_solo &&
-                               m_managed_session->player_count == 1 &&
-                               m_managed_session->seat == 1;
+                               m_managed_session->player_count == 1 && m_managed_session->seat == 1;
   const bool complete_roster =
-      std::all_of(m_managed_session->player_ids.begin() + 1,
-                  m_managed_session->player_ids.end(), [](const std::string& id) {
-                    return !id.empty();
-                  });
+      std::all_of(m_managed_session->player_ids.begin() + 1, m_managed_session->player_ids.end(),
+                  [](const std::string& id) { return !id.empty(); });
   if ((!valid_player_count && !valid_test_solo) || !complete_roster ||
       m_managed_session->display_name.empty())
   {
@@ -2100,9 +2203,8 @@ void MainWindow::StartManagedNetPlay()
   {
     const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
     const std::string& brawl_game_id = brawl_iso.GetGameID();
-    if (!brawl_iso.IsValid() ||
-        (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
-         brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
+    if (!brawl_iso.IsValid() || (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
+                                 brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
     {
       FailManagedSession("The selected Brawl ISO is invalid");
       m_managed_session.reset();
@@ -2110,8 +2212,7 @@ void MainWindow::StartManagedNetPlay()
     }
     Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Project+");
-    game_path =
-        File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
+    game_path = File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
     if (m_managed_session->project_plus_sd_path.empty() ||
         !File::Exists(m_managed_session->project_plus_sd_path))
     {
@@ -2125,9 +2226,8 @@ void MainWindow::StartManagedNetPlay()
   {
     const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
     const std::string& brawl_game_id = brawl_iso.GetGameID();
-    if (!brawl_iso.IsValid() ||
-        (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
-         brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
+    if (!brawl_iso.IsValid() || (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
+                                 brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
     {
       FailManagedSession("The selected Brawl ISO is invalid");
       m_managed_session.reset();
@@ -2161,11 +2261,12 @@ void MainWindow::StartManagedNetPlay()
   const UICommon::GameFile selected_game(game_path);
   if (!selected_game.IsValid() || !m_netplay_dialog->SetManagedGamePath(game_path))
   {
-    const QString detail = m_managed_session->game == "brawl" ?
-                               tr("The selected Brawl ISO could not be opened.") :
-                           m_managed_session->game == "project-plus" ?
-                               tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.") :
-                               tr("The selected custom game could not be opened.");
+    const QString detail =
+        m_managed_session->game == "brawl" ?
+            tr("The selected Brawl ISO could not be opened.") :
+        m_managed_session->game == "project-plus" ?
+            tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.") :
+            tr("The selected custom game could not be opened.");
     FailManagedSession(detail.toStdString());
     m_managed_session.reset();
     return;
@@ -2232,14 +2333,14 @@ void MainWindow::PollManagedNetPlayReady()
     unsigned int rollback_window = m_managed_session->rollback_window_override.value_or(
         m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5);
     const u32 ping = client->GetPlayersMaxPing();
-    const u32 delay = NetPlay::GetGekkoInputDelayForPing(
-        ping, m_managed_session->input_delay_reduction);
+    const u32 delay =
+        NetPlay::GetGekkoInputDelayForPing(ping, m_managed_session->input_delay_reduction);
     if (!m_managed_session->test_solo && !m_managed_session->stress_test)
     {
       // Both the selected preset and the ping are session-wide for managed matchmaking. Expand the
       // shared prediction window only when the negotiated delay does not cover this round trip.
-      while (rollback_window < 10 && static_cast<u64>(ping) * 3 >
-                                         static_cast<u64>(delay + rollback_window) * 100)
+      while (rollback_window < 10 &&
+             static_cast<u64>(ping) * 3 > static_cast<u64>(delay + rollback_window) * 100)
       {
         ++rollback_window;
       }
@@ -2334,12 +2435,11 @@ bool MainWindow::NetPlayJoin()
     auto& rollback_options = managed_config->rollback_options;
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
-    rollback_options.stress_inputs = m_managed_session->stress_inputs;
+    rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;
     rollback_options.native_stress = m_managed_session->native_stress;
     rollback_options.stress_interval = m_managed_session->stress_interval;
     rollback_options.compare_confirmed_ram = m_managed_session->compare_confirmed_ram;
-    rollback_options.stop_ram_compare_on_mismatch =
-        m_managed_session->stop_ram_compare_on_mismatch;
+    rollback_options.stop_ram_compare_on_mismatch = m_managed_session->stop_ram_compare_on_mismatch;
     rollback_options.deep_logging = m_managed_session->deep_logging;
     rollback_options.coarse_fifo_timing = m_managed_session->coarse_fifo_timing;
     rollback_options.late_vi_guard = m_managed_session->late_vi_guard;
@@ -2672,6 +2772,33 @@ void MainWindow::OnStartRecording()
 
 void MainWindow::OnStopRecording()
 {
+  if (m_managed_session && m_managed_session->netplay_replay_recording_started)
+  {
+    bool saved = false;
+    if (!m_managed_session->replay_output_path.empty())
+    {
+      const std::string directory =
+          m_managed_session->replay_output_path + DIR_SEP "Netplay" DIR_SEP;
+      if (File::CreateFullPath(directory))
+      {
+        const std::string replay_path = directory + m_managed_session->match_id + "-p" +
+                                        std::to_string(m_managed_session->seat) + ".npr";
+        saved = Rollback::SaveNetplayReplay(replay_path);
+        if (saved)
+          INFO_LOG_FMT(NETPLAY, "Saved managed Netplay Replay to {}", replay_path);
+        else
+          ERROR_LOG_FMT(NETPLAY, "Could not save managed Netplay Replay to {}", replay_path);
+      }
+    }
+    Rollback::StopNetplayReplay();
+    m_managed_session->netplay_replay_recording_started = false;
+    emit RecordingStatusChanged(false);
+    return;
+  }
+
+  if (Rollback::IsNetplayReplayPlaying())
+    Rollback::StopNetplayReplay();
+
   auto& movie = m_system.GetMovie();
   if (movie.IsRecordingInput())
     OnExportRecording();

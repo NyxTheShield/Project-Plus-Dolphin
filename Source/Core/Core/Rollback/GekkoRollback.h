@@ -37,7 +37,7 @@ struct GekkoSessionOptions
   bool debug_p2_cstick = false;
   bool simulate_remote_p2 = false;
   bool stress_test = false;
-  bool stress_inputs = false;
+  bool enable_random_inputs = false;
   bool native_stress = false;
   u32 stress_interval = 1;
   bool compare_confirmed_ram = false;
@@ -88,12 +88,24 @@ void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 ad
 
 // Session management. Dolphin negotiates endpoints in the lobby; GekkoNet owns gameplay traffic.
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
-                       const std::vector<std::string>& player_endpoints,
-                       int local_delay, int prediction_window,
-                       const GekkoSessionOptions& options);
+                       const std::vector<std::string>& player_endpoints, int local_delay,
+                       int prediction_window, const GekkoSessionOptions& options);
 void StopGekkoSession();
 bool IsGekkoSessionActive();
 bool IsGekkoFrameBoundary(FrameBoundary boundary);
 void SetGekkoLocalDelay(int local_delay);
+
+// Netplay replays store the port-ordered inputs emitted by GekkoAdvanceEvent once per logical
+// frame. They deliberately do not use Dolphin's SI-poll-based DTM stream.
+bool BeginNetplayReplayRecording(const std::string& game_key);
+bool SaveNetplayReplay(const std::string& path);
+bool LoadNetplayReplay(const std::string& path);
+std::string GetNetplayReplayGameID();
+int GetNetplayReplayPlayerCount();
+u64 GetNetplayReplayInitialRTC();
+std::vector<u8> GetNetplayReplaySysconf();
+bool IsNetplayReplayRecording();
+bool IsNetplayReplayPlaying();
+void StopNetplayReplay();
 
 }  // namespace Rollback

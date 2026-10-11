@@ -202,6 +202,7 @@ private:
   bool NetPlayHost(const UICommon::GameFile& game);
   void NetPlayQuit();
   void StartManagedNetPlay();
+  void TryStartManagedNetplayReplay();
   void PollManagedNetPlayReady();
   void ReportManagedStatus(const std::string& state, const std::string& reason = {});
   void FailManagedSession(const std::string& reason);
@@ -278,6 +279,7 @@ private:
     std::string game_id;
     u16 game_revision = 0;
     std::string status_path;
+    std::string replay_output_path;
     int seat = 0;
     int player_count = 0;
     std::vector<std::string> player_ids;
@@ -285,7 +287,7 @@ private:
     bool test_solo = false;
     bool stress_test = false;
     bool simulate_remote_p2 = false;
-    bool stress_inputs = false;
+    bool enable_random_inputs = false;
     bool native_stress = false;
     u32 stress_interval = 1;
     std::optional<u32> rollback_window_override;
@@ -299,6 +301,8 @@ private:
     bool compare_confirmed_ram = false;
     bool stop_ram_compare_on_mismatch = false;
     bool deep_logging = false;
+    bool enable_netplay_replays = false;
+    bool netplay_replay_recording_started = false;
     bool coarse_fifo_timing = false;
     bool late_vi_guard = true;
     bool latency_sampling_started = false;

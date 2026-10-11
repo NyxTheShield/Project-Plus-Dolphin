@@ -115,6 +115,7 @@ void Load(Core::System& system, u32 slot);
 
 void SaveAs(Core::System& system, std::string filename);
 void LoadAs(Core::System& system, std::string filename);
+void WaitForPendingWrites();
 
 void LoadLastSaved(Core::System& system, int i = 1);
 void SaveFirstSaved(Core::System& system);

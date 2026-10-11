@@ -27,6 +27,7 @@
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayProto.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 
 #include "DiscIO/Enums.h"
@@ -410,9 +411,10 @@ u32 CEXIIPL::GetEmulatedTime(Core::System& system, u32 epoch)
     // let's keep time moving forward, regardless of what it starts at
     ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
   }
-  else if (NetPlay::IsNetPlayRunning())
+  else if (NetPlay::IsNetPlayRunning() || Rollback::IsNetplayReplayPlaying())
   {
-    ltime = NetPlay_GetEmulatedTime();
+    ltime = NetPlay::IsNetPlayRunning() ? NetPlay_GetEmulatedTime() :
+                                         Rollback::GetNetplayReplayInitialRTC();
 
     // let's keep time moving forward, regardless of what it starts at
     ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();

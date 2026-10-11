@@ -531,6 +531,11 @@ void SaveAs(Core::System& system, std::string filename)
       });
 }
 
+void WaitForPendingWrites()
+{
+  s_compress_and_dump_thread.WaitForCompletion();
+}
+
 static bool GetVersionFromLZO(StateHeader& header, File::IOFile& f)
 {
   // Just read the first block, since it will contain the full revision string

@@ -31,6 +31,7 @@
 #include "Core/IOS/Uids.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayClient.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/SysConf.h"
 #include "Core/System.h"
 namespace Core
@@ -152,6 +153,11 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
                                             const BootSessionData& boot_session_data)
 {
   auto& movie = Core::System::GetInstance().GetMovie();
+  // Replay playback is loaded before the emulated boot begins. Use its authoritative runtime
+  // state as well as the boot marker so every boot path receives the same deterministic Wii-save
+  // initialization as the session that produced the input stream.
+  const bool netplay_replay =
+      boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying();
   const u64 title_id = SConfig::GetInstance().GetTitleID();
   const auto configured_fs = FS::MakeFileSystem(FS::Location::Configured);
   if (movie.IsRecordingInput())
@@ -168,7 +174,8 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
     }
   }
 
-  if ((NetPlay::IsNetPlayRunning() && SConfig::GetInstance().bCopyWiiSaveNetplay) ||
+  if (netplay_replay ||
+      (NetPlay::IsNetPlayRunning() && SConfig::GetInstance().bCopyWiiSaveNetplay) ||
       (movie.IsMovieActive() && !movie.IsStartingFromClearSave()))
   {
     auto* sync_fs = boot_session_data.GetWiiSyncFS();
@@ -286,11 +293,14 @@ void InitializeWiiRoot(bool use_temporary)
 
 void ShutdownWiiRoot()
 {
-  if (Config::Get(Config::MAIN_SAVE_NETPLAY_REPLAYS))
+  // Replay extraction is only valid after a temporary Wii root was initialized. A managed launch
+  // can fail before that happens, while a stale WiiSession directory from an earlier interrupted
+  // run still exists on disk. Never construct a HostFileSystem from the empty s_temp_wii_root in
+  // that case.
+  if (Config::Get(Config::MAIN_SAVE_NETPLAY_REPLAYS) && WiiRootIsTemporary())
   {
-    const std::string brawl_temp_save =
-        File::GetUserPath(D_USER_IDX) + "WiiSession" DIR_SEP "title" DIR_SEP
-                                            "00010000" DIR_SEP "52534245" DIR_SEP "data" DIR_SEP;
+    const std::string brawl_temp_save = s_temp_wii_root + "title" DIR_SEP "00010000" DIR_SEP
+                                          "52534245" DIR_SEP "data" DIR_SEP;
     const std::string configured_replay_root =
         Config::Get(Config::MAIN_NETPLAY_REPLAY_DIRECTORY);
     const std::string replay_data = configured_replay_root.empty() ?
@@ -456,10 +466,31 @@ void InitializeWiiFileSystemContents(
   if (is_temp_nand)
   {
     // Generate a SYSCONF with default settings for the temporary Wii NAND.
-    SysConf sysconf{fs};
-    sysconf.Save();
+    {
+      SysConf sysconf{fs};
+      sysconf.Save();
+    }
 
     InitializeDeterministicWiiSaves(fs.get(), boot_session_data);
+    if (boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying())
+    {
+      const std::vector<u8> replay_sysconf = Rollback::GetNetplayReplaySysconf();
+      if (!replay_sysconf.empty())
+      {
+        const auto file = fs->OpenFile(IOS::PID_KERNEL, IOS::PID_KERNEL,
+                                       "/shared2/sys/SYSCONF", FS::Mode::ReadWrite);
+        if (!file || !file->Seek(0, FS::SeekMode::Set) ||
+            !file->Write(replay_sysconf.data(), replay_sysconf.size()))
+        {
+          ERROR_LOG_FMT(CORE, "Failed to install Netplay Replay SYSCONF");
+        }
+        else
+        {
+          INFO_LOG_FMT(CORE, "Installed {}-byte Netplay Replay SYSCONF",
+                       replay_sysconf.size());
+        }
+      }
+    }
     CaptureInitialReplayNames(fs);
   }
 
@@ -499,8 +530,8 @@ void CleanUpWiiFileSystemContents(const BootSessionData& boot_session_data)
   const auto* netplay_settings = boot_session_data.GetNetplaySettings();
   const bool is_netplay_write = netplay_settings && netplay_settings->savedata_write;
   const bool is_netplay_host = netplay_settings && netplay_settings->is_hosting;
-  const bool cleanup_required =
-      wii_root_is_temporary && (!netplay_settings || (is_netplay_write && is_netplay_host));
+  const bool cleanup_required = wii_root_is_temporary && !boot_session_data.IsNetplayReplay() &&
+                                (!netplay_settings || (is_netplay_write && is_netplay_host));
 
   INFO_LOG_FMT(CORE,
                "Wii FS Cleanup: cleanup_required = {} (wii_root_is_temporary = {}, "

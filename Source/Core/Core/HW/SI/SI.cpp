@@ -27,6 +27,7 @@
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayProto.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
@@ -212,6 +213,14 @@ void SerialInterfaceManager::DoState(PointerWrap& p)
     const std::unique_ptr<ISIDevice>& device = m_channel[i].device;
     SIDevices type = device->GetDeviceType();
     p.Do(type);
+
+    // A Netplay Replay supplies one virtual GC controller per recorded player. Do not let the
+    // companion savestate's host-side controller configuration remove a recorded player's port.
+    if (p.IsReadMode() && Rollback::IsNetplayReplayPlaying() &&
+        i < Rollback::GetNetplayReplayPlayerCount())
+    {
+      type = SIDEVICE_GC_CONTROLLER;
+    }
 
     if (type != device->GetDeviceType())
     {
