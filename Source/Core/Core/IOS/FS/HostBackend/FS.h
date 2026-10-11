@@ -7,6 +7,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <source_location>
 #include <string>
@@ -192,6 +193,10 @@ private:
   FstEntry m_root_entry{};
   std::string m_root_path;
   std::map<std::string, std::weak_ptr<File::IOFile>> m_open_files;
+  // Rollback snapshots can run while asynchronous IOS work is completing. Keep partially
+  // constructed handles private until OpenFile publishes them, and serialize all handle-table
+  // access against DoState.
+  mutable std::recursive_mutex m_handles_mutex;
   std::array<Handle, 16> m_handles{};
 
   FstEntry m_redirect_fst{};

@@ -58,6 +58,7 @@ HostFileSystem::BuildFilename(const std::string& wii_path, std::string_view cont
   File::IOFile diagnostic{diagnostic_path, "ab"};
   if (diagnostic)
   {
+    std::lock_guard lock(m_handles_mutex);
     diagnostic.WriteString(fmt::format(
         "\n=== Invalid Wii path ===\nunix_time={}\ncontext={}\ncaller={}:{} ({})\n"
         "wii_path='{}' size={}\nrollback_snapshot={} resimulating={} root_path_empty={}\n"
@@ -322,6 +323,8 @@ HostFileSystem::FstEntry* HostFileSystem::GetFstEntryForPath(const std::string& 
 
 void HostFileSystem::DoState(PointerWrap& p)
 {
+  std::lock_guard lock(m_handles_mutex);
+
   // This piece of code is handling four separate problems:
   // 1. Close host handles by calling reset on them, in case DoStateRead needs to modify a file that
   //    was open.
@@ -407,12 +410,32 @@ void HostFileSystem::DoState(PointerWrap& p)
 
   for (Handle& handle : m_handles)
   {
+    // An opened handle without an absolute Wii path is never a valid guest-visible handle. Older
+    // builds could expose this transient OpenFile state to rollback saves. Drop it without showing
+    // a modal assertion so an old/corrupt snapshot cannot wedge a headless netplay process.
+    if (!p.IsReadMode() && rollback_snapshot && handle.opened &&
+        !handle.wii_path.starts_with('/'))
+    {
+      ERROR_LOG_FMT(IOS_FS,
+                    "Rollback save: discarding incomplete NAND handle with path '{}'",
+                    handle.wii_path);
+      handle = Handle{};
+    }
+
     p.Do(handle.opened);
     p.Do(handle.mode);
     p.Do(handle.wii_path);
     p.Do(handle.file_offset);
     if (!handle.opened)
       continue;
+    if (rollback_snapshot && !handle.wii_path.starts_with('/'))
+    {
+      ERROR_LOG_FMT(IOS_FS,
+                    "Rollback load: discarding invalid NAND handle with path '{}'",
+                    handle.wii_path);
+      handle = Handle{};
+      continue;
+    }
     const std::string_view state_context =
         p.IsReadMode()    ? "DoState read/restore" :
         p.IsWriteMode()   ? "DoState write/save" :
@@ -435,12 +458,16 @@ void HostFileSystem::DoState(PointerWrap& p)
 
 void HostFileSystem::CloseHostFiles()
 {
+  std::lock_guard lock(m_handles_mutex);
+
   for (Handle& handle : m_handles)
     handle.host_file.reset();
 }
 
 void HostFileSystem::ReopenHostFiles()
 {
+  std::lock_guard lock(m_handles_mutex);
+
   for (Handle& handle : m_handles)
   {
     if (handle.opened && !handle.host_file)
@@ -450,6 +477,8 @@ void HostFileSystem::ReopenHostFiles()
 
 ResultCode HostFileSystem::Format(Uid uid)
 {
+  std::lock_guard lock(m_handles_mutex);
+
   if (uid != 0)
     return ResultCode::AccessDenied;
   if (m_root_path.empty())
@@ -535,6 +564,7 @@ ResultCode HostFileSystem::CreateDirectory(Uid uid, Gid gid, const std::string& 
 
 bool HostFileSystem::IsFileOpened(const std::string& path) const
 {
+  std::lock_guard lock(m_handles_mutex);
   return std::ranges::any_of(m_handles, [&path](const Handle& handle) {
     return handle.opened && handle.wii_path == path;
   });
@@ -542,6 +572,7 @@ bool HostFileSystem::IsFileOpened(const std::string& path) const
 
 bool HostFileSystem::IsDirectoryInUse(const std::string& path) const
 {
+  std::lock_guard lock(m_handles_mutex);
   return std::ranges::any_of(m_handles, [&path](const Handle& handle) {
     return handle.opened && handle.wii_path.starts_with(path);
   });
