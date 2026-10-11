@@ -28,6 +28,7 @@
 #include "Core/IOS/Network/KD/VFF/VFFUtil.h"
 #include "Core/IOS/Network/Socket.h"
 #include "Core/IOS/Uids.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 #include "Core/WC24PatchEngine.h"
 
@@ -154,7 +155,8 @@ s32 NWC24MakeUserID(u64* nwc24_id, u32 hollywood_id, u16 id_ctr, HardwareModel h
 NetKDRequestDevice::NetKDRequestDevice(EmulationKernel& ios, const std::string& device_name,
                                        const std::shared_ptr<NetKDTimeDevice>& time_device)
     : EmulationDevice(ios, device_name), m_config{ios.GetFS()}, m_dl_list{ios.GetFS()},
-      m_send_list{ios.GetFS()}, m_friend_list{ios.GetFS()}, m_time_device{time_device}
+      m_send_list{ios.GetFS()}, m_friend_list{ios.GetFS()}, m_time_device{time_device},
+      m_disable_networking_for_gekko{Rollback::IsGekkoSessionActive()}
 {
   // Enable all NWC24 permissions
   m_scheduler_buffer[1] = Common::swap32(-1);
@@ -207,6 +209,13 @@ void NetKDRequestDevice::Update()
 
 void NetKDRequestDevice::SchedulerTimer()
 {
+  if (m_disable_networking_for_gekko)
+  {
+    INFO_LOG_FMT(IOS_WC24, "WiiConnect24 scheduler disabled for Gekko session");
+    m_shutdown_event.Wait();
+    return;
+  }
+
   u32 mail_time_state = 0;
   u32 download_time_state = 0;
   Common::SetCurrentThreadName("KD Scheduler Timer");
@@ -343,6 +352,9 @@ void NetKDRequestDevice::LogError(ErrorType error_type, s32 error_code)
 
 NWC24::ErrorCode NetKDRequestDevice::KDCheckMail(u32* mail_flag, u32* interval)
 {
+  if (m_disable_networking_for_gekko)
+    return NWC24::WC24_ERR_DISABLED;
+
   bool success = false;
   Common::ScopeGuard state_guard([&] {
     std::lock_guard lg(m_scheduler_buffer_lock);
@@ -511,6 +523,9 @@ NWC24::ErrorCode NetKDRequestDevice::DetermineSubtask(u16 entry_index,
 
 NWC24::ErrorCode NetKDRequestDevice::KDSendMail()
 {
+  if (m_disable_networking_for_gekko)
+    return NWC24::WC24_ERR_DISABLED;
+
   bool success = false;
   Common::ScopeGuard exit_guard([&] {
     std::lock_guard lg(m_scheduler_buffer_lock);
@@ -639,6 +654,9 @@ NWC24::ErrorCode NetKDRequestDevice::KDSendMail()
 NWC24::ErrorCode NetKDRequestDevice::KDDownload(const u16 entry_index,
                                                 const std::optional<u8> subtask_id)
 {
+  if (m_disable_networking_for_gekko)
+    return NWC24::WC24_ERR_DISABLED;
+
   bool success = false;
   Common::ScopeGuard state_guard([&] {
     const u64 current_utc = m_time_device->GetAdjustedUTC();
@@ -880,6 +898,12 @@ IPCReply NetKDRequestDevice::HandleRequestRegisterUserId(const IOS::HLE::IOCtlRe
   INFO_LOG_FMT(IOS_WC24, "NET_KD_REQ: IOCTL_NWC24_REQUEST_REGISTER_USER_ID");
   // Always 0 for some reason, never modified anywhere else
   memory.Write_U32(0, request.buffer_out + 4);
+
+  if (m_disable_networking_for_gekko)
+  {
+    WriteReturnValue(memory, NWC24::WC24_ERR_DISABLED, request.buffer_out);
+    return IPCReply{IPC_SUCCESS};
+  }
 
   if (m_ios.GetIOSC().IsUsingDefaultId())
   {

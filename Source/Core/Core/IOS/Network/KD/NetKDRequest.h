@@ -117,6 +117,7 @@ private:
   u32 m_error_count = 0;
   std::array<u32, 256> m_scheduler_buffer{};
   std::shared_ptr<NetKDTimeDevice> m_time_device;
+  bool m_disable_networking_for_gekko = false;
   // TODO: Maybe move away from Common::HttpRequest?
   Common::HttpRequest m_http{std::chrono::minutes{1}};
   u32 m_download_span = 2;

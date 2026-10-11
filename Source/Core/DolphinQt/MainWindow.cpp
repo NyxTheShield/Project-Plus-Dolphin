@@ -1928,10 +1928,24 @@ void MainWindow::StartManagedNetPlay()
     }
     auto boot_session_data = std::make_unique<BootSessionData>();
     boot_session_data->SetNetplayReplay(true);
-    // The replay format does not yet contain a synchronized Wii save payload. Do not fabricate a
-    // title list here: doing so creates NAND paths that were absent from sessions whose negotiated
-    // sync-title list was empty, changing the frame-zero machine state before any replay input.
-    boot_session_data->SetWiiSyncData(nullptr, {}, "", [] {});
+    // Recreate the normal NetPlay save initialization for the selected Wii disc. Leaving this list
+    // empty makes replay playback boot from a different temporary NAND than the session that
+    // recorded it (for example, Brawl takes a different banner/save-loading path).
+    std::vector<u64> replay_wii_titles;
+    const std::string& replay_disc_path =
+        (*game == "Project+" || *game == "project-plus" || *game == "Brawl" || *game == "brawl") ?
+            *brawl_iso_path :
+            launch_path;
+    const UICommon::GameFile replay_game(replay_disc_path);
+    if (replay_game.IsValid() && replay_game.GetTitleID() != 0 &&
+        (replay_game.GetPlatform() == DiscIO::Platform::WiiDisc ||
+         replay_game.GetPlatform() == DiscIO::Platform::WiiWAD))
+    {
+      replay_wii_titles.push_back(replay_game.GetTitleID());
+      INFO_LOG_FMT(NETPLAY, "Netplay Replay: initializing Wii save for title {:016x}",
+                   replay_game.GetTitleID());
+    }
+    boot_session_data->SetWiiSyncData(nullptr, std::move(replay_wii_titles), "", [] {});
     ReportManagedStatus("preparing");
     StartGame(launch_path, ScanForSecondDisc::No, std::move(boot_session_data));
     return;
