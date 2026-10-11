@@ -2109,12 +2109,51 @@ bool NetPlayClient::StartGame(const std::string& path)
                                     });
   m_wii_sync_data_ready = false;
 
-  const bool rollback_stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
-  const bool native_stress = Config::Get(Config::NETPLAY_ROLLBACK_NATIVE_STRESS);
+  Rollback::GekkoSessionOptions rollback_options;
+  if (m_managed_config)
+  {
+    // Managed launches are ticket-owned. Persistent Dolphin settings must never leak diagnostics
+    // or benchmark behavior into a Brawlback match.
+    rollback_options = m_managed_config->rollback_options;
+  }
+  else
+  {
+    // Manual NetPlay keeps command-line/current-run diagnostics available to developers.
+    rollback_options.debug_p2_cstick =
+        Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
+    rollback_options.simulate_remote_p2 =
+        Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
+    rollback_options.stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
+    rollback_options.stress_inputs = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INPUTS);
+    rollback_options.native_stress = Config::Get(Config::NETPLAY_ROLLBACK_NATIVE_STRESS);
+    rollback_options.stress_interval = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL);
+    rollback_options.compare_confirmed_ram =
+        Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
+    rollback_options.stop_ram_compare_on_mismatch =
+        Config::Get(Config::NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH);
+    rollback_options.deep_logging = Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING);
+    rollback_options.coarse_fifo_timing =
+        Config::Get(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING);
+    rollback_options.late_vi_guard = Config::Get(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD);
+    rollback_options.tracked_bitmap_clear =
+        Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
+    rollback_options.full_scan_benchmark =
+        Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK);
+    rollback_options.full_scan_keep_tracking =
+        Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING);
+  }
+  if (!m_managed_config)
+  {
+    rollback_options.frame_boundary = static_cast<Rollback::FrameBoundary>(
+        std::min<u32>(m_net_settings.rollback_frame_boundary,
+                      static_cast<u32>(Rollback::FrameBoundary::VINewField)));
+  }
   const bool simulate_remote_p2 =
       m_local_player->IsHost() && m_players.size() == 1 &&
-      !native_stress &&
-      (Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2) || rollback_stress_test);
+      !rollback_options.native_stress &&
+      (rollback_options.simulate_remote_p2 ||
+       (!m_managed_config && rollback_options.stress_test));
+  rollback_options.simulate_remote_p2 = simulate_remote_p2;
 
   m_net_settings.local_player_id = m_local_player->pid;
   NetPlay::NetSettings boot_net_settings = m_net_settings;
@@ -2142,19 +2181,9 @@ bool NetPlayClient::StartGame(const std::string& path)
   // Dolphin fixed-delay minimum-buffer relationship between them.
   const int local_delay = static_cast<int>(m_local_player->buffer);
   const int prediction_window = static_cast<int>(m_minimum_buffer_size);
-  const bool debug_p2_cstick = Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
-  const bool stress_inputs = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INPUTS);
-  const u32 stress_interval = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL);
-  const bool compare_confirmed_ram = Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
-  const bool stop_ram_compare_on_mismatch =
-      Config::Get(Config::NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH);
-
   if (!Rollback::StartGekkoSession("Project+", m_current_game, num_players, local_seat,
                                    m_rollback_player_endpoints, local_delay, prediction_window,
-                                   debug_p2_cstick, simulate_remote_p2, rollback_stress_test,
-                                   stress_inputs, native_stress, stress_interval,
-                                   compare_confirmed_ram,
-                                   stop_ram_compare_on_mismatch))
+                                   rollback_options))
   {
     ERROR_LOG_FMT(NETPLAY, "GekkoNet: failed to start native UDP rollback session");
     return false;

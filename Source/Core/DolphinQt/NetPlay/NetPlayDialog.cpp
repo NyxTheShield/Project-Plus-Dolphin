@@ -263,49 +263,6 @@ void NetPlayDialog::CreateMainLayout()
   m_golf_mode_overlay_action->setCheckable(true);
   m_hide_remote_gbas_action = m_other_menu->addAction(tr("Hide Remote GBAs"));
   m_hide_remote_gbas_action->setCheckable(true);
-  m_other_menu->addSeparator();
-  m_rollback_debug_p2_cstick_action =
-      m_other_menu->addAction(tr("Rollback Debug: Step Player 2 C-Stick"));
-  m_rollback_debug_p2_cstick_action->setToolTip(
-      tr("On the player 2 client, change between eight C-stick directions every two frames and "
-         "press/release both L and R on alternating frames. "
-         "This is a rollback testing aid and should be disabled for normal play."));
-  m_rollback_debug_p2_cstick_action->setCheckable(true);
-  m_rollback_simulate_remote_p2_action =
-      m_other_menu->addAction(tr("Rollback Debug: Simulate Remote Player 2 Inputs"));
-  m_rollback_simulate_remote_p2_action->setToolTip(
-      tr("In a host-alone lobby, create an in-process remote Player 2 GekkoNet peer with 40 ms "
-         "one-way packet latency. The peer uses the Player 2 C-stick test pattern so prediction "
-         "transitions trigger rollback."));
-  m_rollback_simulate_remote_p2_action->setCheckable(true);
-  m_rollback_stress_test_action =
-      m_other_menu->addAction(tr("Rollback Benchmark: Roll Back Every 3F"));
-  m_rollback_stress_test_action->setToolTip(
-      tr("In a host-alone lobby, run an in-process Player 2 whose input changes every 3 frames "
-         "and whose GekkoNet packets arrive exactly Rollback Frames emulated frames late. "
-         "GekkoNet remains responsible for detecting and requesting every rollback."));
-  m_rollback_stress_test_action->setCheckable(true);
-  m_rollback_tracked_bitmap_clear_action =
-      m_other_menu->addAction(tr("Rollback Optimization: Clear Only Tracked RAM Bitmap"));
-  m_rollback_tracked_bitmap_clear_action->setToolTip(
-      tr("On restore, clear only the bitmap entries for MEM1 and MEM2 instead of the entire "
-         "512 MB address-indexed bitmap. No other restore behavior changes. The selection is "
-         "locked when a session starts and applies to the next session."));
-  m_rollback_tracked_bitmap_clear_action->setCheckable(true);
-  m_rollback_full_scan_benchmark_action =
-      m_other_menu->addAction(tr("Rollback Benchmark: Disable JIT Dirty Tracking"));
-  m_rollback_full_scan_benchmark_action->setToolTip(
-      tr("Compile guest RAM stores without inline dirty-page updates and conservatively scan all "
-         "MEM1/MEM2 pages on every save and restore. This isolates JIT tracking overhead and is "
-         "intentionally slower in the snapshot paths."));
-  m_rollback_full_scan_benchmark_action->setCheckable(true);
-  m_rollback_compare_confirmed_ram_action =
-      m_other_menu->addAction(tr("Rollback Debug: Compare Confirmed RAM"));
-  m_rollback_compare_confirmed_ram_action->setToolTip(
-      tr("Hash RAM snapshots only after their inputs are confirmed. On the first peer mismatch, "
-         "restore that snapshot, dump MEM1/MEM2/L1 to the Logs folder, and stop emulation. The "
-         "diagnostic automatically enables itself on connected peers."));
-  m_rollback_compare_confirmed_ram_action->setCheckable(true);
 
   m_game_button->setDefault(false);
   m_game_button->setAutoDefault(false);
@@ -533,16 +490,6 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_golf_mode_overlay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_fixed_delay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_hide_remote_gbas_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
-  connect(m_rollback_debug_p2_cstick_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
-  connect(m_rollback_simulate_remote_p2_action, &QAction::toggled, this,
-          &NetPlayDialog::SaveSettings);
-  connect(m_rollback_stress_test_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
-  connect(m_rollback_tracked_bitmap_clear_action, &QAction::toggled, this,
-          &NetPlayDialog::SaveSettings);
-  connect(m_rollback_full_scan_benchmark_action, &QAction::toggled, this,
-          &NetPlayDialog::SaveSettings);
-  connect(m_rollback_compare_confirmed_ram_action, &QAction::toggled, this,
-          &NetPlayDialog::SaveSettings);
   connect(m_brawlmusic_off, &QCheckBox::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_spectator_mode, &QCheckBox::toggled, this, &NetPlayDialog::SaveSettings);
 }
@@ -671,8 +618,6 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal, bool visible)
   m_data_menu->menuAction()->setVisible(is_hosting);
   m_network_menu->menuAction()->setVisible(is_hosting);
   m_game_digest_menu->menuAction()->setVisible(is_hosting);
-  m_rollback_simulate_remote_p2_action->setVisible(is_hosting);
-  m_rollback_stress_test_action->setVisible(is_hosting);
 #ifdef HAS_LIBMGBA
   m_hide_remote_gbas_action->setVisible(is_hosting);
 #else
@@ -1026,9 +971,6 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
   m_player_buffer_label->setEnabled(enabled);
   m_auto_delay_button->setEnabled(enabled);
   m_record_input_action->setEnabled(enabled);
-  m_rollback_tracked_bitmap_clear_action->setEnabled(enabled);
-  m_rollback_full_scan_benchmark_action->setEnabled(enabled);
-  m_rollback_compare_confirmed_ram_action->setEnabled(enabled);
 }
 
 void NetPlayDialog::OnMsgStartGame()
@@ -1310,15 +1252,6 @@ void NetPlayDialog::LoadSettings()
   const bool hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
   const bool brawlmusic_off = Config::Get(Config::NETPLAY_BRAWL_MUSIC_OFF);
   const bool spectator_mode = Config::Get(Config::NETPLAY_SPECTATOR_MODE);
-  const bool rollback_debug_p2_cstick = Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
-  const bool rollback_simulate_remote_p2 = Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
-  const bool rollback_stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
-  const bool rollback_tracked_bitmap_clear =
-      Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
-  const bool rollback_full_scan_benchmark =
-      Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK);
-  const bool rollback_compare_confirmed_ram =
-      Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
 
   m_minimum_buffer_size_box->setValue(minimum_buffer_size);
   m_player_buffer_size_box->setValue(player_buffer_size);
@@ -1344,12 +1277,6 @@ void NetPlayDialog::LoadSettings()
 
   m_brawlmusic_off->setChecked(brawlmusic_off);
   m_spectator_mode->setChecked(spectator_mode);
-  m_rollback_debug_p2_cstick_action->setChecked(rollback_debug_p2_cstick);
-  m_rollback_simulate_remote_p2_action->setChecked(rollback_simulate_remote_p2);
-  m_rollback_stress_test_action->setChecked(rollback_stress_test);
-  m_rollback_tracked_bitmap_clear_action->setChecked(rollback_tracked_bitmap_clear);
-  m_rollback_full_scan_benchmark_action->setChecked(rollback_full_scan_benchmark);
-  m_rollback_compare_confirmed_ram_action->setChecked(rollback_compare_confirmed_ram);
 
   const std::string network_mode = Config::Get(Config::NETPLAY_NETWORK_MODE);
 
@@ -1378,9 +1305,6 @@ void NetPlayDialog::SaveSettings()
 
   Config::SetBase(Config::NETPLAY_ROLLBACK_FRAMES, m_minimum_buffer_size_box->value());
   Config::SetBase(Config::NETPLAY_ROLLBACK_INPUT_DELAY, m_player_buffer_size_box->value());
-  Config::SetBase(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY,
-                  m_frame_boundary_combo->currentData().toUInt());
-
   const bool write_savedata = m_savedata_load_and_write_action->isChecked();
   const bool load_savedata = write_savedata || m_savedata_load_only_action->isChecked();
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, load_savedata);
@@ -1395,27 +1319,6 @@ void NetPlayDialog::SaveSettings()
   Config::SetBase(Config::NETPLAY_HIDE_REMOTE_GBAS, m_hide_remote_gbas_action->isChecked());
   Config::SetBase(Config::NETPLAY_BRAWL_MUSIC_OFF, m_brawlmusic_off->isChecked());
   Config::SetBase(Config::NETPLAY_SPECTATOR_MODE, m_spectator_mode->isChecked());
-  // Keep test controls persistent while also updating a live CurrentRun layer. SetBaseOrCurrent
-  // alone can select the temporary layer and lose the selection when Dolphin exits.
-  const auto set_rollback_test_setting = [](const Config::Info<bool>& info, bool value) {
-    const Config::LayerType active_layer = Config::GetActiveLayerForConfig(info);
-    Config::SetBase(info, value);
-    if (active_layer != Config::LayerType::Base)
-      Config::SetCurrent(info, value);
-  };
-  set_rollback_test_setting(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK,
-                            m_rollback_debug_p2_cstick_action->isChecked());
-  set_rollback_test_setting(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2,
-                            m_rollback_simulate_remote_p2_action->isChecked());
-  set_rollback_test_setting(Config::NETPLAY_ROLLBACK_STRESS_TEST,
-                            m_rollback_stress_test_action->isChecked());
-  set_rollback_test_setting(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR,
-                            m_rollback_tracked_bitmap_clear_action->isChecked());
-  set_rollback_test_setting(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK,
-                            m_rollback_full_scan_benchmark_action->isChecked());
-  set_rollback_test_setting(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM,
-                            m_rollback_compare_confirmed_ram_action->isChecked());
-
   std::string network_mode;
   if (m_fixed_delay_action->isChecked())
   {

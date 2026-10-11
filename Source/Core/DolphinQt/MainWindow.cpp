@@ -75,6 +75,7 @@
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
 #include "Core/NetPlayServer.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/State.h"
 #include "Core/System.h"
 #include "Core/WiiUtils.h"
@@ -1919,18 +1920,18 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->stress_test =
       stress_test_it != ticket.end() && stress_test_it->second.is<bool>() &&
       stress_test_it->second.get<bool>();
+  const auto simulate_remote_p2_it = ticket.find("simulate_remote_p2");
+  m_managed_session->simulate_remote_p2 =
+      simulate_remote_p2_it != ticket.end() && simulate_remote_p2_it->second.is<bool>() &&
+      simulate_remote_p2_it->second.get<bool>();
   const auto stress_inputs_it = ticket.find("stress_inputs");
   m_managed_session->stress_inputs =
       stress_inputs_it != ticket.end() && stress_inputs_it->second.is<bool>() &&
       stress_inputs_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_INPUTS,
-                     m_managed_session->stress_inputs);
   const auto native_stress_it = ticket.find("native_stress");
   m_managed_session->native_stress =
       native_stress_it != ticket.end() && native_stress_it->second.is<bool>() &&
       native_stress_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_NATIVE_STRESS,
-                     m_managed_session->native_stress);
   const auto stress_interval_it = ticket.find("stress_interval");
   if (stress_interval_it != ticket.end() && stress_interval_it->second.is<double>())
   {
@@ -1938,9 +1939,7 @@ void MainWindow::StartManagedNetPlay()
     if (interval >= 1.0 && interval <= 600.0)
       m_managed_session->stress_interval = static_cast<u32>(interval);
   }
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL,
-                     m_managed_session->stress_interval);
-  const auto rollback_frames_it = ticket.find("stress_rollback_frames");
+  const auto rollback_frames_it = ticket.find("rollback_window_override");
   if (rollback_frames_it != ticket.end() && rollback_frames_it->second.is<double>())
   {
     const double frames = rollback_frames_it->second.get<double>();
@@ -1954,14 +1953,19 @@ void MainWindow::StartManagedNetPlay()
     if (boundary >= 0.0 && boundary <= 3.0)
       m_managed_session->frame_boundary = static_cast<u32>(boundary);
   }
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY,
-                     m_managed_session->frame_boundary);
   const auto full_scan_it = ticket.find("full_scan_benchmark");
   m_managed_session->full_scan_benchmark =
       full_scan_it != ticket.end() && full_scan_it->second.is<bool>() &&
       full_scan_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK,
-                     m_managed_session->full_scan_benchmark);
+  const auto full_scan_keep_tracking_it = ticket.find("full_scan_keep_tracking");
+  m_managed_session->full_scan_keep_tracking =
+      full_scan_keep_tracking_it != ticket.end() &&
+      full_scan_keep_tracking_it->second.is<bool>() &&
+      full_scan_keep_tracking_it->second.get<bool>();
+  const auto tracked_bitmap_clear_it = ticket.find("tracked_bitmap_clear");
+  m_managed_session->tracked_bitmap_clear =
+      tracked_bitmap_clear_it == ticket.end() || !tracked_bitmap_clear_it->second.is<bool>() ||
+      tracked_bitmap_clear_it->second.get<bool>();
   const auto input_delay_it = ticket.find("input_delay_override");
   if (input_delay_it != ticket.end() && input_delay_it->second.is<double>())
   {
@@ -1992,47 +1996,25 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->compare_confirmed_ram =
       compare_ram_it != ticket.end() && compare_ram_it->second.is<bool>() &&
       compare_ram_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM,
-                     m_managed_session->compare_confirmed_ram);
+  const auto stop_ram_compare_it = ticket.find("stop_ram_compare_on_mismatch");
+  m_managed_session->stop_ram_compare_on_mismatch =
+      stop_ram_compare_it != ticket.end() && stop_ram_compare_it->second.is<bool>() &&
+      stop_ram_compare_it->second.get<bool>();
   const auto deep_logging_it = ticket.find("enable_deep_logging");
   m_managed_session->deep_logging =
       deep_logging_it != ticket.end() && deep_logging_it->second.is<bool>() &&
       deep_logging_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_DEEP_LOGGING,
-                     m_managed_session->deep_logging);
   const auto coarse_fifo_it = ticket.find("coarse_fifo_timing");
   m_managed_session->coarse_fifo_timing =
       coarse_fifo_it != ticket.end() && coarse_fifo_it->second.is<bool>() &&
       coarse_fifo_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING,
-                     m_managed_session->coarse_fifo_timing);
   const auto late_vi_guard_it = ticket.find("late_vi_guard");
   m_managed_session->late_vi_guard = late_vi_guard_it == ticket.end() ||
                                      !late_vi_guard_it->second.is<bool>() ||
                                      late_vi_guard_it->second.get<bool>();
-  Config::SetCurrent(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD,
-                     m_managed_session->late_vi_guard);
-  if (m_managed_session->test_solo)
+  if (m_managed_session->stress_test)
   {
-    // Fake matchmaking supports both the simulated-P2 network harness and GekkoNet's native
-    // input-neutral stress session. Both exercise Dolphin's normal Orca snapshot event path.
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2,
-                       !m_managed_session->native_stress);
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_TEST, true);
-    INFO_LOG_FMT(
-        NETPLAY,
-        "Managed solo test: enabling {} rollback every {} frame(s) at {}-frame depth",
-        m_managed_session->native_stress ? "native Gekko stress-session" : "simulated-peer",
-        m_managed_session->native_stress ? m_managed_session->stress_interval : 1,
-        m_managed_session->rollback_window_override.value_or(2));
-  }
-  else if (m_managed_session->stress_test)
-  {
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2, false);
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_STRESS_TEST, true);
-    INFO_LOG_FMT(NETPLAY,
-                 "Managed two-client test: enabling forced rollback every frame at the "
-                 "negotiated rollback-window depth");
+    INFO_LOG_FMT(NETPLAY, "Managed launch ticket enabled rollback stress diagnostics");
   }
   for (const picojson::value& player_value : players_it->second.get<picojson::array>())
   {
@@ -2094,6 +2076,20 @@ void MainWindow::StartManagedNetPlay()
       m_managed_session->display_name.empty())
   {
     FailManagedSession("The matchmaking ticket contains an invalid player roster");
+    m_managed_session.reset();
+    return;
+  }
+  if ((m_managed_session->simulate_remote_p2 || m_managed_session->native_stress) &&
+      !valid_test_solo)
+  {
+    FailManagedSession("Solo rollback diagnostics require a one-player test ticket");
+    m_managed_session.reset();
+    return;
+  }
+  if (m_managed_session->native_stress &&
+      (!m_managed_session->stress_test || m_managed_session->simulate_remote_p2))
+  {
+    FailManagedSession("The native rollback stress ticket is inconsistent");
     m_managed_session.reset();
     return;
   }
@@ -2251,16 +2247,6 @@ void MainWindow::PollManagedNetPlayReady()
     server->AdjustMinimumPadBufferSize(rollback_window);
     server->SetManagedGekkoPing(ping);
 
-    // NetPlayJoin saves the hidden dialog's controls. Reapply ticket-owned diagnostics and
-    // experiments afterwards so a stale persistent checkbox cannot override an explicit false.
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM,
-                       m_managed_session->compare_confirmed_ram);
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_DEEP_LOGGING,
-                       m_managed_session->deep_logging);
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING,
-                       m_managed_session->coarse_fifo_timing);
-    Config::SetCurrent(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD,
-                       m_managed_session->late_vi_guard);
     INFO_LOG_FMT(NETPLAY,
                  "Managed session latency settings: ping={} ms, host_input_delay={}, "
                  "input_delay_mode={}, rollback_window={}{}",
@@ -2345,6 +2331,23 @@ bool MainWindow::NetPlayJoin()
     managed_config->coordinator = m_managed_session->seat == 1;
     managed_config->input_delay_reduction = m_managed_session->input_delay_reduction;
     managed_config->auto_input_delay = !m_managed_session->input_delay_override.has_value();
+    auto& rollback_options = managed_config->rollback_options;
+    rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
+    rollback_options.stress_test = m_managed_session->stress_test;
+    rollback_options.stress_inputs = m_managed_session->stress_inputs;
+    rollback_options.native_stress = m_managed_session->native_stress;
+    rollback_options.stress_interval = m_managed_session->stress_interval;
+    rollback_options.compare_confirmed_ram = m_managed_session->compare_confirmed_ram;
+    rollback_options.stop_ram_compare_on_mismatch =
+        m_managed_session->stop_ram_compare_on_mismatch;
+    rollback_options.deep_logging = m_managed_session->deep_logging;
+    rollback_options.coarse_fifo_timing = m_managed_session->coarse_fifo_timing;
+    rollback_options.late_vi_guard = m_managed_session->late_vi_guard;
+    rollback_options.frame_boundary =
+        static_cast<Rollback::FrameBoundary>(m_managed_session->frame_boundary);
+    rollback_options.tracked_bitmap_clear = m_managed_session->tracked_bitmap_clear;
+    rollback_options.full_scan_benchmark = m_managed_session->full_scan_benchmark;
+    rollback_options.full_scan_keep_tracking = m_managed_session->full_scan_keep_tracking;
   }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
       host_ip, host_port, m_netplay_dialog, nickname,

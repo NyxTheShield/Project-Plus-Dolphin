@@ -29,6 +29,28 @@ enum class FrameBoundary : u8
   VINewField = 3,
 };
 
+// Per-session diagnostics and experimental switches. These are supplied by the launch ticket for
+// managed Brawlback sessions, or by current-run command-line configuration for manual NetPlay.
+// They are deliberately not discovered from persistent configuration inside the rollback core.
+struct GekkoSessionOptions
+{
+  bool debug_p2_cstick = false;
+  bool simulate_remote_p2 = false;
+  bool stress_test = false;
+  bool stress_inputs = false;
+  bool native_stress = false;
+  u32 stress_interval = 1;
+  bool compare_confirmed_ram = false;
+  bool stop_ram_compare_on_mismatch = false;
+  bool deep_logging = false;
+  bool coarse_fifo_timing = false;
+  bool late_vi_guard = true;
+  FrameBoundary frame_boundary = FrameBoundary::VINewField;
+  bool tracked_bitmap_clear = true;
+  bool full_scan_benchmark = false;
+  bool full_scan_keep_tracking = false;
+};
+
 // Wire format for GameCube controller input over GekkoNet (8 bytes)
 // [Buttons Hi, Buttons Lo, MainStick X, MainStick Y, CStick X, CStick Y, Trigger L, Trigger R]
 struct WirePad
@@ -67,10 +89,8 @@ void RecordHostMemoryWrite(Core::System& system, std::string_view source, u32 ad
 // Session management. Dolphin negotiates endpoints in the lobby; GekkoNet owns gameplay traffic.
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
                        const std::vector<std::string>& player_endpoints,
-                       int local_delay, int prediction_window, bool debug_p2_cstick,
-                       bool simulate_remote_p2, bool stress_test, bool stress_inputs,
-                       bool native_stress, u32 stress_interval,
-                       bool compare_confirmed_ram, bool stop_ram_compare_on_mismatch);
+                       int local_delay, int prediction_window,
+                       const GekkoSessionOptions& options);
 void StopGekkoSession();
 bool IsGekkoSessionActive();
 bool IsGekkoFrameBoundary(FrameBoundary boundary);

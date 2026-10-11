@@ -22,6 +22,7 @@
 #include "Common/SPSCQueue.h"
 #include "Common/TraversalClient.h"
 #include "Core/NetPlayProto.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/SyncIdentifier.h"
 #include "InputCommon/GCPadStatus.h"
 
@@ -57,6 +58,7 @@ struct ManagedNetPlayConfig
   bool coordinator = false;
   u32 input_delay_reduction = 2;
   bool auto_input_delay = true;
+  Rollback::GekkoSessionOptions rollback_options;
 };
 
 class NetPlayUI

@@ -1236,10 +1236,7 @@ void SetGekkoLocalDelay(int local_delay)
 
 bool StartGekkoSession(const std::string& game_name, u32 session_id, int players, int local_player,
                        const std::vector<std::string>& player_endpoints, int local_delay,
-                       int prediction_window, bool debug_p2_cstick, bool simulate_remote_p2,
-                       bool stress_test, bool stress_inputs, bool native_stress,
-                       u32 stress_interval, bool compare_confirmed_ram,
-                       bool stop_ram_compare_on_mismatch)
+                       int prediction_window, const GekkoSessionOptions& options)
 {
   StopGekkoSession();
 
@@ -1251,12 +1248,13 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
                   local_player);
     return false;
   }
-  if (simulate_remote_p2 && (players != 2 || local_player != 1))
+  if (options.simulate_remote_p2 && (players != 2 || local_player != 1))
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: simulated remote player 2 requires a two-player host session");
     return false;
   }
-  if (native_stress && (!stress_test || simulate_remote_p2 || players != 1 || local_player != 1))
+  if (options.native_stress &&
+      (!options.stress_test || options.simulate_remote_p2 || players != 1 || local_player != 1))
   {
     ERROR_LOG_FMT(CORE,
                   "GekkoNet: native stress requires a one-player stress session without a "
@@ -1264,7 +1262,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     return false;
   }
   if (!gekko_create(&g_manager.session,
-                    native_stress ? GekkoStressSession : GekkoGameSession))
+                    options.native_stress ? GekkoStressSession : GekkoGameSession))
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create session");
     return false;
@@ -1275,8 +1273,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // Gekko allows prediction only while prediction_window > frames_already_predicted. The stress
   // transport therefore gets one internal prediction slot beyond the selected rollback distance,
   // or both simulated peers can reach the cap and stop the emulated clock that releases packets.
-  const int clamped_prediction = stress_test ? clamped_rollback_window + clamped_delay + 2 :
-                                               clamped_rollback_window;
+  const int clamped_prediction = options.stress_test ?
+                                     clamped_rollback_window + clamped_delay + 2 :
+                                     clamped_rollback_window;
 
   GekkoConfig config{};
   config.num_players = static_cast<unsigned char>(players);
@@ -1296,19 +1295,19 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // StressSession loads the state at current-check_distance, then advances from the following
   // frame through current-1. Therefore its replay count is check_distance-1; add one so the
   // harness's RollbackFrames value means the number of frames actually re-executed.
-  config.check_distance = native_stress ?
+  config.check_distance = options.native_stress ?
                               static_cast<unsigned int>(clamped_rollback_window + 1) :
                               10;
-  config.stress_interval = std::max(1u, stress_interval);
+  config.stress_interval = std::max(1u, options.stress_interval);
 
   gekko_start(g_manager.session, &config);
 
   GekkoNetAdapter* adapter = nullptr;
-  if (native_stress)
+  if (options.native_stress)
   {
     // GekkoStressSession is intentionally local and does not use a transport adapter.
   }
-  else if (simulate_remote_p2)
+  else if (options.simulate_remote_p2)
     adapter = &s_main_simulated_adapter;
   else
   {
@@ -1321,13 +1320,13 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     adapter = &s_shared_adapter;
   }
 
-  if (!native_stress && !adapter)
+  if (!options.native_stress && !adapter)
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Failed to create network adapter");
     gekko_destroy(&g_manager.session);
     return false;
   }
-  g_manager.native_adapter_active = !native_stress && !simulate_remote_p2;
+  g_manager.native_adapter_active = !options.native_stress && !options.simulate_remote_p2;
   if (adapter)
     gekko_net_adapter_set(g_manager.session, adapter);
   const auto destroy_failed_session = [&] {
@@ -1347,25 +1346,23 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // in-game seats. This remains port 0 on every client regardless of its network player number.
   g_manager.local_uses_gc_adapter =
       Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_WIIU_ADAPTER;
-  g_manager.debug_p2_cstick = debug_p2_cstick;
-  g_manager.simulate_remote_p2 = simulate_remote_p2;
-  g_manager.stress_test = stress_test;
-  g_manager.stress_inputs = stress_inputs;
-  g_manager.native_stress = native_stress;
-  g_manager.stress_interval = std::max(1u, stress_interval);
+  g_manager.debug_p2_cstick = options.debug_p2_cstick;
+  g_manager.simulate_remote_p2 = options.simulate_remote_p2;
+  g_manager.stress_test = options.stress_test;
+  g_manager.stress_inputs = options.stress_inputs;
+  g_manager.native_stress = options.native_stress;
+  g_manager.stress_interval = std::max(1u, options.stress_interval);
   g_manager.stress_rollback_frames =
-      stress_test ? static_cast<u32>(clamped_rollback_window) : 0;
-  g_manager.compare_confirmed_ram = compare_confirmed_ram && !simulate_remote_p2 && players > 1;
+      options.stress_test ? static_cast<u32>(clamped_rollback_window) : 0;
+  g_manager.compare_confirmed_ram =
+      options.compare_confirmed_ram && !options.simulate_remote_p2 && players > 1;
   g_manager.stop_ram_compare_on_mismatch =
-      stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
-  SetDetailedResimProfilingEnabled(Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING));
-  SetCoarseFifoTiming(Config::Get(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING));
-  g_manager.late_vi_guard = Config::Get(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD);
+      options.stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
+  SetDetailedResimProfilingEnabled(options.deep_logging);
+  SetCoarseFifoTiming(options.coarse_fifo_timing);
+  g_manager.late_vi_guard = options.late_vi_guard;
   g_manager.ram_diagnostic_dumped = false;
-  const u32 configured_frame_boundary =
-      std::min(Config::Get(Config::NETPLAY_ROLLBACK_FRAME_BOUNDARY),
-               static_cast<u32>(FrameBoundary::VINewField));
-  g_manager.frame_boundary = static_cast<FrameBoundary>(configured_frame_boundary);
+  g_manager.frame_boundary = options.frame_boundary;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.configured_local_delay = clamped_delay;
   g_manager.session_id = session_id;
@@ -1481,7 +1478,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       g_manager.player_handles[p - 1] = handle;
       gekko_set_local_delay(g_manager.session, handle, static_cast<unsigned char>(clamped_delay));
     }
-    else if (simulate_remote_p2 && p == 2)
+    else if (options.simulate_remote_p2 && p == 2)
     {
       GekkoNetAddress addr{const_cast<char*>(SIMULATED_P2_ADDRESS.data()),
                            static_cast<unsigned int>(SIMULATED_P2_ADDRESS.size())};
@@ -1531,13 +1528,14 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
   // For a real two-process benchmark, delay only the P2 -> P1 receive path. Delaying both
   // directions also delays acknowledgements and can make Gekko batch traffic instead of exposing
   // a clean, repeatable remote-input misprediction. P2 still generates the stress input locally.
-  s_stress_mode = !native_stress && stress_test && (simulate_remote_p2 || local_player == 1);
+  s_stress_mode = !options.native_stress && options.stress_test &&
+                  (options.simulate_remote_p2 || local_player == 1);
   s_stress_packet_delay_frames =
-      stress_test && !native_stress ?
+      options.stress_test && !options.native_stress ?
           static_cast<u64>(clamped_rollback_window + clamped_delay + 1) :
           0;
 
-  if (simulate_remote_p2)
+  if (options.simulate_remote_p2)
   {
     if (!gekko_create(&g_manager.simulated_peer_session, GekkoGameSession))
     {
@@ -1564,18 +1562,17 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
     }
     g_manager.simulated_peer_p2_handle = fake_local_p2;
     gekko_set_local_delay(g_manager.simulated_peer_session, fake_local_p2,
-                          static_cast<unsigned char>(stress_test ? 0 : clamped_delay));
+                          static_cast<unsigned char>(options.stress_test ? 0 : clamped_delay));
   }
 
-  g_manager.tracked_bitmap_clear = Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
-  g_manager.full_scan_benchmark = Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_BENCHMARK);
-  g_manager.full_scan_keep_tracking =
-      Config::Get(Config::NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING);
+  g_manager.tracked_bitmap_clear = options.tracked_bitmap_clear;
+  g_manager.full_scan_benchmark = options.full_scan_benchmark;
+  g_manager.full_scan_keep_tracking = options.full_scan_keep_tracking;
   g_manager.ring = std::make_unique<SnapshotRing>(RING_SNAPSHOT_SLOTS,
                                                   g_manager.tracked_bitmap_clear,
                                                   g_manager.full_scan_benchmark,
                                                   g_manager.full_scan_keep_tracking,
-                                                  compare_confirmed_ram);
+                                                  options.compare_confirmed_ram);
   g_manager.stop_requested.store(false, std::memory_order_relaxed);
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
@@ -1595,10 +1592,11 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
       "frame_boundary={})",
       game_name, players, local_player, session_id, clamped_delay, clamped_rollback_window,
       clamped_prediction,
-      g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad", debug_p2_cstick,
-      simulate_remote_p2, simulate_remote_p2 && !stress_test ? SIMULATED_P2_LATENCY.count() : 0,
-      stress_test, native_stress, stress_inputs,
-      native_stress ? std::max(1u, stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
+      g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad", options.debug_p2_cstick,
+      options.simulate_remote_p2,
+      options.simulate_remote_p2 && !options.stress_test ? SIMULATED_P2_LATENCY.count() : 0,
+      options.stress_test, options.native_stress, options.stress_inputs,
+      options.native_stress ? std::max(1u, options.stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
       clamped_rollback_window,
       g_manager.tracked_bitmap_clear,
       g_manager.full_scan_benchmark,
