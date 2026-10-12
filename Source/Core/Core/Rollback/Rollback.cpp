@@ -40,8 +40,23 @@ std::atomic<u64> s_resim_jit_compile_blocks{0};
 std::atomic<u64> s_resim_jit_compile_nanoseconds{0};
 std::atomic<u64> s_rollback_burst_sequence{0};
 std::atomic<u64> s_rollback_burst_serial{0};
+std::atomic<u64> s_rollback_burst_start_time_ns{0};
 std::atomic<u64> s_rollback_burst_end_time_ns{0};
 std::atomic<u64> s_rollback_burst_duration_ns{0};
+std::atomic<u64> s_rollback_burst_load_ns{0};
+std::atomic<u64> s_rollback_burst_exec_ns{0};
+std::atomic<u64> s_rollback_burst_save_ns{0};
+std::atomic<u64> s_rollback_burst_other_ns{0};
+std::atomic<u32> s_rollback_burst_replay_frames{0};
+std::atomic<u64> s_frame_pacing_sequence{0};
+std::atomic<u64> s_frame_pacing_serial{0};
+std::atomic<u64> s_frame_pacing_boundary_time_ns{0};
+std::atomic<u64> s_frame_pacing_throttle_start_time_ns{0};
+std::atomic<u64> s_frame_pacing_throttle_end_time_ns{0};
+std::atomic<u64> s_frame_pacing_throttle_requested_ns{0};
+std::atomic<u64> s_frame_pacing_throttle_actual_ns{0};
+std::atomic<s32> s_frame_pacing_gekko_frame{0};
+std::atomic<bool> s_frame_pacing_follows_rollback{false};
 ResimEventStats s_resim_event_stats;
 std::unordered_map<u32, ResimGuestHotspot> s_resim_guest_hotspots;
 ResimJitMemoryStats s_resim_jit_memory_stats;
@@ -323,14 +338,21 @@ void SetCoarseFifoTiming(bool enabled)
   s_coarse_fifo_timing.store(enabled, std::memory_order_relaxed);
 }
 
-void RecordRollbackBurst(u64 duration_ns)
+void RecordRollbackBurst(u64 duration_ns, u64 load_ns, u64 exec_ns, u64 save_ns, u64 other_ns,
+                         u32 replay_frames)
 {
   const u64 end_time_ns = static_cast<u64>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
   s_rollback_burst_sequence.fetch_add(1, std::memory_order_acq_rel);
+  s_rollback_burst_start_time_ns.store(end_time_ns - duration_ns, std::memory_order_relaxed);
   s_rollback_burst_duration_ns.store(duration_ns, std::memory_order_relaxed);
+  s_rollback_burst_load_ns.store(load_ns, std::memory_order_relaxed);
+  s_rollback_burst_exec_ns.store(exec_ns, std::memory_order_relaxed);
+  s_rollback_burst_save_ns.store(save_ns, std::memory_order_relaxed);
+  s_rollback_burst_other_ns.store(other_ns, std::memory_order_relaxed);
+  s_rollback_burst_replay_frames.store(replay_frames, std::memory_order_relaxed);
   s_rollback_burst_end_time_ns.store(end_time_ns, std::memory_order_relaxed);
   s_rollback_burst_serial.fetch_add(1, std::memory_order_relaxed);
   s_rollback_burst_sequence.fetch_add(1, std::memory_order_release);
@@ -345,9 +367,68 @@ RollbackBurstMarker GetLastRollbackBurst()
     if ((sequence_before & 1) != 0)
       continue;
     marker.serial = s_rollback_burst_serial.load(std::memory_order_relaxed);
+    marker.start_time_ns = s_rollback_burst_start_time_ns.load(std::memory_order_relaxed);
     marker.end_time_ns = s_rollback_burst_end_time_ns.load(std::memory_order_relaxed);
     marker.duration_ns = s_rollback_burst_duration_ns.load(std::memory_order_relaxed);
+    marker.load_ns = s_rollback_burst_load_ns.load(std::memory_order_relaxed);
+    marker.exec_ns = s_rollback_burst_exec_ns.load(std::memory_order_relaxed);
+    marker.save_ns = s_rollback_burst_save_ns.load(std::memory_order_relaxed);
+    marker.other_ns = s_rollback_burst_other_ns.load(std::memory_order_relaxed);
+    marker.replay_frames = s_rollback_burst_replay_frames.load(std::memory_order_relaxed);
     const u64 sequence_after = s_rollback_burst_sequence.load(std::memory_order_acquire);
+    if (sequence_before == sequence_after)
+      return marker;
+  }
+}
+
+void RecordFramePacingBoundary(s32 gekko_frame, bool follows_rollback)
+{
+  const u64 now_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+  s_frame_pacing_sequence.fetch_add(1, std::memory_order_acq_rel);
+  s_frame_pacing_boundary_time_ns.store(now_ns, std::memory_order_relaxed);
+  s_frame_pacing_throttle_start_time_ns.store(0, std::memory_order_relaxed);
+  s_frame_pacing_throttle_end_time_ns.store(0, std::memory_order_relaxed);
+  s_frame_pacing_throttle_requested_ns.store(0, std::memory_order_relaxed);
+  s_frame_pacing_throttle_actual_ns.store(0, std::memory_order_relaxed);
+  s_frame_pacing_gekko_frame.store(gekko_frame, std::memory_order_relaxed);
+  s_frame_pacing_follows_rollback.store(follows_rollback, std::memory_order_relaxed);
+  s_frame_pacing_serial.fetch_add(1, std::memory_order_relaxed);
+  s_frame_pacing_sequence.fetch_add(1, std::memory_order_release);
+}
+
+void RecordFramePacingThrottle(u64 start_time_ns, u64 end_time_ns, u64 requested_ns, u64 actual_ns)
+{
+  s_frame_pacing_sequence.fetch_add(1, std::memory_order_acq_rel);
+  s_frame_pacing_throttle_start_time_ns.store(start_time_ns, std::memory_order_relaxed);
+  s_frame_pacing_throttle_end_time_ns.store(end_time_ns, std::memory_order_relaxed);
+  s_frame_pacing_throttle_requested_ns.store(requested_ns, std::memory_order_relaxed);
+  s_frame_pacing_throttle_actual_ns.store(actual_ns, std::memory_order_relaxed);
+  s_frame_pacing_sequence.fetch_add(1, std::memory_order_release);
+}
+
+FramePacingMarker GetLastFramePacingMarker()
+{
+  FramePacingMarker marker;
+  while (true)
+  {
+    const u64 sequence_before = s_frame_pacing_sequence.load(std::memory_order_acquire);
+    if ((sequence_before & 1) != 0)
+      continue;
+    marker.serial = s_frame_pacing_serial.load(std::memory_order_relaxed);
+    marker.boundary_time_ns = s_frame_pacing_boundary_time_ns.load(std::memory_order_relaxed);
+    marker.throttle_start_time_ns =
+        s_frame_pacing_throttle_start_time_ns.load(std::memory_order_relaxed);
+    marker.throttle_end_time_ns =
+        s_frame_pacing_throttle_end_time_ns.load(std::memory_order_relaxed);
+    marker.throttle_requested_ns =
+        s_frame_pacing_throttle_requested_ns.load(std::memory_order_relaxed);
+    marker.throttle_actual_ns = s_frame_pacing_throttle_actual_ns.load(std::memory_order_relaxed);
+    marker.gekko_frame = s_frame_pacing_gekko_frame.load(std::memory_order_relaxed);
+    marker.follows_rollback =
+        s_frame_pacing_follows_rollback.load(std::memory_order_relaxed);
+    const u64 sequence_after = s_frame_pacing_sequence.load(std::memory_order_acquire);
     if (sequence_before == sequence_after)
       return marker;
   }

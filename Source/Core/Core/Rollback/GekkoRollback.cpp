@@ -511,6 +511,8 @@ struct GekkoManager
   double speed_scale = 1.0;
   double target_scale = 1.0;
   int timesync_counter = 0;
+  bool visible_frame_pacing_pending = false;
+  bool deferred_visible_follows_rollback = false;
   std::optional<std::pair<s64, TimePoint>> throttle_reference_before_load;
   Common::PrecisionTimer wait_timer;
 
@@ -1907,6 +1909,8 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.perf_real_gaps_over_25_ms = 0;
   g_manager.perf_real_gaps_over_33_ms = 0;
   g_manager.perf_real_gaps_over_50_ms = 0;
+  g_manager.visible_frame_pacing_pending = false;
+  g_manager.deferred_visible_follows_rollback = false;
   g_manager.throttle_reference_before_load.reset();
 
   for (int p = 1; p <= players; ++p)
@@ -2111,6 +2115,8 @@ void StopGekkoSession()
   }
   ResetSimulatedLink();
   g_manager.pending_events.clear();
+  g_manager.visible_frame_pacing_pending = false;
+  g_manager.deferred_visible_follows_rollback = false;
   g_manager.throttle_reference_before_load.reset();
   if (g_manager.ring)
     g_manager.ring->Reset(Core::System::GetInstance());
@@ -3007,8 +3013,6 @@ static void FinishRollbackBurst(Core::System& system,
 
   const auto burst_duration = now - *g_manager.rollback_burst_start;
   const double elapsed = std::chrono::duration<double, std::milli>(burst_duration).count();
-  Rollback::RecordRollbackBurst(static_cast<u64>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(burst_duration).count()));
   ++g_manager.perf_rollback_burst_count;
   g_manager.perf_rollback_burst_ms += elapsed;
   g_manager.perf_rollback_burst_max_ms =
@@ -3016,6 +3020,15 @@ static void FinishRollbackBurst(Core::System& system,
   const double other_ms =
       std::max(0.0, elapsed - g_manager.current_burst_load_ms -
                         g_manager.current_burst_exec_ms - g_manager.current_burst_save_ms);
+  const auto milliseconds_to_nanoseconds = [](double milliseconds) {
+    return static_cast<u64>(std::max(0.0, milliseconds) * 1'000'000.0);
+  };
+  Rollback::RecordRollbackBurst(
+      static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(burst_duration).count()),
+      milliseconds_to_nanoseconds(g_manager.current_burst_load_ms),
+      milliseconds_to_nanoseconds(g_manager.current_burst_exec_ms),
+      milliseconds_to_nanoseconds(g_manager.current_burst_save_ms),
+      milliseconds_to_nanoseconds(other_ms), g_manager.current_rollback_replays);
   g_manager.perf_burst_load_ms += g_manager.current_burst_load_ms;
   g_manager.perf_burst_load_max_ms =
       std::max(g_manager.perf_burst_load_max_ms, g_manager.current_burst_load_ms);
@@ -3038,10 +3051,29 @@ static void FinishRollbackBurst(Core::System& system,
 // to the CPU so the selected frame can actually run. GekkoNet can emit a complete rollback as one
 // batch (load, several replay advances/saves, then a real advance); Dolphin must spread that batch
 // across real frame boundaries instead of merely relatching all of its inputs in one callback.
-static bool PrepareQueuedFrame(Core::System& system)
+enum class PrepareFrameResult
+{
+  NoFrame,
+  FrameReady,
+  VisibleFrameDeferred,
+};
+
+static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
+                                             bool allow_visible_advance = true)
 {
   while (!g_manager.pending_events.empty())
   {
+    const QueuedEvent& next = g_manager.pending_events.front();
+    if (!allow_visible_advance && next.type == GekkoAdvanceEvent && !next.rolling_back &&
+        !next.running_ahead)
+    {
+      const bool follows_rollback = g_manager.rollback_burst_start.has_value();
+      if (follows_rollback)
+        FinishRollbackBurst(system, std::chrono::steady_clock::now());
+      g_manager.deferred_visible_follows_rollback |= follows_rollback;
+      return PrepareFrameResult::VisibleFrameDeferred;
+    }
+
     QueuedEvent event = std::move(g_manager.pending_events.front());
     g_manager.pending_events.pop_front();
     RecordDiagnosticEvent(system, event);
@@ -3097,7 +3129,7 @@ static bool PrepareQueuedFrame(Core::System& system)
         {
           ERROR_LOG_FMT(CORE, "GekkoNet: Failed to restore rollback frame {}", event.frame);
           g_manager.stop_requested.store(true, std::memory_order_relaxed);
-          return false;
+          return PrepareFrameResult::NoFrame;
         }
         VerifyRestoredRam(system, event.frame);
         if (g_manager.stress_test && event.frame < 10)
@@ -3155,9 +3187,17 @@ static bool PrepareQueuedFrame(Core::System& system)
       RecordNetplayReplayFrame(system, event.frame);
       const auto advance_now = std::chrono::steady_clock::now();
       if (resimulating)
+      {
         Rollback::SetResimulating(true);
+      }
       else
+      {
+        const bool follows_rollback = g_manager.deferred_visible_follows_rollback ||
+                                      g_manager.rollback_burst_start.has_value();
         FinishRollbackBurst(system, advance_now);
+        Rollback::RecordFramePacingBoundary(event.frame, follows_rollback);
+        g_manager.deferred_visible_follows_rollback = false;
+      }
       if (resimulating)
       {
         ++g_manager.perf_replay_frames;
@@ -3253,14 +3293,36 @@ static bool PrepareQueuedFrame(Core::System& system)
                                               std::chrono::steady_clock::now() - frame_setup_start)
                                               .count()));
       }
-      return true;
+      return PrepareFrameResult::FrameReady;
     }
 
     default:
       break;
     }
   }
-  return false;
+  return PrepareFrameResult::NoFrame;
+}
+
+static bool StartPreparedFrame(Core::System& system)
+{
+  PrepareFrameResult result =
+      PrepareQueuedFrame(system, !g_manager.visible_frame_pacing_pending);
+  if (result == PrepareFrameResult::FrameReady)
+    return true;
+
+  if (result != PrepareFrameResult::VisibleFrameDeferred)
+    return false;
+
+  // All rollback advances and their saves have completed, and Gekko's next visible advance is
+  // waiting at the front of the queue. Pace against the original emulated deadline now, so the
+  // rollback burst consumes the idle budget instead of being added after a full frame wait.
+  auto& core_timing = system.GetCoreTiming();
+  core_timing.ThrottleForRollbackBoundary(static_cast<s64>(core_timing.GetTicks()));
+  g_manager.visible_frame_pacing_pending = false;
+
+  result = PrepareQueuedFrame(system);
+  ASSERT(result == PrepareFrameResult::FrameReady);
+  return result == PrepareFrameResult::FrameReady;
 }
 
 static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundary boundary)
@@ -3331,6 +3393,10 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
                        g_manager.current_burst_jit_blocks_invalidated);
       }
     }
+    else
+    {
+      g_manager.visible_frame_pacing_pending = true;
+    }
     g_manager.frame_execution_start.reset();
   }
 
@@ -3338,7 +3404,7 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
 
   // A rollback batch is replayed one emulated frame at a time. State saves left after the prior
   // advance are intentionally handled now, after that frame has completed.
-  if (PrepareQueuedFrame(system))
+  if (StartPreparedFrame(system))
     return;
 
   // Only publish confirmed hashes after the previous Gekko event batch has completely drained.
@@ -3440,7 +3506,7 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     }
 
     QueueEvents(events, event_count);
-    if (PrepareQueuedFrame(system))
+    if (StartPreparedFrame(system))
     {
       RecordPumpTime(pump_start);
       return;
@@ -3529,12 +3595,6 @@ static bool SubmitNetplayReplayInputs()
 void OnFrameBoundary(const Core::CPUThreadGuard& guard)
 {
   ProcessFrameBoundary(guard, FrameBoundary::BrawlHook);
-  if (IsGekkoSessionActive() && g_manager.frame_boundary == FrameBoundary::BrawlHook &&
-      !IsResimulating())
-  {
-    auto& core_timing = guard.GetSystem().GetCoreTiming();
-    core_timing.ThrottleForRollbackBoundary(static_cast<s64>(core_timing.GetTicks()));
-  }
   RecordGekkoInputGuestResume();
 }
 
@@ -3630,11 +3690,6 @@ void RunPendingVIBoundary(Core::System& system)
 
   const Core::CPUThreadGuard guard(system);
   ProcessFrameBoundary(guard, g_manager.frame_boundary);
-  if (IsGekkoSessionActive() && !IsResimulating())
-  {
-    auto& core_timing = system.GetCoreTiming();
-    core_timing.ThrottleForRollbackBoundary(static_cast<s64>(core_timing.GetTicks()));
-  }
   RecordGekkoInputGuestResume();
   static u32 s_early_returns = 0;
   if (g_manager.stress_test && s_early_returns++ < 16)

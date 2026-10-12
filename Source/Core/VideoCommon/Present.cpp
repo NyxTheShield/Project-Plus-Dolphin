@@ -971,6 +971,8 @@ void Presenter::Present(PresentInfo* present_info)
     return;
   }
 
+  const TimePoint present_entry_time = Clock::now();
+
   // Since we use the common pipelines here and draw vertices if a batch is currently being
   // built by the vertex loader, we end up trampling over its pointer, as we share the buffer
   // with the loader, and it has not been unmapped yet. Force a pipeline flush to avoid this.
@@ -1004,12 +1006,15 @@ void Presenter::Present(PresentInfo* present_info)
     std::lock_guard<std::mutex> guard(m_swap_mutex);
 
     double presentation_wait_ms = 0.0;
+    double present_draw_ms = 0.0;
 
     if (present_info != nullptr)
     {
       const auto present_time = GetUpdatedPresentationTime(present_info->intended_present_time);
 
       const TimePoint wait_start = Clock::now();
+      present_draw_ms =
+          std::chrono::duration<double, std::milli>(wait_start - present_entry_time).count();
       Core::System::GetInstance().GetCoreTiming().SleepUntil(present_time);
       presentation_wait_ms =
           std::chrono::duration<double, std::milli>(Clock::now() - wait_start).count();
@@ -1040,6 +1045,7 @@ void Presenter::Present(PresentInfo* present_info)
     static u64 s_long_short_pairs = 0;
     static std::optional<double> s_previous_interval;
     static u64 s_last_burst_serial = 0;
+    static u64 s_last_pacing_serial = 0;
     static u64 s_burst_intervals = 0;
     static u64 s_bursts_observed = 0;
     static double s_burst_interval_sum = 0.0;
@@ -1047,6 +1053,9 @@ void Presenter::Present(PresentInfo* present_info)
     static double s_burst_wait_sum = 0.0;
     static double s_burst_backend_sum = 0.0;
     static double s_burst_end_to_present_sum = 0.0;
+    static double s_burst_start_to_present_sum = 0.0;
+    static double s_burst_start_to_present_max = 0.0;
+    static u64 s_burst_start_to_present_over_budget = 0;
     static u64 s_clean_intervals = 0;
     static double s_clean_interval_sum = 0.0;
     const TimePoint actual_present_time = Clock::now();
@@ -1055,8 +1064,12 @@ void Presenter::Present(PresentInfo* present_info)
             .count());
     Rollback::RecordGekkoInputPresentation(actual_present_ns);
     const Rollback::RollbackBurstMarker burst = Rollback::GetLastRollbackBurst();
+    const Rollback::FramePacingMarker pacing = Rollback::GetLastFramePacingMarker();
     if (!s_last_present_time)
+    {
       s_last_burst_serial = burst.serial;
+      s_last_pacing_serial = pacing.serial;
+    }
     if (s_last_present_time)
     {
       const double interval_ms =
@@ -1092,6 +1105,13 @@ void Presenter::Present(PresentInfo* present_info)
         s_burst_backend_sum += backend_ms;
         s_burst_end_to_present_sum +=
             static_cast<double>(actual_present_ns - burst.end_time_ns) / 1'000'000.0;
+        const double start_to_present_ms =
+            static_cast<double>(burst.duration_ns + actual_present_ns - burst.end_time_ns) /
+            1'000'000.0;
+        s_burst_start_to_present_sum += start_to_present_ms;
+        s_burst_start_to_present_max =
+            std::max(s_burst_start_to_present_max, start_to_present_ms);
+        s_burst_start_to_present_over_budget += start_to_present_ms > (1000.0 / 60.0);
       }
       else
       {
@@ -1099,6 +1119,71 @@ void Presenter::Present(PresentInfo* present_info)
         s_clean_interval_sum += interval_ms;
       }
       s_last_burst_serial = burst.serial;
+
+      const bool contains_boundary =
+          pacing.serial != s_last_pacing_serial && pacing.boundary_time_ns > previous_present_ns &&
+          pacing.boundary_time_ns <= actual_present_ns;
+      if (interval_ms > 20.0 && Rollback::IsDetailedResimProfilingEnabled())
+      {
+        const auto ns_to_ms = [](u64 value) {
+          return static_cast<double>(value) / 1'000'000.0;
+        };
+        const auto between_ms = [&ns_to_ms](u64 end, u64 start) {
+          return end >= start ? ns_to_ms(end - start) : 0.0;
+        };
+
+        if (contains_boundary)
+        {
+          const bool burst_matches =
+              pacing.follows_rollback && contains_burst && burst.start_time_ns > previous_present_ns &&
+              burst.end_time_ns <= pacing.boundary_time_ns;
+          const bool throttle_matches =
+              pacing.throttle_start_time_ns >= pacing.boundary_time_ns &&
+              pacing.throttle_end_time_ns >= pacing.throttle_start_time_ns &&
+              pacing.throttle_end_time_ns <= actual_present_ns;
+          const u64 work_start_ns = burst_matches ? burst.start_time_ns : pacing.boundary_time_ns;
+          const u64 work_end_ns = burst_matches ? burst.end_time_ns : pacing.boundary_time_ns;
+          const u64 throttle_start_ns =
+              throttle_matches ? pacing.throttle_start_time_ns : work_end_ns;
+          const u64 throttle_end_ns = throttle_matches ? pacing.throttle_end_time_ns : work_end_ns;
+          const u64 present_entry_ns = static_cast<u64>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  present_entry_time.time_since_epoch())
+                  .count());
+          const double before_work_ms = between_ms(work_start_ns, previous_present_ns);
+          const double burst_ms = burst_matches ? ns_to_ms(burst.duration_ns) : 0.0;
+          const double work_to_throttle_ms = between_ms(throttle_start_ns, work_end_ns);
+          const double throttle_ms = throttle_matches ? ns_to_ms(pacing.throttle_actual_ns) : 0.0;
+          const double final_guest_video_ms = between_ms(present_entry_ns, throttle_end_ns);
+          const double accounted_ms = before_work_ms + burst_ms + work_to_throttle_ms + throttle_ms +
+                                      final_guest_video_ms + present_draw_ms +
+                                      presentation_wait_ms + backend_ms;
+          NOTICE_LOG_FMT(
+              CORE,
+              "Frame pacing late: interval {:.3f} ms frame={} marker_gap={} rollback={} depth={}; "
+              "before_work {:.3f}; burst {:.3f} [load {:.3f} exec {:.3f} save {:.3f} other "
+              "{:.3f}]; work_to_throttle {:.3f}; throttle requested/actual {:.3f}/{:.3f}; "
+              "final_guest_video {:.3f}; present_draw {:.3f}; present_wait {:.3f}; backend "
+              "{:.3f}; unaccounted {:.3f} ms",
+              interval_ms, pacing.gekko_frame, pacing.serial - s_last_pacing_serial, burst_matches,
+              burst_matches ? burst.replay_frames : 0, before_work_ms, burst_ms,
+              burst_matches ? ns_to_ms(burst.load_ns) : 0.0,
+              burst_matches ? ns_to_ms(burst.exec_ns) : 0.0,
+              burst_matches ? ns_to_ms(burst.save_ns) : 0.0,
+              burst_matches ? ns_to_ms(burst.other_ns) : 0.0, work_to_throttle_ms,
+              throttle_matches ? ns_to_ms(pacing.throttle_requested_ns) : 0.0, throttle_ms,
+              final_guest_video_ms, present_draw_ms, presentation_wait_ms, backend_ms,
+              interval_ms - accounted_ms);
+        }
+        else
+        {
+          NOTICE_LOG_FMT(CORE,
+                         "Frame pacing late: interval {:.3f} ms with no matching real-frame "
+                         "boundary (latest frame={}, marker_gap={})",
+                         interval_ms, pacing.gekko_frame, pacing.serial - s_last_pacing_serial);
+        }
+      }
+      s_last_pacing_serial = pacing.serial;
 
       if (s_interval_count == s_intervals.size())
       {
@@ -1124,13 +1209,16 @@ void Presenter::Present(PresentInfo* present_info)
         NOTICE_LOG_FMT(
             CORE,
             "Present rollback correlation: burst intervals {} ({} bursts), interval {:.3f} ms, "
-            "burst {:.3f} ms, burst-end-to-present {:.3f} ms, present-wait {:.3f} ms, backend "
+            "burst {:.3f} ms, burst-end-to-present {:.3f} ms, catchup load-to-present "
+            "{:.3f}/{:.3f} ms avg/max ({} over 16.67), present-wait {:.3f} ms, backend "
             "{:.3f} ms, remainder {:.3f} ms; clean intervals {} avg {:.3f} ms; all present-wait "
             "{:.3f} ms, backend {:.3f} ms",
             s_burst_intervals, s_bursts_observed,
             average(s_burst_interval_sum, s_burst_intervals),
             average(s_burst_duration_sum, s_burst_intervals),
             average(s_burst_end_to_present_sum, s_burst_intervals),
+            average(s_burst_start_to_present_sum, s_burst_intervals),
+            s_burst_start_to_present_max, s_burst_start_to_present_over_budget,
             average(s_burst_wait_sum, s_burst_intervals),
             average(s_burst_backend_sum, s_burst_intervals),
             average(s_burst_interval_sum - s_burst_duration_sum - s_burst_wait_sum -
@@ -1156,6 +1244,9 @@ void Presenter::Present(PresentInfo* present_info)
         s_burst_wait_sum = 0.0;
         s_burst_backend_sum = 0.0;
         s_burst_end_to_present_sum = 0.0;
+        s_burst_start_to_present_sum = 0.0;
+        s_burst_start_to_present_max = 0.0;
+        s_burst_start_to_present_over_budget = 0;
         s_clean_intervals = 0;
         s_clean_interval_sum = 0.0;
       }

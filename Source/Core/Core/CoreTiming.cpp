@@ -652,8 +652,14 @@ void CoreTimingManager::Throttle(const s64 target_cycle)
   SleepUntil(target_time);
   if (measure_rollback_throttle)
   {
+    const TimePoint sleep_end = Clock::now();
     const u64 actual_ns = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - sleep_start).count());
+        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_end - sleep_start).count());
+    const u64 sleep_start_ns = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_start.time_since_epoch()).count());
+    const u64 sleep_end_ns = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_end.time_since_epoch()).count());
+    Rollback::RecordFramePacingThrottle(sleep_start_ns, sleep_end_ns, requested_ns, actual_ns);
     ++m_rollback_throttle_stats.normal_calls;
     m_rollback_throttle_stats.normal_requested_ns += requested_ns;
     m_rollback_throttle_stats.normal_requested_max_ns =
