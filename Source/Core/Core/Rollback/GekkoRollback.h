@@ -95,6 +95,9 @@ void StopGekkoSession();
 bool IsGekkoSessionActive();
 bool IsGekkoFrameBoundary(FrameBoundary boundary);
 void SetGekkoLocalDelay(int local_delay);
+// Deep-logging probe: pairs the next host presentation with the local input frame selected by
+// GekkoNet. The timestamp uses steady_clock nanoseconds and never enters emulated state.
+void RecordGekkoInputPresentation(u64 present_time_ns);
 
 // Netplay replays store the port-ordered inputs emitted by GekkoAdvanceEvent once per logical
 // frame. They deliberately do not use Dolphin's SI-poll-based DTM stream.

@@ -13,6 +13,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/VideoInterface.h"
 #include "Core/Host.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/Rollback/Rollback.h"
 #include "Core/System.h"
 
@@ -1052,6 +1053,7 @@ void Presenter::Present(PresentInfo* present_info)
     const u64 actual_present_ns = static_cast<u64>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(actual_present_time.time_since_epoch())
             .count());
+    Rollback::RecordGekkoInputPresentation(actual_present_ns);
     const Rollback::RollbackBurstMarker burst = Rollback::GetLastRollbackBurst();
     if (!s_last_present_time)
       s_last_burst_serial = burst.serial;
