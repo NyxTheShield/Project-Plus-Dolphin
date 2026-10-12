@@ -2152,9 +2152,10 @@ static bool SubmitLocalInput()
     local_status = Pad::GetStatus(LOCAL_PAD);
   }
   const bool input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
-  // This diagnostic targets the network seat, not whichever executable happened to receive the
-  // setting. Matchmaking can assign either local process to either seat.
-  if (g_manager.debug_p2_cstick && g_manager.local_player == 2 && input_spam_active)
+  // Debug input belongs to this Dolphin process. Modify its sampled local pad before the input is
+  // serialized for GekkoNet; the local actor then carries it to whichever seat matchmaking gave
+  // this client. Never select a physical pad or a target stream from the network seat number.
+  if (g_manager.debug_p2_cstick && input_spam_active)
   {
     ApplyDebugCStickPattern(&local_status, g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
   }

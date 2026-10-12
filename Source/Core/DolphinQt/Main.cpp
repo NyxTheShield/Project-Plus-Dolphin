@@ -50,9 +50,7 @@
 #endif
 #include "DolphinQt/Resources.h"
 #include "DolphinQt/Settings.h"
-#include "DolphinQt/Settings/PathPane.h"
 #include "DolphinQt/Translation.h"
-#include "DolphinQt/Updater.h"
 
 #include "UICommon/CommandLineParse.h"
 #include "UICommon/GameFile.h"
@@ -381,34 +379,6 @@ int main(int argc, char* argv[])
 #if defined(USE_ANALYTICS) && USE_ANALYTICS
     if (!managed_session && !Config::Get(Config::MAIN_ANALYTICS_PERMISSION_ASKED))
     {
-      QMessageBox firstboot_prompt(&win);
-      firstboot_prompt.setIcon(QMessageBox::Information);
-      firstboot_prompt.setWindowTitle(QObject::tr("First Boot Prompt"));
-      firstboot_prompt.setText(
-          QObject::tr("New installation detected; read below for setup tips!"));
-      firstboot_prompt.setInformativeText(QObject::tr(
-          "If you are on modern hardware, we recommend setting Ubershaders "
-          "to either Hybrid or Exclusive mode in Graphics > General for a "
-          "stutter-free experience while playing. \n\n"
-          "Select your Brawl ISO using the button below to allow the mod to load properly. \n"
-          "You can also set this path later in Config > Paths.\n\n"
-          "Thank you for playing!"));
-      QAbstractButton* pButtonYes =
-          firstboot_prompt.addButton(QObject::tr("Select ISO"), QMessageBox::YesRole);
-      firstboot_prompt.addButton(QObject::tr("Skip"), QMessageBox::NoRole);
-
-      firstboot_prompt.exec();
-
-      if (firstboot_prompt.clickedButton() == pButtonYes)
-      {
-        PathPane path_pane;
-        path_pane.BrowseDefaultGame();
-      }
-    }
-#endif
-#if defined(USE_ANALYTICS) && USE_ANALYTICS
-    if (!managed_session && !Config::Get(Config::MAIN_ANALYTICS_PERMISSION_ASKED))
-    {
       // To ensure that the analytics prompt appears aligned with the center of the main window,
       // the dialog is only shown after the application is ready, as only then it is guaranteed that
       // the main window has been placed in its final position.
@@ -425,13 +395,6 @@ int main(int argc, char* argv[])
                        });
     }
 #endif
-
-    if (!Settings::Instance().IsBatchModeEnabled())
-    {
-      auto* updater = new Updater(&win, Config::Get(Config::MAIN_AUTOUPDATE_UPDATE_TRACK),
-                                  Config::Get(Config::MAIN_AUTOUPDATE_HASH_OVERRIDE));
-      updater->start();
-    }
 
     retval = app.exec();
   }

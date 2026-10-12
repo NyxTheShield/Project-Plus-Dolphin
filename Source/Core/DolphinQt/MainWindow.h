@@ -174,10 +174,6 @@ private:
   void ShowGraphicsWindow();
   void ShowFreeLookWindow();
   void ShowAboutDialog();
-#ifdef SHOW_UPDATER
-  void ShowUpdateDialog();
-  void CheckForUpdatesAuto();
-#endif  // SHOW_UPDATER
   void ShowHotkeyDialog();
   void ShowNetPlaySetupDialog();
   void ShowNetPlayBrowser();
@@ -259,7 +255,6 @@ private:
   bool m_stop_confirm_showing = false;
   bool m_stop_requested = false;
   bool m_exit_requested = false;
-  bool m_fullscreen_requested = false;
   bool m_is_screensaver_inhibited = false;
   u32 m_state_slot = 1;
   std::unique_ptr<BootParameters> m_pending_boot;

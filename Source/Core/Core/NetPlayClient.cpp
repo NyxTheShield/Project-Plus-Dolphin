@@ -563,6 +563,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnPresentationPauseEnd(packet);
     break;
 
+  case MessageID::PresentationPauseReject:
+    OnPresentationPauseReject(packet);
+    break;
+
   case MessageID::Ping:
     OnPing(packet);
     break;
@@ -1158,13 +1162,27 @@ void NetPlayClient::OnPresentationPauseBegin(sf::Packet& packet)
   packet >> generation >> requester;
 
   auto& system = Core::System::GetInstance();
+  const bool can_pause = m_is_running.IsSet() && Core::GetState(system) == Core::State::Running;
   {
     std::lock_guard lock(m_presentation_pause_mutex);
+    if (!can_pause || m_presentation_pause_active)
+    {
+      sf::Packet response;
+      response << MessageID::PresentationPauseAck << generation << false;
+      Send(response);
+      WARN_LOG_FMT(NETPLAY,
+                   "Rejected presentation pause {} while local core was not ready (state={}, "
+                   "active={})",
+                   generation, static_cast<int>(Core::GetState(system)),
+                   m_presentation_pause_active);
+      return;
+    }
     m_presentation_pause_generation = generation;
     m_presentation_pause_requester = requester;
     m_presentation_pause_active = true;
     m_presentation_pause_ready = false;
-    m_presentation_pause_was_running = Core::GetState(system) == Core::State::Running;
+    m_presentation_pause_aborted = false;
+    m_paused_by_presentation = true;
   }
 
   Core::SetState(system, Core::State::Paused, false, true);
@@ -1174,7 +1192,7 @@ void NetPlayClient::OnPresentationPauseBegin(sf::Packet& packet)
   }
 
   sf::Packet response;
-  response << MessageID::PresentationPauseAck << generation;
+  response << MessageID::PresentationPauseAck << generation << true;
   Send(response);
   INFO_LOG_FMT(NETPLAY, "Presentation pause {} acknowledged", generation);
 }
@@ -1203,7 +1221,8 @@ void NetPlayClient::OnPresentationPauseEnd(sf::Packet& packet)
     std::lock_guard lock(m_presentation_pause_mutex);
     if (!m_presentation_pause_active || generation != m_presentation_pause_generation)
       return;
-    resume = m_presentation_pause_was_running;
+    resume = m_paused_by_presentation;
+    m_presentation_pause_aborted = !m_presentation_pause_ready;
   }
 
   auto& system = Core::System::GetInstance();
@@ -1219,9 +1238,22 @@ void NetPlayClient::OnPresentationPauseEnd(sf::Packet& packet)
     m_presentation_pause_active = false;
     m_presentation_pause_ready = false;
     m_presentation_pause_requester = 0;
+    m_paused_by_presentation = false;
   }
   m_presentation_pause_cv.notify_all();
   INFO_LOG_FMT(NETPLAY, "Presentation pause {} ended", generation);
+}
+
+void NetPlayClient::OnPresentationPauseReject(sf::Packet& packet)
+{
+  u32 generation;
+  packet >> generation;
+  {
+    std::lock_guard lock(m_presentation_pause_mutex);
+    m_presentation_pause_request_rejected = true;
+  }
+  m_presentation_pause_cv.notify_all();
+  WARN_LOG_FMT(NETPLAY, "Presentation pause request rejected (active generation {})", generation);
 }
 
 void NetPlayClient::OnPing(sf::Packet& packet)
@@ -2159,6 +2191,15 @@ bool NetPlayClient::StartGame(const std::string& path)
 
   m_net_settings.local_player_id = m_local_player->pid;
   NetPlay::NetSettings boot_net_settings = m_net_settings;
+  if (m_managed_config)
+  {
+    // Managed rollback has exactly one local controller per client and the matchmaking seat is the
+    // emulated SI port. Do not inherit a stale or user-edited Dolphin lobby mapping: GekkoNet's
+    // player streams are indexed by these seats and are exposed directly through GetRollbackPad().
+    boot_net_settings.pad_map.fill(0);
+    for (int seat = 1; seat <= m_managed_config->player_count; ++seat)
+      boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
+  }
   // GekkoNet synchronizes GC pads only. Any lobby Wii Remote mapping makes NetPlayConfigLoader
   // force WiimoteSource::Emulated, which routes every Bluetooth poll through Dolphin's legacy
   // lockstep WiimoteUpdate(). That blocks the CPU thread until the remote's Wiimote packet arrives
@@ -2177,7 +2218,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   // frame boundary; rollback itself is not gated on menus, scenes, or match state. A solo lobby is
   // a valid one-actor Gekko session and must not be forced to wait for a nonexistent second actor.
   const int num_players = simulate_remote_p2 ? 2 : static_cast<int>(m_players.size());
-  const int local_seat = m_local_player->pid;
+  const int local_seat = m_managed_config ? m_managed_config->seat : m_local_player->pid;
   // These are independent GekkoNet controls. The shared lobby value is the prediction/maximum
   // rollback window, while each client owns its local input delay. There is deliberately no
   // Dolphin fixed-delay minimum-buffer relationship between them.
@@ -2712,6 +2753,8 @@ bool NetPlayClient::RunSynchronizedPresentationChange(const std::function<void()
     std::lock_guard lock(m_presentation_pause_mutex);
     if (m_presentation_pause_active)
       return false;
+    m_presentation_pause_request_rejected = false;
+    m_presentation_pause_aborted = false;
   }
 
   sf::Packet request;
@@ -2719,13 +2762,29 @@ bool NetPlayClient::RunSynchronizedPresentationChange(const std::function<void()
   SendAsync(std::move(request));
 
   std::unique_lock lock(m_presentation_pause_mutex);
-  const bool ready = m_presentation_pause_cv.wait_for(lock, std::chrono::seconds(5), [this] {
-    return m_presentation_pause_active && m_presentation_pause_ready &&
-           m_presentation_pause_requester == m_pid;
+  const bool completed = m_presentation_pause_cv.wait_for(lock, std::chrono::seconds(5), [this] {
+    return m_presentation_pause_request_rejected || m_presentation_pause_aborted ||
+           (m_presentation_pause_active && m_presentation_pause_ready &&
+            m_presentation_pause_requester == m_pid);
   });
+  const bool ready = completed && !m_presentation_pause_request_rejected &&
+                     !m_presentation_pause_aborted && m_presentation_pause_active &&
+                     m_presentation_pause_ready && m_presentation_pause_requester == m_pid;
   if (!ready)
   {
-    ERROR_LOG_FMT(NETPLAY, "Timed out waiting for the synchronized presentation pause");
+    if (m_presentation_pause_active && m_presentation_pause_requester == m_pid)
+    {
+      const u32 generation = m_presentation_pause_generation;
+      lock.unlock();
+      sf::Packet abort;
+      abort << MessageID::PresentationPauseEnd << generation;
+      SendAsync(std::move(abort));
+      ERROR_LOG_FMT(NETPLAY, "Aborted presentation pause {} before it became ready", generation);
+    }
+    else
+    {
+      ERROR_LOG_FMT(NETPLAY, "Presentation pause request was rejected or timed out");
+    }
     return false;
   }
 

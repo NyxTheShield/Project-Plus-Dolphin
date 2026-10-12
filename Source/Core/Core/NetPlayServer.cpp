@@ -255,6 +255,14 @@ void NetPlayServer::ThreadFunc()
 
   while (m_do_loop)
   {
+    if (m_presentation_pause_requester != 0 &&
+        std::chrono::steady_clock::now() >= m_presentation_pause_deadline)
+    {
+      ERROR_LOG_FMT(NETPLAY, "Presentation pause {} exceeded its deadline; resuming all peers",
+                    m_presentation_pause_generation);
+      EndPresentationPause();
+    }
+
     // update pings every so many seconds
     if ((m_ping_timer.ElapsedMs() > 1000) || m_update_pings)
     {
@@ -1187,15 +1195,29 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
 
   case MessageID::PresentationPauseRequest:
   {
-    if (!m_is_running || m_presentation_pause_requester != 0 ||
-        !PlayerHasControllerMapped(player.pid))
+    if (!m_is_running || !PlayerHasControllerMapped(player.pid))
+    {
+      sf::Packet response;
+      response << MessageID::PresentationPauseReject << m_presentation_pause_generation;
+      Send(player.socket, response);
       break;
+    }
+
+    if (m_presentation_pause_requester != 0)
+    {
+      sf::Packet response;
+      response << MessageID::PresentationPauseReject << m_presentation_pause_generation;
+      Send(player.socket, response);
+      break;
+    }
 
     ++m_presentation_pause_generation;
     if (m_presentation_pause_generation == 0)
       ++m_presentation_pause_generation;
     m_presentation_pause_requester = player.pid;
     m_presentation_pause_acks.clear();
+    m_presentation_pause_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
     sf::Packet response;
     response << MessageID::PresentationPauseBegin << m_presentation_pause_generation << player.pid;
@@ -1208,9 +1230,18 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   case MessageID::PresentationPauseAck:
   {
     u32 generation;
-    packet >> generation;
+    bool ready;
+    packet >> generation >> ready;
     if (m_presentation_pause_requester == 0 || generation != m_presentation_pause_generation)
       break;
+
+    if (!ready)
+    {
+      WARN_LOG_FMT(NETPLAY, "Player {} was not ready for presentation pause {}; aborting",
+                   player.pid, generation);
+      EndPresentationPause();
+      break;
+    }
 
     m_presentation_pause_acks.insert(player.pid);
     if (m_presentation_pause_acks.size() == m_players.size())
@@ -2508,6 +2539,7 @@ void NetPlayServer::EndPresentationPause()
   INFO_LOG_FMT(NETPLAY, "Ending presentation pause {}", m_presentation_pause_generation);
   m_presentation_pause_requester = 0;
   m_presentation_pause_acks.clear();
+  m_presentation_pause_deadline = {};
 }
 
 // called from multiple threads

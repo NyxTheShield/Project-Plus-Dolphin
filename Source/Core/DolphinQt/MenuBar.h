@@ -96,7 +96,6 @@ signals:
   void ShowFIFOPlayer();
   void ShowAboutDialog();
 #ifdef SHOW_UPDATER
-  void ShowUpdateDialog();
 #endif  // SHOW_UPDATER
   void ShowCheatsManager();
   void ShowResourcePackManager();

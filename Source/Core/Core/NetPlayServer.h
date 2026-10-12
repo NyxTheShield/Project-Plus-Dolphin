@@ -5,6 +5,7 @@
 
 #include <SFML/Network/Packet.hpp>
 
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -196,6 +197,7 @@ private:
   u32 m_presentation_pause_generation = 0;
   PlayerId m_presentation_pause_requester = 0;
   std::unordered_set<PlayerId> m_presentation_pause_acks;
+  std::chrono::steady_clock::time_point m_presentation_pause_deadline{};
 
   struct
   {

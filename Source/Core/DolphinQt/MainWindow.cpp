@@ -13,7 +13,6 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QIcon>
-#include <QJsonDocument>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QStackedWidget>
@@ -43,7 +42,6 @@
 #include "Common/CommonPaths.h"
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
-#include "Common/HttpRequest.h"
 #include "Common/JsonUtil.h"
 #include "Common/ScopeGuard.h"
 #include "Common/StringUtil.h"
@@ -119,8 +117,6 @@
 #include "DolphinQt/NetPlay/NetPlayBrowser.h"
 #include "DolphinQt/NetPlay/NetPlayDialog.h"
 #include "DolphinQt/NetPlay/NetPlaySetupDialog.h"
-#include "DolphinQt/ProjectPlus/InstallUpdateDialog.h"
-#include "DolphinQt/ProjectPlus/UpdateDialog.h"
 #include "DolphinQt/QtUtils/DolphinFileDialog.h"
 #include "DolphinQt/QtUtils/FileOpenEventFilter.h"
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
@@ -139,7 +135,6 @@
 #include "DolphinQt/TAS/GCTASInputWindow.h"
 #include "DolphinQt/TAS/WiiTASInputWindow.h"
 #include "DolphinQt/ToolBar.h"
-#include "DolphinQt/Updater.h"
 #include "DolphinQt/WiiUpdate.h"
 
 #include "UICommon/DiscordPresence.h"
@@ -283,11 +278,6 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
     m_managed_session->ticket_path = brawlback_ticket_path;
     QTimer::singleShot(0, this, &MainWindow::StartManagedNetPlay);
   }
-
-#ifdef SHOW_UPDATER
-  if (brawlback_ticket_path.empty())
-    CheckForUpdatesAuto();
-#endif  // SHOW_UPDATER
 
 #ifdef USE_RETRO_ACHIEVEMENTS
   AchievementManager::GetInstance().Init(reinterpret_cast<void*>(winId()));
@@ -462,11 +452,6 @@ void MainWindow::InitCoreCallbacks()
       QTimer::singleShot(0, this, &MainWindow::TryStartManagedNetplayReplay);
     }
 
-    if (state == Core::State::Running && m_fullscreen_requested)
-    {
-      FullScreen();
-      m_fullscreen_requested = false;
-    }
   });
   installEventFilter(this);
   m_render_widget->installEventFilter(this);
@@ -643,9 +628,6 @@ void MainWindow::ConnectMenuBar()
           &GameList::OnGameListVisibilityChanged);
 
   connect(m_menu_bar, &MenuBar::ShowAboutDialog, this, &MainWindow::ShowAboutDialog);
-#ifdef SHOW_UPDATER
-  connect(m_menu_bar, &MenuBar::ShowUpdateDialog, this, &MainWindow::ShowUpdateDialog);
-#endif  // SHOW_UPDATER
 
   connect(m_game_list, &GameList::SelectionChanged, m_menu_bar, &MenuBar::SelectionChanged);
   connect(this, &MainWindow::ReadOnlyModeChanged, m_menu_bar, &MenuBar::ReadOnlyModeChanged);
@@ -747,9 +729,6 @@ void MainWindow::ConnectToolBar()
   connect(m_tool_bar, &ToolBar::SettingsPressed, this, &MainWindow::ShowSettingsWindow);
   connect(m_tool_bar, &ToolBar::ControllersPressed, this, &MainWindow::ShowControllersWindow);
   connect(m_tool_bar, &ToolBar::GraphicsPressed, this, &MainWindow::ShowGraphicsWindow);
-#ifdef SHOW_UPDATER
-  connect(m_tool_bar, &ToolBar::InstallUpdateManuallyPressed, this, &MainWindow::ShowUpdateDialog);
-#endif  // SHOW_UPDATER
 
   connect(m_tool_bar, &ToolBar::StepPressed, m_code_widget, &CodeWidget::Step);
   connect(m_tool_bar, &ToolBar::StepOverPressed, m_code_widget, &CodeWidget::StepOver);
@@ -1270,6 +1249,12 @@ void MainWindow::StartGame(std::unique_ptr<BootParameters>&& parameters)
   // We need the render widget before booting.
   ShowRenderWidget();
 
+  // Starting in fullscreen is a window/bootstrap choice, not a live presentation transition.
+  // Apply it before the graphics backend and rollback session begin so it cannot start a network
+  // pause while another peer is still booting.
+  if (Config::Get(Config::MAIN_FULLSCREEN) && !m_render_widget->isFullScreen())
+    FullScreen();
+
   // Boot up, show an error if it fails to load the game.
   if (!BootManager::BootCore(m_system, std::move(parameters),
                              ::GetWindowSystemInfo(m_render_widget->windowHandle())))
@@ -1284,8 +1269,6 @@ void MainWindow::StartGame(std::unique_ptr<BootParameters>&& parameters)
     Discord::UpdateDiscordPresence();
 #endif
 
-  if (Config::Get(Config::MAIN_FULLSCREEN))
-    m_fullscreen_requested = true;
 }
 
 void MainWindow::SetFullScreenResolution(bool fullscreen)
@@ -1461,85 +1444,6 @@ void MainWindow::ShowAboutDialog()
   AboutDialog about{this};
   about.exec();
 }
-
-// P+ change: New updater; credit to RainbowTabitha and the Mario Party Netplay team for the base
-// code!
-
-#ifdef SHOW_UPDATER
-void MainWindow::ShowUpdateDialog()
-{
-  Common::HttpRequest httpRequest;
-
-  // Make the GET request
-  auto response = httpRequest.Get("https://api.github.com/repos/Project-Plus-Development-Team/"
-                                  "Project-Plus-Dolphin/releases/latest");
-
-  if (response)
-  {
-    // Access the underlying vector and convert it to QByteArray
-    QByteArray responseData(reinterpret_cast<const char*>(response->data()), response->size());
-
-    // Parse the JSON response
-    QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
-    QJsonObject jsonObject = jsonDoc.object();
-
-    QString currentVersion = QString::fromStdString(SCM_DESC_STR);
-    QString latestVersion = jsonObject.value(QStringLiteral("tag_name")).toString();
-
-    if (currentVersion != latestVersion)
-    {
-      // Create and show the UpdateDialog with the fetched data
-      bool forced = false;  // Set this based on your logic
-      UserInterface::Dialog::UpdateDialog updater(this, jsonObject, forced);
-      updater.exec();
-    }
-    else
-    {
-      QMessageBox::information(this, tr("Info"), tr("You are already up to date."));
-    }
-  }
-  else
-  {
-    // Handle error
-    QMessageBox::critical(this, tr("Error"), tr("Failed to fetch update information."));
-  }
-}
-
-void MainWindow::CheckForUpdatesAuto()
-{
-  Common::HttpRequest httpRequest;
-
-  // Make the GET request
-  auto response = httpRequest.Get("https://api.github.com/repos/Project-Plus-Development-Team/"
-                                  "Project-Plus-Dolphin/releases/latest");
-
-  if (response)
-  {
-    // Access the underlying vector and convert it to QByteArray
-    QByteArray responseData(reinterpret_cast<const char*>(response->data()), response->size());
-
-    // Parse the JSON response
-    QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
-    QJsonObject jsonObject = jsonDoc.object();
-
-    QString currentVersion = QString::fromStdString(SCM_DESC_STR);
-    QString latestVersion = jsonObject.value(QStringLiteral("tag_name")).toString();
-
-    if (currentVersion != latestVersion)
-    {
-      // Create and show the UpdateDialog with the fetched data
-      bool forced = false;  // Set this based on your logic
-      UserInterface::Dialog::UpdateDialog updater(this, jsonObject, forced);
-      updater.exec();
-    }
-  }
-  else
-  {
-    // Handle error
-    QMessageBox::critical(this, tr("Error"), tr("Failed to fetch update information."));
-  }
-}
-#endif  // SHOW_UPDATER
 
 void MainWindow::ShowHotkeyDialog()
 {

@@ -355,6 +355,7 @@ private:
   void OnPresentationPauseBegin(sf::Packet& packet);
   void OnPresentationPauseReady(sf::Packet& packet);
   void OnPresentationPauseEnd(sf::Packet& packet);
+  void OnPresentationPauseReject(sf::Packet& packet);
   void OnPing(sf::Packet& packet);
   void OnPlayerPingData(sf::Packet& packet);
   void OnDesyncDetected(sf::Packet& packet);
@@ -420,7 +421,9 @@ private:
   PlayerId m_presentation_pause_requester = 0;
   bool m_presentation_pause_active = false;
   bool m_presentation_pause_ready = false;
-  bool m_presentation_pause_was_running = false;
+  bool m_presentation_pause_aborted = false;
+  bool m_presentation_pause_request_rejected = false;
+  bool m_paused_by_presentation = false;
 };
 
 void NetPlay_Enable(NetPlayClient* const np);

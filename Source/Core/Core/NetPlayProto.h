@@ -202,6 +202,7 @@ enum class MessageID : u8
   PresentationPauseAck = 0xAA,
   PresentationPauseReady = 0xAB,
   PresentationPauseEnd = 0xAC,
+  PresentationPauseReject = 0xAD,
 
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,
