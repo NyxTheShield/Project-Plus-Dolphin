@@ -144,7 +144,7 @@ void PowerPCManager::DoState(PointerWrap& p,
 
     if (!m_ppc_state.m_enable_dcache)
     {
-      INFO_LOG_FMT(POWERPC, "Flushing data cache");
+      DEBUG_LOG_FMT(POWERPC, "Flushing data cache after state load");
       m_ppc_state.dCache.FlushAll(memory);
     }
 

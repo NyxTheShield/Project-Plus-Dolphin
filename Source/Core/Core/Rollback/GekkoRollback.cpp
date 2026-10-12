@@ -2499,7 +2499,7 @@ static void MaybeLogPerformance(Core::System& system)
   const CoreTiming::RollbackThrottleStats throttle =
       system.GetCoreTiming().TakeRollbackThrottleStats();
 
-  NOTICE_LOG_FMT(
+  DEBUG_LOG_FMT(
       CORE,
       "GekkoNet perf: {:.1f} fps over {} real frames; save {:.3f}/{:.3f} ms avg/max ({}); "
       "pump {:.3f}/{:.3f} ms ({}); load {:.3f}/{:.3f} ms ({}); replays {}; "
@@ -2610,6 +2610,32 @@ static void MaybeLogPerformance(Core::System& system)
                                   static_cast<u64>(g_manager.configured_local_delay) - 1 :
                               0,
       g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark);
+
+  NOTICE_LOG_FMT(
+      CORE,
+      "GekkoNet perf: {:.1f} fps/{} frames; save {:.3f}/{:.3f} ms ({}); pump "
+      "{:.3f}/{:.3f} ms; load {:.3f}/{:.3f} ms ({}); replay {} frames, exec "
+      "{:.3f}/{:.3f} ms, save {:.3f}/{:.3f} ms; bursts {} at {:.3f}/{:.3f} ms, depth "
+      "{:.2f}/{}; interval {:.3f}/{:.3f} ms; gaps >20/>25/>33/>50 {}/{}/{}/{}; "
+      "ahead {:.2f}",
+      fps, g_manager.perf_real_frames, average(g_manager.perf_save_ms, g_manager.perf_save_count),
+      g_manager.perf_save_max_ms, g_manager.perf_save_count,
+      average(g_manager.perf_pump_ms, g_manager.perf_pump_count), g_manager.perf_pump_max_ms,
+      average(g_manager.perf_load_ms, g_manager.perf_load_count), g_manager.perf_load_max_ms,
+      g_manager.perf_load_count, g_manager.perf_replay_frames,
+      average(g_manager.perf_replay_exec_ms, g_manager.perf_replay_exec_count),
+      g_manager.perf_replay_exec_max_ms,
+      average(g_manager.perf_replay_save_ms, g_manager.perf_replay_save_count),
+      g_manager.perf_replay_save_max_ms, g_manager.perf_rollback_burst_count,
+      average(g_manager.perf_rollback_burst_ms, g_manager.perf_rollback_burst_count),
+      g_manager.perf_rollback_burst_max_ms,
+      average(static_cast<double>(g_manager.perf_rollback_depth_total),
+              g_manager.perf_rollback_burst_count),
+      g_manager.perf_rollback_depth_max,
+      average(g_manager.perf_real_interval_ms, g_manager.perf_real_interval_count),
+      g_manager.perf_real_interval_max_ms, g_manager.perf_real_gaps_over_20_ms,
+      g_manager.perf_real_gaps_over_25_ms, g_manager.perf_real_gaps_over_33_ms,
+      g_manager.perf_real_gaps_over_50_ms, gekko_frames_ahead(g_manager.session));
 
   NOTICE_LOG_FMT(CORE,
                  "GekkoNet presentation cadence: gaps >20/>25/>33.3/>50 ms = {}/{}/{}/{} of {} "

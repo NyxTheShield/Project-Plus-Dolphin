@@ -30,7 +30,7 @@ const Config::Info<bool> LOGGER_WRITE_TO_CONSOLE{
 const Config::Info<bool> LOGGER_WRITE_TO_WINDOW{
     {Config::System::Logger, "Options", "WriteToWindow"}, true};
 const Config::Info<LogLevel> LOGGER_VERBOSITY{{Config::System::Logger, "Options", "Verbosity"},
-                                              LogLevel::LNOTICE};
+                                              LogLevel::LWARNING};
 
 class FileLogListener : public LogListener
 {
