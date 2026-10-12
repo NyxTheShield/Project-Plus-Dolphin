@@ -99,6 +99,11 @@ std::unique_ptr<optparse::OptionParser> CreateParser(ParserOptions options)
       .metavar("<directory>")
       .type("string")
       .help("Include an additional directory in a Brawlback game-list refresh");
+  parser->add_option("--brawlback-game-file")
+      .action("append")
+      .metavar("<file>")
+      .type("string")
+      .help("Include a specific game in a Brawlback game-list refresh");
   parser->add_option("-e", "--exec")
       .action("append")
       .metavar("<file>")

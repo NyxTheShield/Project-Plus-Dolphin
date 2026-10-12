@@ -21,6 +21,8 @@
 #include <picojson.h>
 #include <QAbstractEventDispatcher>
 #include <QApplication>
+#include <QBuffer>
+#include <QImage>
 #include <QObject>
 #include <QPushButton>
 #include <QWidget>
@@ -57,8 +59,25 @@
 #include "UICommon/GameFileCache.h"
 #include "UICommon/UICommon.h"
 
+static std::string EncodeBannerDataUrl(const UICommon::GameBanner& banner)
+{
+  if (banner.empty() || banner.width == 0 || banner.height == 0)
+    return {};
+
+  const auto* pixels = reinterpret_cast<const uchar*>(banner.buffer.data());
+  const QImage source(pixels, banner.width, banner.height, QImage::Format_RGBX8888);
+  const QImage image = source.rgbSwapped();
+  QByteArray png;
+  QBuffer output(&png);
+  if (!output.open(QIODevice::WriteOnly) || !image.save(&output, "PNG"))
+    return {};
+
+  return "data:image/png;base64," + png.toBase64().toStdString();
+}
+
 static bool ExportBrawlbackGameList(const std::string& output_path,
-                                    const std::list<std::string>& additional_directories)
+                                    const std::list<std::string>& additional_directories,
+                                    const std::list<std::string>& additional_files)
 {
   std::vector<std::string> directories = Config::GetIsoPaths();
   for (const std::string& directory : additional_directories)
@@ -80,6 +99,13 @@ static bool ExportBrawlbackGameList(const std::string& output_path,
   cache.Load();
   const std::atomic_bool processing_halted = false;
   cache.Update(paths, {}, {}, processing_halted);
+  bool cache_changed = false;
+  for (const std::string& file : additional_files)
+  {
+    if (!file.empty())
+      cache.AddOrGet(file, &cache_changed);
+  }
+  cache.UpdateAdditionalMetadata({}, processing_halted);
   cache.Save();
 
   picojson::array games;
@@ -95,6 +121,7 @@ static bool ExportBrawlbackGameList(const std::string& output_path,
     value["revision"] = picojson::value(static_cast<double>(game->GetRevision()));
     value["discNumber"] = picojson::value(static_cast<double>(game->GetDiscNumber()));
     value["platform"] = picojson::value(static_cast<double>(game->GetPlatform()));
+    value["bannerDataUrl"] = picojson::value(EncodeBannerDataUrl(game->GetBannerImage()));
     games.emplace_back(std::move(value));
   });
 
@@ -255,8 +282,12 @@ int main(int argc, char* argv[])
     const std::list<std::string> additional_directories =
         options.is_set_by_user("brawlback_game_path") ? options.all("brawlback_game_path") :
                                                         std::list<std::string>{};
+    const std::list<std::string> additional_files =
+        options.is_set_by_user("brawlback_game_file") ? options.all("brawlback_game_file") :
+                                                        std::list<std::string>{};
     const bool exported = ExportBrawlbackGameList(
-        static_cast<const char*>(options.get("brawlback_game_list")), additional_directories);
+        static_cast<const char*>(options.get("brawlback_game_list")), additional_directories,
+        additional_files);
     UICommon::Shutdown();
     return exported ? 0 : 1;
   }
