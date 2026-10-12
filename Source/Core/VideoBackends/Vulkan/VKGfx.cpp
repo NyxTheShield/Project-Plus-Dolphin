@@ -361,6 +361,9 @@ void VKGfx::CheckForSurfaceChange()
   if (!g_presenter->SurfaceChangedTestAndClear() || !m_swap_chain)
     return;
 
+  INFO_LOG_FMT(VIDEO, "Vulkan surface transition: recreating surface (before={}x{})",
+               m_swap_chain->GetWidth(), m_swap_chain->GetHeight());
+
   // Submit the current draws up until rendering the XFB.
   ExecuteCommandBuffer(false, true);
 
@@ -373,6 +376,8 @@ void VKGfx::CheckForSurfaceChange()
 
   // Handle case where the dimensions are now different.
   OnSwapChainResized();
+  INFO_LOG_FMT(VIDEO, "Vulkan surface transition complete: {}x{}", m_swap_chain->GetWidth(),
+               m_swap_chain->GetHeight());
 }
 
 void VKGfx::CheckForSurfaceResize()
@@ -388,6 +393,9 @@ void VKGfx::CheckForSurfaceResize()
     return;
   }
 
+  INFO_LOG_FMT(VIDEO, "Vulkan swap-chain resize: before={}x{}", m_swap_chain->GetWidth(),
+               m_swap_chain->GetHeight());
+
   // Wait for the GPU to catch up since we're going to destroy the swap chain.
   ExecuteCommandBuffer(false, true);
 
@@ -397,6 +405,8 @@ void VKGfx::CheckForSurfaceResize()
   // Resize the swap chain.
   m_swap_chain->RecreateSwapChain();
   OnSwapChainResized();
+  INFO_LOG_FMT(VIDEO, "Vulkan swap-chain resize complete: {}x{}", m_swap_chain->GetWidth(),
+               m_swap_chain->GetHeight());
 }
 
 void VKGfx::OnConfigChanged(u32 bits)

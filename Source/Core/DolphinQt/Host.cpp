@@ -199,6 +199,11 @@ void Host::SetTASInputFocus(const bool focus)
 
 void Host::ResizeSurface(int new_width, int new_height)
 {
+  INFO_LOG_FMT(VIDEO,
+               "Host surface resize: {}x{}, fullscreen={}, core_state={}, presenter_ready={}",
+               new_width, new_height, m_render_fullscreen.load(),
+               static_cast<int>(Core::GetState(Core::System::GetInstance())),
+               g_presenter != nullptr);
   if (g_presenter)
     g_presenter->ResizeSurface();
 }

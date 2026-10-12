@@ -1918,12 +1918,11 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
         destroy_failed_session();
         return false;
       }
-      NOTICE_LOG_FMT(CORE, "GekkoNet: Native player {} endpoint {}", p, player_endpoints[p]);
+      NOTICE_LOG_FMT(CORE, "GekkoNet: Native endpoint configured for player {}", p);
       ENetAddress endpoint{};
       if (!ParsePeerEndpoint(player_endpoints[p], &endpoint))
       {
-        ERROR_LOG_FMT(CORE, "GekkoNet: Invalid native endpoint for player {}: {}", p,
-                      player_endpoints[p]);
+        ERROR_LOG_FMT(CORE, "GekkoNet: Invalid native endpoint for player {}", p);
         destroy_failed_session();
         return false;
       }

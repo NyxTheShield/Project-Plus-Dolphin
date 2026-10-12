@@ -190,6 +190,12 @@ void Gfx::CheckForSwapChainChanges()
   if (!surface_changed && !surface_resized && !fullscreen_changed)
     return;
 
+  INFO_LOG_FMT(VIDEO,
+               "D3D11 swap-chain transition: surface_changed={}, resized={}, fullscreen_changed={}, "
+               "before={}x{}",
+               surface_changed, surface_resized, fullscreen_changed, m_swap_chain->GetWidth(),
+               m_swap_chain->GetHeight());
+
   if (surface_changed)
   {
     m_swap_chain->ChangeSurface(g_presenter->GetNewSurfaceHandle());
@@ -200,6 +206,8 @@ void Gfx::CheckForSwapChainChanges()
   }
 
   g_presenter->SetBackbuffer(m_swap_chain->GetWidth(), m_swap_chain->GetHeight());
+  INFO_LOG_FMT(VIDEO, "D3D11 swap-chain transition complete: {}x{}",
+               m_swap_chain->GetWidth(), m_swap_chain->GetHeight());
 }
 
 void Gfx::SetFramebuffer(AbstractFramebuffer* framebuffer)

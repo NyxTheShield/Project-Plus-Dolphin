@@ -316,8 +316,7 @@ void NetPlayServer::ThreadFunc()
       {
         // Actual client initialization is deferred to the receive event, so here
         // we'll just log the new connection.
-        INFO_LOG_FMT(NETPLAY, "Peer connected from: {:x}:{}", netEvent.peer->address.host,
-                     netEvent.peer->address.port);
+        INFO_LOG_FMT(NETPLAY, "Peer connected on port {}", netEvent.peer->address.port);
       }
       break;
       case ENET_EVENT_TYPE_RECEIVE:
@@ -332,16 +331,15 @@ void NetPlayServer::ThreadFunc()
           // uninitialized client, we'll assume this is their initialization packet
           ConnectionError error;
           {
-            INFO_LOG_FMT(NETPLAY, "Initializing peer {:x}:{}", netEvent.peer->address.host,
-                         netEvent.peer->address.port);
+            INFO_LOG_FMT(NETPLAY, "Initializing peer on port {}", netEvent.peer->address.port);
             std::lock_guard lkg(m_crit.game);
             error = OnConnect(netEvent.peer, rpac);
           }
 
           if (error != ConnectionError::NoError)
           {
-            INFO_LOG_FMT(NETPLAY, "Error {} initializing peer {:x}:{}", static_cast<u8>(error),
-                         netEvent.peer->address.host, netEvent.peer->address.port);
+            INFO_LOG_FMT(NETPLAY, "Error {} initializing peer on port {}",
+                         static_cast<u8>(error), netEvent.peer->address.port);
 
             sf::Packet spac;
             spac << error;
@@ -889,10 +887,19 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     u32 cid;
     packet >> cid;
 
-    if (const auto it = m_chunked_data_complete_count.find(cid);
-        it != m_chunked_data_complete_count.end())
+    unsigned int complete_count = 0;
     {
-      it->second++;
+      std::lock_guard lk(m_crit.chunked_data_complete);
+      if (const auto it = m_chunked_data_complete_count.find(cid);
+          it != m_chunked_data_complete_count.end())
+      {
+        complete_count = ++it->second;
+      }
+    }
+    if (complete_count != 0)
+    {
+      NOTICE_LOG_FMT(NETPLAY, "Save sync transport: player {} acknowledged chunk {} ({}/{}).",
+                     player.pid, cid, complete_count, m_players.size() - 1);
       m_chunked_data_complete_event.Set();
     }
   }
@@ -1372,8 +1379,8 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
         m_save_data_synced_players++;
         if (m_save_data_synced_players >= m_players.size() - 1)
         {
-          INFO_LOG_FMT(NETPLAY, "SyncSaveData: All players synchronized. ({} >= {})",
-                       m_save_data_synced_players, m_players.size() - 1);
+          NOTICE_LOG_FMT(NETPLAY, "Save sync: all players synchronized ({} of {}).",
+                         m_save_data_synced_players, m_players.size() - 1);
           m_dialog->AppendChat(Common::GetStringT("All players' saves synchronized."));
 
           // Saves are synced, check if codes are as well and attempt to start the game
@@ -1989,7 +1996,7 @@ void NetPlayServer::AbortGameStart()
 // called from ---GUI--- thread
 std::optional<SaveSyncInfo> NetPlayServer::CollectSaveSyncInfo()
 {
-  INFO_LOG_FMT(NETPLAY, "Collecting saves.");
+  NOTICE_LOG_FMT(NETPLAY, "Save sync: collecting host save data.");
 
   SaveSyncInfo sync_info;
 
@@ -2123,7 +2130,10 @@ std::optional<SaveSyncInfo> NetPlayServer::CollectSaveSyncInfo()
 // called from ---GUI--- thread
 bool NetPlayServer::SyncSaveData(const SaveSyncInfo& sync_info)
 {
-  INFO_LOG_FMT(NETPLAY, "Sending {} savegame chunks to clients.", sync_info.save_count);
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Save sync: sending {} logical chunk(s), including {} Wii title save(s), to {} "
+                 "remote player(s).",
+                 sync_info.save_count, sync_info.wii_saves.size(), m_players.size() - 1);
 
   // We're about to sync saves, so set m_saves_synced to false (waits to start game)
   m_saves_synced = false;
@@ -2323,6 +2333,7 @@ bool NetPlayServer::SyncSaveData(const SaveSyncInfo& sync_info)
       pac << false;  // no redirected save
     }
 
+    NOTICE_LOG_FMT(NETPLAY, "Save sync: queued Wii payload ({} bytes).", pac.getDataSize());
     SendChunkedToClients(std::move(pac), 1, "Wii Save Synchronization");
   }
 
@@ -2511,7 +2522,7 @@ void NetPlayServer::CheckSyncAndStartGame()
 {
   if (m_saves_synced && m_codes_synced)
   {
-    INFO_LOG_FMT(NETPLAY, "Synchronized, starting game.");
+    NOTICE_LOG_FMT(NETPLAY, "Save/code synchronization complete; starting game.");
     StartGame();
   }
   else
@@ -2767,7 +2778,10 @@ void NetPlayServer::ChunkedDataThreadFunc()
       auto& e = m_chunked_data_queue.Front();
       const u32 id = m_next_chunked_data_id++;
 
-      m_chunked_data_complete_count[id] = 0;
+      {
+        std::lock_guard lk(m_crit.chunked_data_complete);
+        m_chunked_data_complete_count[id] = 0;
+      }
       size_t player_count;
       {
         std::vector<int> players;
@@ -2785,8 +2799,9 @@ void NetPlayServer::ChunkedDataThreadFunc()
         }
         player_count = players.size();
 
-        INFO_LOG_FMT(NETPLAY, "Informing players {} of data chunk {} start.",
-                     fmt::join(players, ", "), id);
+        NOTICE_LOG_FMT(NETPLAY,
+                       "Save sync transport: sending chunk {} ('{}', {} bytes) to players {}.",
+                       id, e.title, e.packet.getDataSize(), fmt::join(players, ", "));
 
         sf::Packet pac;
         pac << MessageID::ChunkedDataStart;
@@ -2858,10 +2873,22 @@ void NetPlayServer::ChunkedDataThreadFunc()
         ChunkedDataSend(std::move(pac), e.target_pid, e.target_mode);
       }
 
-      while (m_chunked_data_complete_count[id] < player_count && m_do_loop &&
-             !m_abort_chunked_data && !skip_wait)
+      while (m_do_loop && !m_abort_chunked_data && !skip_wait)
+      {
+        bool complete = false;
+        {
+          std::lock_guard lk(m_crit.chunked_data_complete);
+          const auto it = m_chunked_data_complete_count.find(id);
+          complete = it == m_chunked_data_complete_count.end() || it->second >= player_count;
+        }
+        if (complete)
+          break;
         m_chunked_data_complete_event.Wait();
-      m_chunked_data_complete_count.erase(id);
+      }
+      {
+        std::lock_guard lk(m_crit.chunked_data_complete);
+        m_chunked_data_complete_count.erase(id);
+      }
       m_dialog->HideChunkedProgressDialog();
 
       m_chunked_data_queue.Pop();

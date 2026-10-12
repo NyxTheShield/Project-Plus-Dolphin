@@ -206,6 +206,7 @@ private:
     std::recursive_mutex players;
     std::recursive_mutex async_queue_write;
     std::recursive_mutex chunked_data_queue_write;
+    std::mutex chunked_data_complete;
   } m_crit;
 
   Common::SPSCQueue<AsyncQueueEntry> m_async_queue;

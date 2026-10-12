@@ -343,6 +343,8 @@ void Presenter::ProcessFrameDumping(u64 ticks) const
 
 void Presenter::SetBackbuffer(int backbuffer_width, int backbuffer_height)
 {
+  const int old_width = m_backbuffer_width;
+  const int old_height = m_backbuffer_height;
   const bool is_first = m_backbuffer_width == 0 && m_backbuffer_height == 0;
   const bool size_changed =
       (m_backbuffer_width != backbuffer_width || m_backbuffer_height != backbuffer_height);
@@ -351,10 +353,17 @@ void Presenter::SetBackbuffer(int backbuffer_width, int backbuffer_height)
   UpdateDrawRectangle();
 
   OnBackbufferSet(size_changed, is_first);
+  if (is_first || size_changed)
+  {
+    INFO_LOG_FMT(VIDEO, "Presenter backbuffer: {}x{} -> {}x{} (first={})", old_width,
+                 old_height, backbuffer_width, backbuffer_height, is_first);
+  }
 }
 
 void Presenter::SetBackbuffer(SurfaceInfo info)
 {
+  const int old_width = m_backbuffer_width;
+  const int old_height = m_backbuffer_height;
   const bool is_first = m_backbuffer_width == 0 && m_backbuffer_height == 0;
   const bool size_changed =
       (m_backbuffer_width != (int)info.width || m_backbuffer_height != (int)info.height);
@@ -366,6 +375,11 @@ void Presenter::SetBackbuffer(SurfaceInfo info)
     m_onscreen_ui->SetScale(info.scale);
 
   OnBackbufferSet(size_changed, is_first);
+  if (is_first || size_changed)
+  {
+    INFO_LOG_FMT(VIDEO, "Presenter backbuffer: {}x{} -> {}x{} (first={}, scale={:.3f})",
+                 old_width, old_height, info.width, info.height, is_first, info.scale);
+  }
 }
 
 void Presenter::OnBackbufferSet(bool size_changed, bool is_first_set)
@@ -624,6 +638,8 @@ void Presenter::ChangeSurface(void* new_surface_handle)
 void Presenter::ResizeSurface()
 {
   std::lock_guard<std::mutex> lock(m_swap_mutex);
+  INFO_LOG_FMT(VIDEO, "Presenter surface resize queued (current backbuffer={}x{})",
+               m_backbuffer_width, m_backbuffer_height);
   m_surface_resized.Set();
 }
 

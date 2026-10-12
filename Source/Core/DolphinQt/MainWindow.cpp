@@ -43,6 +43,7 @@
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
 #include "Common/JsonUtil.h"
+#include "Common/Logging/Log.h"
 #include "Common/ScopeGuard.h"
 #include "Common/StringUtil.h"
 #include "Common/Version.h"
@@ -758,6 +759,91 @@ void MainWindow::ConnectRenderWidget()
     if (m_render_widget->isFullScreen())
       SetFullScreenResolution(focus);
   });
+  ConnectFullscreenBootSignals();
+}
+
+void MainWindow::ConnectFullscreenBootSignals()
+{
+  connect(m_render_widget, &RenderWidget::StateChanged, this,
+          &MainWindow::OnFullscreenBootStateChanged);
+  connect(m_render_widget, &RenderWidget::SizeChanged, this,
+          &MainWindow::OnFullscreenBootSizeChanged);
+}
+
+void MainWindow::OnFullscreenBootStateChanged(bool fullscreen)
+{
+  if (!m_pending_fullscreen_boot)
+    return;
+
+  INFO_LOG_FMT(VIDEO, "Fullscreen boot: Qt state changed (fullscreen={}, widget={}x{}, dpr={:.3f})",
+               fullscreen, m_render_widget->width(), m_render_widget->height(),
+               m_render_widget->devicePixelRatioF());
+  m_fullscreen_boot_state_observed = fullscreen;
+  TryCompleteFullscreenBoot();
+}
+
+void MainWindow::OnFullscreenBootSizeChanged(int width, int height)
+{
+  if (!m_pending_fullscreen_boot)
+    return;
+
+  INFO_LOG_FMT(VIDEO, "Fullscreen boot: Qt surface size changed to {}x{}", width, height);
+  if (width <= 0 || height <= 0)
+  {
+    INFO_LOG_FMT(VIDEO,
+                 "Fullscreen boot: ignoring transient zero-sized surface; last valid size={}x{}",
+                 m_fullscreen_boot_width, m_fullscreen_boot_height);
+    return;
+  }
+
+  m_fullscreen_boot_width = width;
+  m_fullscreen_boot_height = height;
+  m_fullscreen_boot_size_observed = true;
+  TryCompleteFullscreenBoot();
+}
+
+void MainWindow::TryCompleteFullscreenBoot()
+{
+  if (!m_pending_fullscreen_boot || !m_fullscreen_boot_state_observed ||
+      !m_fullscreen_boot_size_observed || m_fullscreen_boot_completion_scheduled)
+  {
+    return;
+  }
+
+  // WindowStateChange and Resize are delivered separately. Defer the boot by one event-loop turn
+  // after observing both so the native window handle exposes the final fullscreen geometry before
+  // the graphics backend creates its surface and swap chain.
+  m_fullscreen_boot_completion_scheduled = true;
+  QTimer::singleShot(0, this, [this] {
+    m_fullscreen_boot_completion_scheduled = false;
+    if (!m_pending_fullscreen_boot)
+      return;
+
+    if (!m_render_widget->isFullScreen() || !m_fullscreen_boot_state_observed ||
+        !m_fullscreen_boot_size_observed)
+    {
+      INFO_LOG_FMT(VIDEO,
+                   "Fullscreen boot: waiting for stable state (fullscreen={}, state_seen={}, "
+                   "size_seen={})",
+                   m_render_widget->isFullScreen(), m_fullscreen_boot_state_observed,
+                   m_fullscreen_boot_size_observed);
+      return;
+    }
+
+    const qreal dpr = m_render_widget->devicePixelRatioF();
+    const int current_width = qRound(m_render_widget->width() * dpr);
+    const int current_height = qRound(m_render_widget->height() * dpr);
+    INFO_LOG_FMT(VIDEO,
+                 "Fullscreen boot: window settled at {}x{} (observed surface {}x{}, dpr={:.3f}); "
+                 "initializing backend {}",
+                 current_width, current_height, m_fullscreen_boot_width,
+                 m_fullscreen_boot_height, dpr, Config::Get(Config::MAIN_GFX_BACKEND));
+
+    auto parameters = std::move(m_pending_fullscreen_boot);
+    m_fullscreen_boot_state_observed = false;
+    m_fullscreen_boot_size_observed = false;
+    BootGame(std::move(parameters));
+  });
 }
 
 void MainWindow::ConnectHost()
@@ -1249,11 +1335,35 @@ void MainWindow::StartGame(std::unique_ptr<BootParameters>&& parameters)
   // We need the render widget before booting.
   ShowRenderWidget();
 
-  // Starting in fullscreen is a window/bootstrap choice, not a live presentation transition.
-  // Apply it before the graphics backend and rollback session begin so it cannot start a network
-  // pause while another peer is still booting.
+  // Qt applies fullscreen and its native-window resize asynchronously. Do not create a graphics
+  // surface against the intermediate geometry: wait for both state and size notifications first.
   if (Config::Get(Config::MAIN_FULLSCREEN) && !m_render_widget->isFullScreen())
+  {
+    INFO_LOG_FMT(VIDEO,
+                 "Fullscreen boot: requesting fullscreen before backend {} initialization "
+                 "(widget={}x{}, dpr={:.3f})",
+                 Config::Get(Config::MAIN_GFX_BACKEND), m_render_widget->width(),
+                 m_render_widget->height(), m_render_widget->devicePixelRatioF());
+    m_pending_fullscreen_boot = std::move(parameters);
+    m_fullscreen_boot_state_observed = false;
+    m_fullscreen_boot_size_observed = false;
+    m_fullscreen_boot_completion_scheduled = false;
     FullScreen();
+    return;
+  }
+
+  BootGame(std::move(parameters));
+}
+
+void MainWindow::BootGame(std::unique_ptr<BootParameters>&& parameters)
+{
+  const qreal dpr = m_render_widget->devicePixelRatioF();
+  INFO_LOG_FMT(VIDEO,
+               "Boot surface: fullscreen={}, widget={}x{}, physical={}x{}, dpr={:.3f}, backend={}",
+               m_render_widget->isFullScreen(), m_render_widget->width(),
+               m_render_widget->height(), qRound(m_render_widget->width() * dpr),
+               qRound(m_render_widget->height() * dpr), dpr,
+               Config::Get(Config::MAIN_GFX_BACKEND));
 
   // Boot up, show an error if it fails to load the game.
   if (!BootManager::BootCore(m_system, std::move(parameters),
@@ -1359,6 +1469,7 @@ void MainWindow::HideRenderWidget(bool reinit, bool is_exit)
       if (m_render_widget->isFullScreen())
         SetFullScreenResolution(focus);
     });
+    ConnectFullscreenBootSignals();
 
     // The controller interface will still be registered to the old render widget, if the core
     // has booted. Therefore, we should re-bind it to the main window for now. When the core

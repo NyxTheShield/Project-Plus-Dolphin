@@ -676,7 +676,8 @@ void NetPlayClient::OnChunkedDataStart(sf::Packet& packet)
   packet >> title;
   const u64 data_size = Common::PacketReadU64(packet);
 
-  INFO_LOG_FMT(NETPLAY, "Starting data chunk {}.", cid);
+  NOTICE_LOG_FMT(NETPLAY, "Save sync transport: receiving chunk {} ('{}', {} bytes).", cid,
+                 title, data_size);
 
   m_chunked_data_receive_queue.emplace(cid, sf::Packet{});
 
@@ -697,7 +698,8 @@ void NetPlayClient::OnChunkedDataEnd(sf::Packet& packet)
     return;
   }
 
-  INFO_LOG_FMT(NETPLAY, "Ending data chunk {}.", cid);
+  NOTICE_LOG_FMT(NETPLAY, "Save sync transport: chunk {} complete ({} bytes received).", cid,
+                 data_packet_iter->second.getDataSize());
 
   auto& data_packet = data_packet_iter->second;
   OnData(data_packet);
@@ -1358,7 +1360,8 @@ void NetPlayClient::OnSyncSaveDataNotify(sf::Packet& packet)
   m_wii_sync_redirect_folder.clear();
   m_wii_sync_data_ready = false;
 
-  INFO_LOG_FMT(NETPLAY, "Initializing wait for {} savegame chunks.", m_sync_save_data_count);
+  NOTICE_LOG_FMT(NETPLAY, "Save sync: client expects {} logical chunk(s).",
+                 m_sync_save_data_count);
 
   if (m_sync_save_data_count == 0)
   {
@@ -1500,7 +1503,8 @@ void NetPlayClient::OnSyncSaveDataWii(sf::Packet& packet)
   // Read the saves
   u32 save_count;
   packet >> save_count;
-  INFO_LOG_FMT(NETPLAY, "Received data for {} Wii saves.", save_count);
+  NOTICE_LOG_FMT(NETPLAY, "Save sync: received Wii payload containing {} title save(s).",
+                 save_count);
   for (u32 n = 0; n < save_count; n++)
   {
     u64 title_id = Common::PacketReadU64(packet);
@@ -2239,6 +2243,9 @@ bool NetPlayClient::StartGame(const std::string& path)
 
 void NetPlayClient::SyncSaveDataResponse(const bool success)
 {
+  NOTICE_LOG_FMT(NETPLAY, "Save sync: processed logical chunk {}/{} (success={}).",
+                 success ? m_sync_save_data_success_count + 1 : m_sync_save_data_success_count,
+                 m_sync_save_data_count, success);
   m_dialog->AppendChat(success ? Common::GetStringT("Data received!") :
                                  Common::GetStringT("Error processing data."));
 

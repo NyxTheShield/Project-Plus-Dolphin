@@ -164,6 +164,11 @@ private:
   void StartGame(const std::vector<std::string>& paths,
                  std::unique_ptr<BootSessionData> boot_session_data = nullptr);
   void StartGame(std::unique_ptr<BootParameters>&& parameters);
+  void BootGame(std::unique_ptr<BootParameters>&& parameters);
+  void ConnectFullscreenBootSignals();
+  void OnFullscreenBootStateChanged(bool fullscreen);
+  void OnFullscreenBootSizeChanged(int width, int height);
+  void TryCompleteFullscreenBoot();
   void ShowRenderWidget();
   void HideRenderWidget(bool reinit = true, bool is_exit = false);
 
@@ -258,6 +263,12 @@ private:
   bool m_is_screensaver_inhibited = false;
   u32 m_state_slot = 1;
   std::unique_ptr<BootParameters> m_pending_boot;
+  std::unique_ptr<BootParameters> m_pending_fullscreen_boot;
+  bool m_fullscreen_boot_state_observed = false;
+  bool m_fullscreen_boot_size_observed = false;
+  bool m_fullscreen_boot_completion_scheduled = false;
+  int m_fullscreen_boot_width = 0;
+  int m_fullscreen_boot_height = 0;
 
   struct ManagedSession
   {
