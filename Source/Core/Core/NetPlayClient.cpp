@@ -98,6 +98,9 @@ NetPlayClient::~NetPlayClient()
   if (m_is_running.IsSet())
     StopGame();
 
+  if (m_presentation_pause_thread.joinable())
+    m_presentation_pause_thread.join();
+
   if (m_is_connected)
   {
     m_should_compute_game_digest = false;
@@ -1188,15 +1191,29 @@ void NetPlayClient::OnPresentationPauseBegin(sf::Packet& packet)
   }
 
   Core::SetState(system, Core::State::Paused, false, true);
-  {
-    // Do not acknowledge until the CPU has actually reached the paused state.
-    const Core::CPUThreadGuard guard(system);
-  }
 
-  sf::Packet response;
-  response << MessageID::PresentationPauseAck << generation << true;
-  Send(response);
-  INFO_LOG_FMT(NETPLAY, "Presentation pause {} acknowledged", generation);
+  // The CPU can be inside rollback code which needs the NetPlay receive thread to keep pumping
+  // packets before it can reach the pause.  Waiting for CPUThreadGuard here would block that receive
+  // thread and deadlock the pause handshake.  Verify the pause on a worker and keep receiving.
+  if (m_presentation_pause_thread.joinable())
+    m_presentation_pause_thread.join();
+  m_presentation_pause_thread = std::thread([this, generation] {
+    auto& worker_system = Core::System::GetInstance();
+    {
+      const Core::CPUThreadGuard guard(worker_system);
+    }
+
+    {
+      std::lock_guard lock(m_presentation_pause_mutex);
+      if (!m_presentation_pause_active || generation != m_presentation_pause_generation)
+        return;
+    }
+
+    sf::Packet response;
+    response << MessageID::PresentationPauseAck << generation << true;
+    SendAsync(std::move(response));
+    INFO_LOG_FMT(NETPLAY, "Presentation pause {} acknowledged", generation);
+  });
 }
 
 void NetPlayClient::OnPresentationPauseReady(sf::Packet& packet)

@@ -18,6 +18,7 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -458,6 +459,7 @@ struct GekkoManager
   std::atomic<bool> precise_vi_guard_requested{false};
   bool late_vi_guard = false;
   int configured_local_delay = 0;
+  int configured_prediction_window = 0;
   u32 session_id = 0;
   u64 local_input_frame = 0;
   std::vector<int> player_handles;
@@ -1806,6 +1808,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.frame_boundary = options.frame_boundary;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.configured_local_delay = clamped_delay;
+  g_manager.configured_prediction_window = clamped_prediction;
   g_manager.session_id = session_id;
   g_manager.local_input_frame = 0;
   // GetRollbackPad is active throughout boot, before Gekko emits the first Advance event. Never
@@ -3463,13 +3466,167 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
 
   // Run GekkoNet event pump - must wait for an advance event each frame.
   const auto pump_start = std::chrono::steady_clock::now();
+  const bool diagnose_pump_stalls = IsDetailedResimProfilingEnabled();
+  const Common::ENet::RollbackDatagramStats pump_udp_start =
+      diagnose_pump_stalls ? Common::ENet::GetRollbackDatagramStats() :
+                             Common::ENet::RollbackDatagramStats{};
+  std::array<int, MAX_PORTS> received_at_pump_start{};
+  received_at_pump_start.fill(std::numeric_limits<int>::min());
+  if (diagnose_pump_stalls)
+  {
+    for (int p = 0; p < g_manager.players; ++p)
+    {
+      const int handle = g_manager.player_handles[p];
+      if (handle >= 0)
+        received_at_pump_start[p] = gekko_last_received_frame(g_manager.session, handle);
+    }
+  }
+
+  u64 pump_retries = 0;
+  double pump_update_ms = 0.0;
+  double pump_prepare_ms = 0.0;
+  double pump_sleep_ms = 0.0;
+  double pump_network_poll_ms = 0.0;
+  int last_event_count = 0;
+  int last_batch_saves = 0;
+  int last_batch_loads = 0;
+  int last_batch_advances = 0;
+  u64 total_saves = 0;
+  u64 total_loads = 0;
+  u64 total_advances = 0;
+  constexpr std::array<double, 4> PUMP_STALL_THRESHOLDS_MS{16.0, 33.0, 50.0, 100.0};
+  std::size_t next_pump_stall_threshold = 0;
+
+  const auto log_pump_stall = [&](std::string_view phase, double elapsed_ms) {
+    int pending_saves = 0;
+    int pending_loads = 0;
+    int pending_advances = 0;
+    int latest_pending_advance = -1;
+    for (const QueuedEvent& event : g_manager.pending_events)
+    {
+      switch (event.type)
+      {
+      case GekkoSaveEvent:
+        ++pending_saves;
+        break;
+      case GekkoLoadEvent:
+        ++pending_loads;
+        break;
+      case GekkoAdvanceEvent:
+        ++pending_advances;
+        latest_pending_advance = event.frame;
+        break;
+      default:
+        break;
+      }
+    }
+
+    const int current_frame = gekko_current_frame(g_manager.session);
+    int min_remote_received = std::numeric_limits<int>::max();
+    std::string player_frames;
+    for (int p = 0; p < g_manager.players; ++p)
+    {
+      const int handle = g_manager.player_handles[p];
+      if (handle < 0)
+        continue;
+      const int received = gekko_last_received_frame(g_manager.session, handle);
+      const bool local = handle == g_manager.local_handle;
+      player_frames +=
+          fmt::format("{}P{}:{}{}({:+d})", player_frames.empty() ? "" : ",", p + 1,
+                      local ? "L" : "R", received,
+                      received - received_at_pump_start[p]);
+      if (!local)
+        min_remote_received = std::min(min_remote_received, received);
+    }
+
+    const int predicted_remote_frames =
+        min_remote_received == std::numeric_limits<int>::max() ?
+            0 :
+            std::max(0, current_frame - min_remote_received - 1);
+    std::string_view reason = "input_unavailable";
+    if (pending_advances != 0)
+      reason = "advance_queued_but_deferred";
+    else if (min_remote_received != std::numeric_limits<int>::max() &&
+             predicted_remote_frames >= g_manager.configured_prediction_window)
+      reason = "remote_prediction_window_exhausted";
+    else if (last_event_count == 0)
+      reason = "no_game_events";
+    else
+      reason = "events_without_advance";
+
+    const Common::ENet::RollbackDatagramStats udp =
+        Common::ENet::GetRollbackDatagramStats();
+    GekkoNetworkStats network_stats{};
+    if (g_manager.remote_handle >= 0)
+      gekko_network_stats(g_manager.session, g_manager.remote_handle, &network_stats);
+
+    NOTICE_LOG_FMT(
+        CORE,
+        "GekkoNet pump stall: phase={} elapsed={:.3f} ms retries={} reason={}; "
+        "parts update={:.3f} prepare={:.3f} sleep={:.3f} network_poll={:.3f} ms; "
+        "frame current={} last_started={} latest_pending={} local_submitted={} ahead={:.2f}; "
+        "remote_prediction={}/{} frames; received=[{}]; "
+        "events last S/L/A={}/{}/{} total={}/{}/{} pending={}/{}/{}; "
+        "transport rx_delta={} reject_delta={} ping_last/avg/jitter={}/{:.1f}/{:.1f} ms",
+        phase, elapsed_ms, pump_retries, reason, pump_update_ms, pump_prepare_ms, pump_sleep_ms,
+        pump_network_poll_ms, current_frame, g_manager.frame_execution_gekko_frame,
+        latest_pending_advance, g_manager.local_input_frame, gekko_frames_ahead(g_manager.session),
+        predicted_remote_frames, g_manager.configured_prediction_window, player_frames,
+        last_batch_saves, last_batch_loads, last_batch_advances, total_saves, total_loads,
+        total_advances, pending_saves, pending_loads, pending_advances,
+        udp.received - pump_udp_start.received, udp.rejected - pump_udp_start.rejected,
+        network_stats.last_ping, network_stats.avg_ping, network_stats.jitter);
+  };
+
+  const auto maybe_log_waiting_pump = [&] {
+    if (!diagnose_pump_stalls)
+      return;
+    const double elapsed_ms = ElapsedMs(pump_start);
+    while (next_pump_stall_threshold < PUMP_STALL_THRESHOLDS_MS.size() &&
+           elapsed_ms >= PUMP_STALL_THRESHOLDS_MS[next_pump_stall_threshold])
+    {
+      log_pump_stall("waiting", elapsed_ms);
+      ++next_pump_stall_threshold;
+    }
+  };
+
   for (;;)
   {
     if (g_manager.stop_requested.load(std::memory_order_relaxed))
       return;
 
     int event_count = 0;
+    const auto update_start = std::chrono::steady_clock::now();
     GekkoGameEvent** events = gekko_update_session(g_manager.session, &event_count);
+    if (diagnose_pump_stalls)
+      pump_update_ms += ElapsedMs(update_start);
+
+    last_event_count = event_count;
+    last_batch_saves = 0;
+    last_batch_loads = 0;
+    last_batch_advances = 0;
+    for (int i = 0; i < event_count; ++i)
+    {
+      if (!events[i])
+        continue;
+      switch (events[i]->type)
+      {
+      case GekkoSaveEvent:
+        ++last_batch_saves;
+        ++total_saves;
+        break;
+      case GekkoLoadEvent:
+        ++last_batch_loads;
+        ++total_loads;
+        break;
+      case GekkoAdvanceEvent:
+        ++last_batch_advances;
+        ++total_advances;
+        break;
+      default:
+        break;
+      }
+    }
 
     // Check session lifecycle events
     int s_count = 0;
@@ -3506,9 +3663,16 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     }
 
     QueueEvents(events, event_count);
-    if (StartPreparedFrame(system))
+    const auto prepare_start = std::chrono::steady_clock::now();
+    const bool frame_started = StartPreparedFrame(system);
+    if (diagnose_pump_stalls)
+      pump_prepare_ms += ElapsedMs(prepare_start);
+    if (frame_started)
     {
+      const double elapsed_ms = ElapsedMs(pump_start);
       RecordPumpTime(pump_start);
+      if (diagnose_pump_stalls && elapsed_ms >= PUMP_STALL_THRESHOLDS_MS.front())
+        log_pump_stall("resolved", elapsed_ms);
       return;
     }
 
@@ -3516,10 +3680,20 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     // A sub-millisecond std::this_thread::sleep_for can consume a full scheduler quantum on
     // Windows. That turns a brief GekkoNet wait into a lost emulated frame. Dolphin's precision
     // timer spins for this short interval and preserves the intended 100 us polling cadence.
+    ++pump_retries;
+    const auto sleep_start = std::chrono::steady_clock::now();
     g_manager.wait_timer.SleepUntil(Clock::now() + std::chrono::microseconds(WAIT_SLEEP_US));
+    if (diagnose_pump_stalls)
+      pump_sleep_ms += ElapsedMs(sleep_start);
     PumpSimulatedPeer();
     if (!g_manager.netplay_replay_session)
+    {
+      const auto network_poll_start = std::chrono::steady_clock::now();
       gekko_network_poll(g_manager.session);
+      if (diagnose_pump_stalls)
+        pump_network_poll_ms += ElapsedMs(network_poll_start);
+    }
+    maybe_log_waiting_pump();
   }
 }
 

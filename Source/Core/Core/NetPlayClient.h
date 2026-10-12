@@ -417,6 +417,7 @@ private:
 
   std::mutex m_presentation_pause_mutex;
   std::condition_variable m_presentation_pause_cv;
+  std::thread m_presentation_pause_thread;
   u32 m_presentation_pause_generation = 0;
   PlayerId m_presentation_pause_requester = 0;
   bool m_presentation_pause_active = false;
