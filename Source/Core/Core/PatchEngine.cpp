@@ -36,6 +36,7 @@
 #include "Core/GeckoCodeConfig.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/Rollback/GekkoRollback.h"
 #include "Core/System.h"
 #include "VideoCommon/OnScreenDisplay.h"
 
@@ -104,9 +105,15 @@ std::string SerializeLine(const PatchEntry& entry)
   }
 }
 
+static bool IsMusicCode(const Patch& patch)
+{
+  return patch.name == "[P+] Music Off";
+}
+
 static bool IsEnabledMusicCode(const Patch& patch)
 {
-  if (NetPlay::IsNetPlayRunning() && patch.name == "[P+] Music Off" && Config::Get(Config::NETPLAY_BRAWL_MUSIC_OFF))
+  if (NetPlay::IsNetPlayRunning() && !Rollback::IsGekkoSessionActive() && IsMusicCode(patch) &&
+      Config::Get(Config::NETPLAY_BRAWL_MUSIC_OFF))
   {
     return SConfig::GetInstance().bBrawlMusicOff;
   }
@@ -118,7 +125,9 @@ static bool IsEnabledMusicCode(const Patch& patch)
 
 static bool IsDisabledMusicCode(const Patch& patch)
 {
-  return false;
+  // Gekko sessions apply this patch at their authoritative rollback boundary instead of from the
+  // independently scheduled PatchEngine callback.
+  return Rollback::IsGekkoSessionActive() && IsMusicCode(patch);
 }
 
 void LoadPatchSection(const std::string& section, std::vector<Patch>* patches,
@@ -236,44 +245,63 @@ void LoadPatches()
     OSD::AddMessage(fmt::format("{} cheat(s) enabled", enabled_cheat_count), OSD::Duration::NORMAL);
 }
 
+static void ApplyPatchEntries(const Core::CPUThreadGuard& guard, const Patch& patch)
+{
+  for (const PatchEntry& entry : patch.entries)
+  {
+    u32 addr = entry.address;
+    u32 value = entry.value;
+    u32 comparand = entry.comparand;
+    switch (entry.type)
+    {
+    case PatchType::Patch8Bit:
+      if (!entry.conditional ||
+          PowerPC::MMU::HostRead<u8>(guard, addr) == static_cast<u8>(comparand))
+      {
+        ApplyMemoryPatch<u8>(guard, static_cast<u8>(value), addr);
+      }
+      break;
+    case PatchType::Patch16Bit:
+      if (!entry.conditional ||
+          PowerPC::MMU::HostRead<u16>(guard, addr) == static_cast<u16>(comparand))
+      {
+        ApplyMemoryPatch<u16>(guard, static_cast<u16>(value), addr);
+      }
+      break;
+    case PatchType::Patch32Bit:
+      if (!entry.conditional || PowerPC::MMU::HostRead<u32>(guard, addr) == comparand)
+        ApplyMemoryPatch<u32>(guard, value, addr);
+      break;
+    default:
+      // unknown patchtype
+      break;
+    }
+  }
+}
+
 static void ApplyPatches(const Core::CPUThreadGuard& guard, const std::vector<Patch>& patches)
 {
   for (const Patch& patch : patches)
   {
-    if (patch.enabled && !IsDisabledMusicCode(patch) || IsEnabledMusicCode(patch))
-    {
-      for (const PatchEntry& entry : patch.entries)
-      {
-        u32 addr = entry.address;
-        u32 value = entry.value;
-        u32 comparand = entry.comparand;
-        switch (entry.type)
-        {
-        case PatchType::Patch8Bit:
-          if (!entry.conditional ||
-              PowerPC::MMU::HostRead<u8>(guard, addr) == static_cast<u8>(comparand))
-          {
-            ApplyMemoryPatch<u8>(guard, static_cast<u8>(value), addr);
-          }
-          break;
-        case PatchType::Patch16Bit:
-          if (!entry.conditional ||
-              PowerPC::MMU::HostRead<u16>(guard, addr) == static_cast<u16>(comparand))
-          {
-            ApplyMemoryPatch<u16>(guard, static_cast<u16>(value), addr);
-          }
-          break;
-        case PatchType::Patch32Bit:
-          if (!entry.conditional || PowerPC::MMU::HostRead<u32>(guard, addr) == comparand)
-            ApplyMemoryPatch<u32>(guard, value, addr);
-          break;
-        default:
-          // unknown patchtype
-          break;
-        }
-      }
-    }
+    if ((patch.enabled && !IsDisabledMusicCode(patch)) || IsEnabledMusicCode(patch))
+      ApplyPatchEntries(guard, patch);
   }
+}
+
+void ApplyNetplayMusicPatchAtRollbackBoundary(const Core::CPUThreadGuard& guard, bool enabled)
+{
+  if (!enabled || !Rollback::IsGekkoSessionActive() || !NetPlay::IsNetPlayRunning())
+  {
+    return;
+  }
+
+  const auto patch = std::ranges::find_if(s_on_frame, IsMusicCode);
+  if (patch == s_on_frame.end())
+    return;
+
+  // Apply only the configured music patch. Other OnFrame patches and both cheat engines retain
+  // their normal scheduling.
+  ApplyPatchEntries(guard, *patch);
 }
 
 static void ApplyMemoryPatches(const Core::CPUThreadGuard& guard,

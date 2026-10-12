@@ -16,6 +16,7 @@ class IniFile;
 }
 namespace Core
 {
+class CPUThreadGuard;
 class System;
 }
 
@@ -61,6 +62,7 @@ void AddMemoryPatch(std::size_t index);
 void RemoveMemoryPatch(std::size_t index);
 
 bool ApplyFramePatches(Core::System& system);
+void ApplyNetplayMusicPatchAtRollbackBoundary(const Core::CPUThreadGuard& guard, bool enabled);
 void Shutdown();
 void Reload(Core::System& system);
 

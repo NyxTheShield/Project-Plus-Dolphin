@@ -55,6 +55,7 @@
 #include "Core/IOS/FS/HostBackend/FS.h"
 #include "Core/IOS/IOS.h"
 #include "Core/IOS/Uids.h"
+#include "Core/PatchEngine.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -429,6 +430,7 @@ struct GekkoManager
   bool simulate_remote_p2 = false;
   bool stress_test = false;
   bool enable_random_inputs = false;
+  bool disable_project_plus_music = false;
   bool native_stress = false;
   u32 stress_interval = 1;
   u32 stress_rollback_frames = 0;
@@ -1763,6 +1765,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.simulate_remote_p2 = options.simulate_remote_p2;
   g_manager.stress_test = options.stress_test;
   g_manager.enable_random_inputs = options.enable_random_inputs;
+  g_manager.disable_project_plus_music = options.disable_project_plus_music;
   g_manager.native_stress = options.native_stress;
   g_manager.stress_interval = std::max(1u, options.stress_interval);
   g_manager.stress_rollback_frames =
@@ -1997,7 +2000,8 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       "delay={}, "
       "rollback_window={}, gekko_prediction_window={}, local_input_source={}, "
       "debug_p2_cstick={}, simulate_remote_p2={}, simulated_one_way_latency_ms={}, "
-      "stress_enabled={}, native_stress={}, random_inputs={}, stress_input_period_frames={}, "
+      "stress_enabled={}, native_stress={}, random_inputs={}, disable_project_plus_music={}, "
+      "stress_input_period_frames={}, "
       "stress_rollback_frames={}, "
       "tracked_bitmap_clear={}, "
       "full_scan_benchmark={}, full_scan_keep_tracking={}, compare_confirmed_ram={}, "
@@ -2007,6 +2011,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       options.debug_p2_cstick, options.simulate_remote_p2,
       options.simulate_remote_p2 && !options.stress_test ? SIMULATED_P2_LATENCY.count() : 0,
       options.stress_test, options.native_stress, options.enable_random_inputs,
+      options.disable_project_plus_music,
       options.native_stress ? std::max(1u, options.stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
       clamped_rollback_window, g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark,
       g_manager.full_scan_keep_tracking, g_manager.compare_confirmed_ram,
@@ -3058,6 +3063,9 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     ppc_state.pc = BRAWL_FRAME_HOOK_ADDR;
     ppc_state.npc = BRAWL_FRAME_HOOK_ADDR;
   }
+
+  PatchEngine::ApplyNetplayMusicPatchAtRollbackBoundary(
+      guard, g_manager.disable_project_plus_music);
 
   std::lock_guard lk(g_manager.mutex);
   if (!g_manager.session)

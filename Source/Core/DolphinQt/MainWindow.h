@@ -283,6 +283,7 @@ private:
     bool stress_test = false;
     bool simulate_remote_p2 = false;
     bool enable_random_inputs = false;
+    bool disable_project_plus_music = false;
     bool native_stress = false;
     u32 stress_interval = 1;
     std::optional<u32> rollback_window_override;

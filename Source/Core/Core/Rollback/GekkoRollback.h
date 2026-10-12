@@ -38,6 +38,7 @@ struct GekkoSessionOptions
   bool simulate_remote_p2 = false;
   bool stress_test = false;
   bool enable_random_inputs = false;
+  bool disable_project_plus_music = false;
   bool native_stress = false;
   u32 stress_interval = 1;
   bool compare_confirmed_ram = false;

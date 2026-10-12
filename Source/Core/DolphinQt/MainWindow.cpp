@@ -1957,6 +1957,11 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->enable_random_inputs = enable_random_inputs_it != ticket.end() &&
                                             enable_random_inputs_it->second.is<bool>() &&
                                             enable_random_inputs_it->second.get<bool>();
+  const auto disable_project_plus_music_it = ticket.find("disable_project_plus_music");
+  m_managed_session->disable_project_plus_music =
+      disable_project_plus_music_it != ticket.end() &&
+      disable_project_plus_music_it->second.is<bool>() &&
+      disable_project_plus_music_it->second.get<bool>();
   const auto native_stress_it = ticket.find("native_stress");
   m_managed_session->native_stress = native_stress_it != ticket.end() &&
                                      native_stress_it->second.is<bool>() &&
@@ -2361,6 +2366,8 @@ bool MainWindow::NetPlayJoin()
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
     rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;
+    rollback_options.disable_project_plus_music =
+        m_managed_session->disable_project_plus_music;
     rollback_options.native_stress = m_managed_session->native_stress;
     rollback_options.stress_interval = m_managed_session->stress_interval;
     rollback_options.compare_confirmed_ram = m_managed_session->compare_confirmed_ram;
