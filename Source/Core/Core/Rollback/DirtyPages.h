@@ -82,4 +82,19 @@ struct Counters
   u64 pages_recorded = 0;  // changed pages saved into undo logs
 };
 Counters GetCounters();
+
+struct CommitTimings
+{
+  double bitmap_scan_ms = 0.0;
+  double compare_ms = 0.0;
+  double undo_log_ms = 0.0;
+  double mirror_copy_ms = 0.0;
+  u64 marked_pages = 0;
+  u64 changed_pages = 0;
+};
+
+// Detailed commit profiling uses per-dirty-page clocks and is intentionally diagnostic-only.
+void SetCommitProfilingEnabled(bool enabled);
+CommitTimings GetLastCommitTimings();
+void SetParallelCompareEnabled(bool enabled);
 }  // namespace Rollback::DirtyPages

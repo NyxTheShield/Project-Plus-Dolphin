@@ -2106,6 +2106,10 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->full_scan_keep_tracking = full_scan_keep_tracking_it != ticket.end() &&
                                                full_scan_keep_tracking_it->second.is<bool>() &&
                                                full_scan_keep_tracking_it->second.get<bool>();
+  const auto parallel_dirty_compare_it = ticket.find("parallel_dirty_compare");
+  m_managed_session->parallel_dirty_compare =
+      parallel_dirty_compare_it != ticket.end() && parallel_dirty_compare_it->second.is<bool>() &&
+      parallel_dirty_compare_it->second.get<bool>();
   const auto tracked_bitmap_clear_it = ticket.find("tracked_bitmap_clear");
   m_managed_session->tracked_bitmap_clear = tracked_bitmap_clear_it == ticket.end() ||
                                             !tracked_bitmap_clear_it->second.is<bool>() ||
@@ -2491,6 +2495,7 @@ bool MainWindow::NetPlayJoin()
     rollback_options.tracked_bitmap_clear = m_managed_session->tracked_bitmap_clear;
     rollback_options.full_scan_benchmark = m_managed_session->full_scan_benchmark;
     rollback_options.full_scan_keep_tracking = m_managed_session->full_scan_keep_tracking;
+    rollback_options.parallel_dirty_compare = m_managed_session->parallel_dirty_compare;
   }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
       host_ip, host_port, m_netplay_dialog, nickname,

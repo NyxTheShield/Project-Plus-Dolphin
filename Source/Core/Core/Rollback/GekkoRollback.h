@@ -50,6 +50,7 @@ struct GekkoSessionOptions
   bool tracked_bitmap_clear = true;
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
+  bool parallel_dirty_compare = false;
 };
 
 // Wire format for GameCube controller input over GekkoNet (8 bytes)

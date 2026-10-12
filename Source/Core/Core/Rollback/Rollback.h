@@ -37,6 +37,10 @@ struct SnapshotPhaseTimings
 {
   double state_ms = 0.0;
   double dirty_pages_ms = 0.0;
+  double dirty_bitmap_scan_ms = 0.0;
+  double dirty_compare_ms = 0.0;
+  double dirty_undo_log_ms = 0.0;
+  double dirty_mirror_copy_ms = 0.0;
   double l1_ms = 0.0;
   double jit_ms = 0.0;
   double journal_ms = 0.0;
@@ -44,6 +48,8 @@ struct SnapshotPhaseTimings
   std::size_t changed_blocks = 0;
   std::size_t changed_cache_lines = 0;
   std::size_t jit_blocks_invalidated = 0;
+  u64 dirty_marked_pages = 0;
+  u64 dirty_changed_pages = 0;
 };
 
 struct ResimJitCompileStats

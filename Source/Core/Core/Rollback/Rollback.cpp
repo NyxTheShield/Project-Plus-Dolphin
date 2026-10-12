@@ -607,6 +607,13 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   {
     const auto phase_start = std::chrono::steady_clock::now();
     slot->page_snapshot_id = DirtyPages::Snapshot(frame);
+    const DirtyPages::CommitTimings commit_timings = DirtyPages::GetLastCommitTimings();
+    m_last_save_timings.dirty_bitmap_scan_ms = commit_timings.bitmap_scan_ms;
+    m_last_save_timings.dirty_compare_ms = commit_timings.compare_ms;
+    m_last_save_timings.dirty_undo_log_ms = commit_timings.undo_log_ms;
+    m_last_save_timings.dirty_mirror_copy_ms = commit_timings.mirror_copy_ms;
+    m_last_save_timings.dirty_marked_pages = commit_timings.marked_pages;
+    m_last_save_timings.dirty_changed_pages = commit_timings.changed_pages;
     if (trace)
       NOTICE_LOG_FMT(CORE, "Rollback trace: save frame {} dirty commit done (id={})", frame,
                      slot->page_snapshot_id);

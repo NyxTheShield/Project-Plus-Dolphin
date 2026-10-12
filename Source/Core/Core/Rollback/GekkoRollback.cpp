@@ -1796,6 +1796,8 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.stop_ram_compare_on_mismatch =
       options.stop_ram_compare_on_mismatch && g_manager.compare_confirmed_ram;
   SetDetailedResimProfilingEnabled(options.deep_logging);
+  DirtyPages::SetCommitProfilingEnabled(options.deep_logging);
+  DirtyPages::SetParallelCompareEnabled(options.parallel_dirty_compare);
   SetCoarseFifoTiming(options.coarse_fifo_timing);
   g_manager.late_vi_guard = options.late_vi_guard;
   g_manager.ram_diagnostic_dumped = false;
@@ -2031,7 +2033,8 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       "stress_input_period_frames={}, "
       "stress_rollback_frames={}, "
       "tracked_bitmap_clear={}, "
-      "full_scan_benchmark={}, full_scan_keep_tracking={}, compare_confirmed_ram={}, "
+      "full_scan_benchmark={}, full_scan_keep_tracking={}, parallel_dirty_compare={}, "
+      "compare_confirmed_ram={}, "
       "frame_boundary={})",
       game_name, players, local_player, session_id, clamped_delay, clamped_rollback_window,
       clamped_prediction, g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad",
@@ -2041,7 +2044,8 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       options.disable_project_plus_music,
       options.native_stress ? std::max(1u, options.stress_interval) : STRESS_INPUT_PERIOD_FRAMES,
       clamped_rollback_window, g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark,
-      g_manager.full_scan_keep_tracking, g_manager.compare_confirmed_ram,
+      g_manager.full_scan_keep_tracking, options.parallel_dirty_compare,
+      g_manager.compare_confirmed_ram,
       FrameBoundaryName(g_manager.frame_boundary));
   NOTICE_LOG_FMT(CORE, "GekkoNet optimization settings: coarse_fifo_timing={}, late_vi_guard={}",
                  UseCoarseFifoTiming(), g_manager.late_vi_guard);
@@ -2113,6 +2117,8 @@ void StopGekkoSession()
   g_manager.ring.reset();
   Rollback::SetResimulating(false);
   Rollback::SetDetailedResimProfilingEnabled(false);
+  DirtyPages::SetCommitProfilingEnabled(false);
+  DirtyPages::SetParallelCompareEnabled(false);
   Rollback::SetCoarseFifoTiming(false);
   if (had_session)
     NOTICE_LOG_FMT(CORE, "GekkoNet: Session stopped");
@@ -2598,6 +2604,10 @@ static void AddSnapshotPhases(SnapshotPhaseTimings* total, const SnapshotPhaseTi
 {
   total->state_ms += sample.state_ms;
   total->dirty_pages_ms += sample.dirty_pages_ms;
+  total->dirty_bitmap_scan_ms += sample.dirty_bitmap_scan_ms;
+  total->dirty_compare_ms += sample.dirty_compare_ms;
+  total->dirty_undo_log_ms += sample.dirty_undo_log_ms;
+  total->dirty_mirror_copy_ms += sample.dirty_mirror_copy_ms;
   total->l1_ms += sample.l1_ms;
   total->jit_ms += sample.jit_ms;
   total->journal_ms += sample.journal_ms;
@@ -2605,6 +2615,8 @@ static void AddSnapshotPhases(SnapshotPhaseTimings* total, const SnapshotPhaseTi
   total->changed_blocks += sample.changed_blocks;
   total->changed_cache_lines += sample.changed_cache_lines;
   total->jit_blocks_invalidated += sample.jit_blocks_invalidated;
+  total->dirty_marked_pages += sample.dirty_marked_pages;
+  total->dirty_changed_pages += sample.dirty_changed_pages;
 }
 
 // Native GekkoNet uses frame -1 for the snapshot immediately before frame 0. SnapshotRing uses
@@ -2897,6 +2909,22 @@ static void MaybeLogPerformance(Core::System& system)
               g_manager.perf_load_count),
       average(static_cast<double>(g_manager.perf_load_phases.jit_blocks_invalidated),
               g_manager.perf_load_count));
+
+  if (g_manager.perf_save_phases.dirty_marked_pages != 0)
+  {
+    NOTICE_LOG_FMT(
+        CORE,
+        "GekkoNet dirty commit profile: bitmap/loop {:.3f} compare {:.3f} undo-log {:.3f} "
+        "mirror-copy {:.3f} ms/save, marked {:.1f} changed {:.1f} pages/save",
+        average(g_manager.perf_save_phases.dirty_bitmap_scan_ms, g_manager.perf_save_count),
+        average(g_manager.perf_save_phases.dirty_compare_ms, g_manager.perf_save_count),
+        average(g_manager.perf_save_phases.dirty_undo_log_ms, g_manager.perf_save_count),
+        average(g_manager.perf_save_phases.dirty_mirror_copy_ms, g_manager.perf_save_count),
+        average(static_cast<double>(g_manager.perf_save_phases.dirty_marked_pages),
+                g_manager.perf_save_count),
+        average(static_cast<double>(g_manager.perf_save_phases.dirty_changed_pages),
+                g_manager.perf_save_count));
+  }
 
   if (g_manager.compare_confirmed_ram)
   {

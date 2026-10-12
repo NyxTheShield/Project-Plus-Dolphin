@@ -4,6 +4,7 @@
 #include "Core/Rollback/DirtyPages.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -12,6 +13,7 @@
 
 #include "Common/Buffer.h"
 #include "Common/Logging/Log.h"
+#include "Common/WorkQueueThread.h"
 #include "Core/HW/DSP.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/JitInterface.h"
@@ -28,6 +30,30 @@ constexpr std::size_t JIT_CACHE_LINE = 32;
 constexpr u32 MEM2_PHYSICAL = 0x10000000u;
 // Spare page buffers kept ready at each snapshot.
 constexpr std::size_t RESERVE_PAGES = 2048;
+
+struct DirtyCandidate
+{
+  std::size_t global_page;
+  u8* live;
+  u8* mirror;
+};
+
+struct CompareJob
+{
+  const std::vector<DirtyCandidate>* candidates;
+  std::vector<u8>* changed;
+  std::size_t begin;
+  std::size_t end;
+};
+
+void CompareCandidates(CompareJob job)
+{
+  for (std::size_t i = job.begin; i < job.end; ++i)
+  {
+    const DirtyCandidate& candidate = (*job.candidates)[i];
+    (*job.changed)[i] = std::memcmp(candidate.live, candidate.mirror, PAGE) != 0;
+  }
+}
 
 // The JIT's inline bitmap stores exist only in the x86-64 backend. Other hosts keep full copies.
 #if defined(_M_X86_64) || defined(__x86_64__)
@@ -53,6 +79,12 @@ struct Tracker
   bool force_full_scan = false;
   bool audit_untracked_writes = false;
   std::vector<u8> audit_reported_pages;
+  bool profile_commit = false;
+  CommitTimings last_commit_timings;
+  bool parallel_compare = false;
+  std::unique_ptr<Common::WorkQueueThreadSP<CompareJob>> compare_worker;
+  std::vector<DirtyCandidate> dirty_candidates;
+  std::vector<u8> changed_candidates;
   Counters counters;
   // Ids stay unique across arms, so a stale id never names another ring's snapshot.
   u64 next_id = 1;
@@ -136,8 +168,98 @@ void AuditUntrackedPages(Tracker& t, std::string_view context, s64 frame)
 
 void CommitDirtyPages(Tracker& t, s64 frame)
 {
+  t.last_commit_timings = {};
+  const bool profile = t.profile_commit;
+  const auto commit_start = profile ? std::chrono::steady_clock::now() :
+                                      std::chrono::steady_clock::time_point{};
   AuditUntrackedPages(t, "save", frame);
   auto& bitmap = JITDirtyBitmap::Get();
+
+  if (t.parallel_compare && !t.force_full_scan)
+  {
+    t.dirty_candidates.clear();
+    for (std::size_t a = 0; a < t.areas.size(); ++a)
+    {
+      const Area& area = t.areas[a];
+      const std::size_t pages = area.size / PAGE;
+      const std::size_t first_bitmap_page = area.physical_address / PAGE;
+      for (std::size_t i = 0; i < pages; ++i)
+      {
+        const std::size_t bitmap_page = first_bitmap_page + i;
+        if (!bitmap.Load(bitmap_page) || !bitmap.Consume(bitmap_page))
+          continue;
+        ++t.counters.dirty_pages;
+        ++t.last_commit_timings.marked_pages;
+        t.dirty_candidates.push_back(
+            {t.area_first_page[a] + i, area.alias + i * PAGE, t.mirrors[a].data() + i * PAGE});
+      }
+    }
+
+    const auto compare_start = profile ? std::chrono::steady_clock::now() :
+                                         std::chrono::steady_clock::time_point{};
+    t.changed_candidates.resize(t.dirty_candidates.size());
+    const std::size_t middle = t.dirty_candidates.size() / 2;
+    if (middle != t.dirty_candidates.size())
+    {
+      t.compare_worker->Push(
+          CompareJob{&t.dirty_candidates, &t.changed_candidates, middle,
+                     t.dirty_candidates.size()});
+    }
+    CompareCandidates(CompareJob{&t.dirty_candidates, &t.changed_candidates, 0, middle});
+    if (middle != t.dirty_candidates.size())
+      t.compare_worker->WaitForCompletion();
+    if (profile)
+    {
+      t.last_commit_timings.compare_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                     compare_start)
+              .count();
+    }
+
+    const auto record_start = profile ? std::chrono::steady_clock::now() :
+                                        std::chrono::steady_clock::time_point{};
+    for (std::size_t i = 0; i < t.dirty_candidates.size(); ++i)
+    {
+      if (!t.changed_candidates[i])
+        continue;
+      ++t.last_commit_timings.changed_pages;
+      const DirtyCandidate& candidate = t.dirty_candidates[i];
+      if (t.log->Record(candidate.global_page, candidate.mirror))
+        ++t.counters.pages_recorded;
+    }
+    if (profile)
+    {
+      t.last_commit_timings.undo_log_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - record_start)
+              .count();
+    }
+
+    const auto mirror_start = profile ? std::chrono::steady_clock::now() :
+                                        std::chrono::steady_clock::time_point{};
+    for (std::size_t i = 0; i < t.dirty_candidates.size(); ++i)
+    {
+      if (t.changed_candidates[i])
+      {
+        const DirtyCandidate& candidate = t.dirty_candidates[i];
+        std::memcpy(candidate.mirror, candidate.live, PAGE);
+      }
+    }
+    if (profile)
+    {
+      t.last_commit_timings.mirror_copy_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mirror_start)
+              .count();
+      const double total_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - commit_start)
+              .count();
+      t.last_commit_timings.bitmap_scan_ms =
+          std::max(0.0, total_ms - t.last_commit_timings.compare_ms -
+                            t.last_commit_timings.undo_log_ms -
+                            t.last_commit_timings.mirror_copy_ms);
+    }
+    return;
+  }
+
   for (std::size_t a = 0; a < t.areas.size(); ++a)
   {
     const Area& area = t.areas[a];
@@ -152,14 +274,54 @@ void CommitDirtyPages(Tracker& t, s64 frame)
           (!bitmap.Load(bitmap_page) || !bitmap.Consume(bitmap_page)))
         continue;
       ++t.counters.dirty_pages;
+      ++t.last_commit_timings.marked_pages;
       u8* const live = area.alias + i * PAGE;
       u8* const mirror = t.mirrors[a].data() + i * PAGE;
-      if (std::memcmp(live, mirror, PAGE) == 0)
+      const auto compare_start = profile ? std::chrono::steady_clock::now() :
+                                           std::chrono::steady_clock::time_point{};
+      const bool differs = std::memcmp(live, mirror, PAGE) != 0;
+      if (profile)
+      {
+        t.last_commit_timings.compare_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                       compare_start)
+                .count();
+      }
+      if (!differs)
         continue;
+      ++t.last_commit_timings.changed_pages;
+      const auto record_start = profile ? std::chrono::steady_clock::now() :
+                                          std::chrono::steady_clock::time_point{};
       if (t.log->Record(t.area_first_page[a] + i, mirror))
         ++t.counters.pages_recorded;
+      if (profile)
+      {
+        t.last_commit_timings.undo_log_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                       record_start)
+                .count();
+      }
+      const auto mirror_start = profile ? std::chrono::steady_clock::now() :
+                                          std::chrono::steady_clock::time_point{};
       std::memcpy(mirror, live, PAGE);
+      if (profile)
+      {
+        t.last_commit_timings.mirror_copy_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                       mirror_start)
+                .count();
+      }
     }
+  }
+  if (profile)
+  {
+    const double total_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - commit_start)
+            .count();
+    t.last_commit_timings.bitmap_scan_ms =
+        std::max(0.0, total_ms - t.last_commit_timings.compare_ms -
+                          t.last_commit_timings.undo_log_ms -
+                          t.last_commit_timings.mirror_copy_ms);
   }
 }
 
@@ -211,6 +373,11 @@ bool Arm(const void* owner, const std::vector<Area>& areas, bool force_full_scan
     }
     t.area_first_page.push_back(t.page_count);
     t.page_count += area.size / PAGE;
+  }
+  if (t.parallel_compare)
+  {
+    t.dirty_candidates.reserve(t.page_count);
+    t.changed_candidates.reserve(t.page_count);
   }
   t.mirrors.clear();
   for (const Area& area : areas)
@@ -438,5 +605,43 @@ Counters GetCounters()
   Tracker& t = T();
   std::lock_guard lock(t.lock);
   return t.counters;
+}
+
+void SetCommitProfilingEnabled(bool enabled)
+{
+  Tracker& t = T();
+  std::lock_guard lock(t.lock);
+  t.profile_commit = enabled;
+  if (!enabled)
+    t.last_commit_timings = {};
+}
+
+CommitTimings GetLastCommitTimings()
+{
+  Tracker& t = T();
+  std::lock_guard lock(t.lock);
+  return t.last_commit_timings;
+}
+
+void SetParallelCompareEnabled(bool enabled)
+{
+  Tracker& t = T();
+  std::lock_guard lock(t.lock);
+  if (enabled == t.parallel_compare)
+    return;
+  t.parallel_compare = enabled;
+  if (enabled)
+  {
+    t.dirty_candidates.reserve(t.page_count != 0 ? t.page_count : RESERVE_PAGES);
+    t.changed_candidates.reserve(t.page_count != 0 ? t.page_count : RESERVE_PAGES);
+    t.compare_worker = std::make_unique<Common::WorkQueueThreadSP<CompareJob>>(
+        "Rollback page compare", CompareCandidates);
+  }
+  else
+  {
+    t.compare_worker.reset();
+    t.dirty_candidates.clear();
+    t.changed_candidates.clear();
+  }
 }
 }  // namespace Rollback::DirtyPages

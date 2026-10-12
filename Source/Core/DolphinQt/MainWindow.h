@@ -301,6 +301,7 @@ private:
     u32 frame_boundary = 3;
     bool full_scan_benchmark = false;
     bool full_scan_keep_tracking = false;
+    bool parallel_dirty_compare = false;
     bool tracked_bitmap_clear = true;
     std::optional<u32> input_delay_override;
     u32 input_delay_reduction = 2;
