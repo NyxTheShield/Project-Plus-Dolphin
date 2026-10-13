@@ -60,7 +60,7 @@ public:
   // Marks the guest page of reg_addr + offset dirty for rollback (Core/Rollback/DirtyBitmap.h).
   // Every guest RAM store the JIT emits must call this.
   void EmitJITDirtyBitmapUpdate(Gen::X64Reg reg_addr, s32 offset, u32 size = 1,
-                                BitSet32 registers_to_preserve = {});
+                                BitSet32 registers_to_preserve = {}, u32 alignment = 1);
   // Constant addresses need no runtime page calculation or register save/restore.
   void EmitJITDirtyBitmapUpdate(u32 address, u32 size, Gen::X64Reg value_reg);
   // these return the address of the MOV, for backpatching

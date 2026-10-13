@@ -142,20 +142,29 @@ FixupBranch EmuCodeBlock::CheckIfSafeAddress(const OpArg& reg_value, X64Reg reg_
 }
 
 void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 size,
-                                            BitSet32 registers_to_preserve)
+                                            BitSet32 registers_to_preserve, u32 alignment)
 {
   ASSERT(size != 0);
+  ASSERT(alignment != 0 && (alignment & (alignment - 1)) == 0 &&
+         alignment <= Rollback::DIRTY_PAGE_SIZE);
+  // Alignment describes the effective address including offset. A store fitting within its
+  // alignment cannot cross a dirty page; this also holds through the FakeVMEM aliases.
+  const bool can_cross_page = size > alignment;
   auto& bitmap = Rollback::JITDirtyBitmap::Get();
   // Full-scan benchmark mode makes snapshot boundaries find changes without JIT instrumentation.
   if (!bitmap.ShouldEmitUpdates())
     return;
 
+  const bool tracking_active = bitmap.IsEnabled();
+  const bool have_fake_vmem = m_jit.m_system.GetMemory().GetFakeVMEM() != nullptr;
+
   // RSCRATCH and RSCRATCH2 are normally dead here. Preserve them only when they carry the store's
   // address/value; preserve allocatable RSCRATCH_EXTRA only when the register cache says it is live.
   registers_to_preserve |= BitSet32{static_cast<int>(reg_addr)};
   const bool preserve_scratch = registers_to_preserve[RSCRATCH];
-  const bool preserve_scratch2 = registers_to_preserve[RSCRATCH2];
-  const bool preserve_extra = size > 1 && registers_to_preserve[RSCRATCH_EXTRA];
+  const bool preserve_scratch2 =
+      registers_to_preserve[RSCRATCH2] && (!tracking_active || have_fake_vmem);
+  const bool preserve_extra = can_cross_page && registers_to_preserve[RSCRATCH_EXTRA];
   if (preserve_scratch)
     PUSH(RSCRATCH);
   if (preserve_scratch2)
@@ -167,14 +176,12 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
     MOV(32, R(RSCRATCH), R(reg_addr));
   if (offset != 0)
     ADD(32, R(RSCRATCH), Imm32(static_cast<u32>(offset)));
-  if (size > 1)
+  if (can_cross_page)
     MOV(32, R(RSCRATCH_EXTRA), R(RSCRATCH));
 
-  const bool tracking_active = bitmap.IsEnabled();
-  const bool have_fake_vmem = m_jit.m_system.GetMemory().GetFakeVMEM() != nullptr;
   const bool optimized_gc_path = tracking_active && have_fake_vmem;
-  constexpr X64Reg bitmap_base = RSCRATCH2;
-  if (!optimized_gc_path)
+  const X64Reg bitmap_base = tracking_active ? RDIRTYBITMAP : RSCRATCH2;
+  if (!tracking_active)
     MOV(64, R(bitmap_base), Imm64(reinterpret_cast<u64>(&bitmap)));
   // DirtyPages clears the JIT block lookup cache whenever tracking changes. Blocks compiled while
   // tracking is active can therefore omit this test. A block that is executing when tracking is
@@ -245,7 +252,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
         Imm8(1));
   }
 
-  if (size > 1)
+  if (can_cross_page)
   {
     ADD(32, R(RSCRATCH_EXTRA), Imm32(size - 1));
     canonicalize(RSCRATCH_EXTRA);
@@ -255,13 +262,12 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
 
   if (optimized_gc_path)
   {
-    MOV(64, R(bitmap_base), Imm64(reinterpret_cast<u64>(&bitmap)));
     MOV(8, MComplex(bitmap_base, RSCRATCH, SCALE_1,
                     static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, entries))),
         Imm8(1));
   }
 
-  if (size > 1)
+  if (can_cross_page)
   {
     CMP(32, R(RSCRATCH_EXTRA), R(RSCRATCH));
     const FixupBranch same_page = J_CC(CC_E, Jump::Near);
@@ -291,11 +297,15 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(u32 address, u32 size, X64Reg value_
 
   // Pick the always-scratch register that does not contain the value being stored.
   const X64Reg scratch = value_reg == RSCRATCH ? RSCRATCH2 : RSCRATCH;
-  MOV(64, R(scratch), Imm64(reinterpret_cast<u64>(&bitmap)));
+  const bool tracking_active = bitmap.IsEnabled();
+  const X64Reg bitmap_base = tracking_active ? RDIRTYBITMAP : scratch;
+  if (!tracking_active)
+    MOV(64, R(bitmap_base), Imm64(reinterpret_cast<u64>(&bitmap)));
   std::optional<FixupBranch> tracking_disabled;
-  if (!bitmap.IsEnabled())
+  if (!tracking_active)
   {
-    CMP(8, MDisp(scratch, static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, tracking_enabled))),
+    CMP(8, MDisp(bitmap_base,
+                 static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, tracking_enabled))),
         Imm8(0));
     tracking_disabled = J_CC(CC_E, Jump::Near);
   }
@@ -313,11 +323,13 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(u32 address, u32 size, X64Reg value_
   const u32 first_page = canonicalize(address) / Rollback::DIRTY_PAGE_SIZE;
   const u32 last_page =
       canonicalize(address + size - 1) / Rollback::DIRTY_PAGE_SIZE;
-  MOV(8, MDisp(scratch, static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, entries) + first_page)),
+  MOV(8, MDisp(bitmap_base,
+               static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, entries) + first_page)),
       Imm8(1));
   if (last_page != first_page)
   {
-    MOV(8, MDisp(scratch, static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, entries) + last_page)),
+    MOV(8, MDisp(bitmap_base,
+                 static_cast<s32>(offsetof(Rollback::JITDirtyBitmap, entries) + last_page)),
         Imm8(1));
   }
 

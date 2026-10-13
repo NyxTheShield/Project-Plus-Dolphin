@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/VertexLoaderManager.h"
+#include "VideoCommon/RollbackVideoTiming.h"
 
 #include <algorithm>
 #include <iterator>
@@ -398,6 +399,7 @@ static bool CanSplit(OpcodeDecoder::Primitive primitive)
 template <bool IsPreprocess>
 int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int count, const u8* src)
 {
+  const RollbackVideoTiming::Scope timing(RollbackVideoTiming::Phase::NormalVertices, !IsPreprocess);
   if (count == 0) [[unlikely]]
     return 0;
   ASSERT(count > 0);

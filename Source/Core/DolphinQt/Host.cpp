@@ -22,9 +22,7 @@
 #include "Core/Core.h"
 #include "Core/Debugger/PPCDebugInterface.h"
 #include "Core/Host.h"
-#include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
-#include "Core/Rollback/GekkoRollback.h"
 #include "Core/State.h"
 #include "Core/System.h"
 
@@ -179,16 +177,7 @@ void Host::SetRenderFullscreen(bool fullscreen)
 
   if (g_gfx && g_gfx->IsFullscreen() != fullscreen && g_ActiveConfig.ExclusiveFullscreenEnabled())
   {
-    const auto change = [fullscreen] {
-      RunWithGPUThreadInactive([fullscreen] { g_gfx->SetFullscreen(fullscreen); });
-    };
-    if (Rollback::IsGekkoSessionActive() && NetPlay::netplay_client)
-    {
-      if (!NetPlay::netplay_client->RunSynchronizedPresentationChange(change))
-        ERROR_LOG_FMT(NETPLAY, "Exclusive-fullscreen transition was not synchronized");
-      return;
-    }
-    change();
+    RunWithGPUThreadInactive([fullscreen] { g_gfx->SetFullscreen(fullscreen); });
   }
 }
 

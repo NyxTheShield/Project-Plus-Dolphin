@@ -23,6 +23,7 @@ if(_M_X86_64)
     PowerPC/DivUtilsTest.cpp
     PowerPC/PageTableHostMappingTest.cpp
     PowerPC/Jit64Common/ConvertDoubleToSingle.cpp
+    PowerPC/Jit64Common/DirtyBitmap.cpp
     PowerPC/Jit64Common/Fres.cpp
     PowerPC/Jit64Common/Frsqrte.cpp
   )

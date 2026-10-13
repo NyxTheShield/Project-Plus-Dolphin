@@ -157,7 +157,8 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
   // state as well as the boot marker so every boot path receives the same deterministic Wii-save
   // initialization as the session that produced the input stream.
   const bool netplay_replay =
-      boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying();
+      boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying() ||
+      Rollback::IsNetplayReplayInputActive();
   const u64 title_id = SConfig::GetInstance().GetTitleID();
   const auto configured_fs = FS::MakeFileSystem(FS::Location::Configured);
   if (movie.IsRecordingInput())
@@ -486,7 +487,8 @@ void InitializeWiiFileSystemContents(
     }
 
     InitializeDeterministicWiiSaves(fs.get(), boot_session_data);
-    if (boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying())
+    if (boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying() ||
+        Rollback::IsNetplayReplayInputActive())
     {
       const std::vector<u8> replay_sysconf = Rollback::GetNetplayReplaySysconf();
       if (!replay_sysconf.empty())

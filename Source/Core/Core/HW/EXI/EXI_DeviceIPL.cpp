@@ -411,6 +411,13 @@ u32 CEXIIPL::GetEmulatedTime(Core::System& system, u32 epoch)
     // let's keep time moving forward, regardless of what it starts at
     ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
   }
+  else if (Rollback::IsNetplayReplayInputActive())
+  {
+    // A real two-peer replay stress session still uses NetPlay for transport and save sync, but it
+    // must start from the recording's RTC to reproduce the recorded deterministic trajectory.
+    ltime = Rollback::GetNetplayReplayInitialRTC();
+    ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
+  }
   else if (NetPlay::IsNetPlayRunning() || Rollback::IsNetplayReplayPlaying())
   {
     ltime = NetPlay::IsNetPlayRunning() ? NetPlay_GetEmulatedTime() :

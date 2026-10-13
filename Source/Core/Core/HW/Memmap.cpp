@@ -701,7 +701,7 @@ void MemoryManager::Clear()
     memset(m_exram, 0, GetExRamSize());
 }
 
-u8* MemoryManager::GetPointerForRangeReadOnly(u32 address, size_t size) const
+const u8* MemoryManager::GetPointerForRangeReadOnly(u32 address, size_t size) const
 {
   std::span<u8> span = GetSpanForAddress(address);
 
@@ -719,14 +719,12 @@ u8* MemoryManager::GetPointerForRangeReadOnly(u32 address, size_t size) const
     return nullptr;
   }
 
-  // The caller may write through the pointer, so the range counts as dirty for rollback.
-  Rollback::MarkPhysicalRangeDirty(address, size);
   return span.data();
 }
 
 u8* MemoryManager::GetPointerForRange(u32 address, size_t size) const
 {
-  u8* const pointer = GetPointerForRangeReadOnly(address, size);
+  u8* const pointer = const_cast<u8*>(GetPointerForRangeReadOnly(address, size));
   if (pointer)
     Rollback::MarkPhysicalRangeDirty(address, size);
   return pointer;
@@ -737,7 +735,7 @@ void MemoryManager::CopyFromEmu(void* data, u32 address, size_t size) const
   if (size == 0)
     return;
 
-  void* pointer = GetPointerForRangeReadOnly(address, size);
+  const void* pointer = GetPointerForRangeReadOnly(address, size);
   if (!pointer)
   {
     PanicAlertFmt("Invalid range in CopyFromEmu. {:x} bytes from {:#010x}", size, address);

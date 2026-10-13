@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/VertexManagerBase.h"
+#include "VideoCommon/RollbackVideoTiming.h"
 
 #include <array>
 #include <cmath>
@@ -437,6 +438,7 @@ void VertexManagerBase::Flush()
   if (m_is_flushed)
     return;
 
+  const RollbackVideoTiming::Scope timing(RollbackVideoTiming::Phase::NormalFlush);
   m_is_flushed = true;
 
   if (m_draw_counter == 0)

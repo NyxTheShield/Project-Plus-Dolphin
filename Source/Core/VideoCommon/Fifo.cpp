@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/Fifo.h"
+#include "VideoCommon/RollbackVideoTiming.h"
+#include "VideoCommon/VideoState.h"
 
 #include <atomic>
 #include <chrono>
@@ -60,7 +62,44 @@ void FifoManager::RefreshConfig()
 
 void FifoManager::DoState(PointerWrap& p)
 {
-  p.DoArray(m_video_buffer, FIFO_SIZE);
+  {
+    using Phase = RollbackVideoTiming::Phase;
+    const Phase phase = p.IsReadMode()                 ? Phase::FifoLoad :
+                        VideoCommon_IsSkippingRender() ? Phase::FifoReplaySave :
+                                                         Phase::FifoSave;
+    const RollbackVideoTiming::Scope timing(phase, VideoCommon_IsRollbackSnapshot() &&
+                                                       (p.IsReadMode() || p.IsWriteMode()));
+    if (Rollback::InSnapshotDoState())
+    {
+      // Bytes before the read pointer have already been consumed, and bytes after the write
+      // pointer have not been produced. Preserve the offsets and only serialize the live span;
+      // normal Dolphin savestates retain their established full-buffer format below.
+      u32 read_offset = 0;
+      u32 write_offset = 0;
+      if (!p.IsReadMode())
+      {
+        read_offset = static_cast<u32>(m_video_buffer_read_ptr - m_video_buffer);
+        write_offset = static_cast<u32>(m_video_buffer_write_ptr.load() - m_video_buffer);
+      }
+      p.Do(read_offset);
+      p.Do(write_offset);
+      if (read_offset > write_offset || write_offset > FIFO_SIZE)
+      {
+        p.SetMeasureMode();
+        return;
+      }
+      p.DoArray(m_video_buffer + read_offset, write_offset - read_offset);
+      if (p.IsReadMode())
+      {
+        m_video_buffer_read_ptr = m_video_buffer + read_offset;
+        m_video_buffer_write_ptr = m_video_buffer + write_offset;
+      }
+    }
+    else
+    {
+      p.DoArray(m_video_buffer, FIFO_SIZE);
+    }
+  }
   u8* write_ptr = m_video_buffer_write_ptr;
   p.DoPointer(write_ptr, m_video_buffer);
   m_video_buffer_write_ptr = write_ptr;
@@ -442,10 +481,11 @@ void FifoManager::RunGpu()
 
 int FifoManager::RunGpuOnCpu(int ticks)
 {
-  const bool profile_resim =
-      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
-  const auto profile_start = profile_resim ? std::chrono::steady_clock::now() :
-                                             std::chrono::steady_clock::time_point{};
+  const RollbackVideoTiming::Scope timing(RollbackVideoTiming::Phase::NormalFifo);
+  const bool profile_resim = Rollback::IsResimProfilingActive();
+  const auto profile_start =
+      profile_resim ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  Rollback::ResimEventStats::FifoBreakdown fifo_profile{};
   auto& command_processor = m_system.GetCommandProcessor();
   auto& fifo = command_processor.GetFifo();
   bool reset_simd_state = false;
@@ -456,23 +496,62 @@ int FifoManager::RunGpuOnCpu(int ticks)
   {
     if (m_use_deterministic_gpu_thread)
     {
+      const auto copy_start = profile_resim ? std::chrono::steady_clock::now() :
+                                              std::chrono::steady_clock::time_point{};
       ReadDataFromFifoOnCPU(fifo.CPReadPointer.load(std::memory_order_relaxed));
       m_gpu_mainloop.Wakeup();
+      if (profile_resim)
+      {
+        fifo_profile.copy_nanoseconds +=
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - copy_start)
+                                 .count());
+      }
     }
     else
     {
       if (!reset_simd_state)
       {
+        const auto simd_start = profile_resim ? std::chrono::steady_clock::now() :
+                                                std::chrono::steady_clock::time_point{};
         Common::FPU::SaveSIMDState();
         Common::FPU::LoadDefaultSIMDState();
+        if (profile_resim)
+        {
+          fifo_profile.simd_nanoseconds +=
+              static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now() - simd_start)
+                                   .count());
+        }
         reset_simd_state = true;
       }
+      const auto copy_start = profile_resim ? std::chrono::steady_clock::now() :
+                                              std::chrono::steady_clock::time_point{};
       ReadDataFromFifo(fifo.CPReadPointer.load(std::memory_order_relaxed));
+      if (profile_resim)
+      {
+        fifo_profile.copy_nanoseconds +=
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - copy_start)
+                                 .count());
+      }
       u32 cycles = 0;
+      const auto decode_start = profile_resim ? std::chrono::steady_clock::now() :
+                                                std::chrono::steady_clock::time_point{};
       m_video_buffer_read_ptr = OpcodeDecoder::RunFifo(
           DataReader(m_video_buffer_read_ptr, m_video_buffer_write_ptr), &cycles);
+      if (profile_resim)
+      {
+        fifo_profile.decode_nanoseconds +=
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - decode_start)
+                                 .count());
+      }
       available_ticks -= cycles;
     }
+
+    if (profile_resim)
+      ++fifo_profile.chunks;
 
     if (fifo.CPReadPointer.load(std::memory_order_relaxed) ==
         fifo.CPEnd.load(std::memory_order_relaxed))
@@ -488,11 +567,29 @@ int FifoManager::RunGpuOnCpu(int ticks)
     fifo.CPReadWriteDistance.fetch_sub(GPFifo::GATHER_PIPE_SIZE, std::memory_order_relaxed);
   }
 
+  const auto status_start =
+      profile_resim ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   command_processor.SetCPStatusFromGPU();
+  if (profile_resim)
+  {
+    fifo_profile.status_nanoseconds +=
+        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now() - status_start)
+                             .count());
+  }
 
   if (reset_simd_state)
   {
+    const auto simd_start =
+        profile_resim ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Common::FPU::LoadSIMDState();
+    if (profile_resim)
+    {
+      fifo_profile.simd_nanoseconds +=
+          static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - simd_start)
+                               .count());
+    }
   }
 
   // Discard all available ticks as there is nothing to do any more.
@@ -507,6 +604,7 @@ int FifoManager::RunGpuOnCpu(int ticks)
     Rollback::RecordResimEvent(
         Rollback::ResimEventCategory::Fifo,
         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+    Rollback::RecordResimFifoBreakdown(fifo_profile);
   }
 
   // A busy FIFO always waits at least for GPU_TIME_SLOT_SIZE cycles.

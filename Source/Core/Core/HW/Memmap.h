@@ -136,7 +136,7 @@ public:
   // of the corresponding range in host memory. Otherwise, returns nullptr.
   // Use the read-only form when the caller cannot write through the returned pointer; the legacy
   // form conservatively marks the range because its mutable pointer may be used as an output.
-  u8* GetPointerForRangeReadOnly(u32 address, size_t size) const;
+  const u8* GetPointerForRangeReadOnly(u32 address, size_t size) const;
   u8* GetPointerForRange(u32 address, size_t size) const;
   void CopyFromEmu(void* data, u32 address, size_t size) const;
   void CopyToEmu(u32 address, const void* data, size_t size);
@@ -157,7 +157,7 @@ public:
   template <typename T>
   void CopyFromEmuSwapped(T* data, u32 address, size_t size) const
   {
-    const T* src = reinterpret_cast<T*>(GetPointerForRangeReadOnly(address, size));
+    const T* src = reinterpret_cast<const T*>(GetPointerForRangeReadOnly(address, size));
 
     if (src == nullptr)
       return;

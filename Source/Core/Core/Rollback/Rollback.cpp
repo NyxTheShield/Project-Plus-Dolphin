@@ -35,28 +35,14 @@ namespace
 std::atomic<bool> s_in_snapshot{false};
 std::atomic<bool> s_resimulating{false};
 std::atomic<bool> s_detailed_resim_profiling{false};
+std::atomic<bool> s_performance_logging{false};
 std::atomic<bool> s_coarse_fifo_timing{false};
 std::atomic<u64> s_resim_jit_compile_blocks{0};
 std::atomic<u64> s_resim_jit_compile_nanoseconds{0};
 std::atomic<u64> s_rollback_burst_sequence{0};
 std::atomic<u64> s_rollback_burst_serial{0};
-std::atomic<u64> s_rollback_burst_start_time_ns{0};
 std::atomic<u64> s_rollback_burst_end_time_ns{0};
 std::atomic<u64> s_rollback_burst_duration_ns{0};
-std::atomic<u64> s_rollback_burst_load_ns{0};
-std::atomic<u64> s_rollback_burst_exec_ns{0};
-std::atomic<u64> s_rollback_burst_save_ns{0};
-std::atomic<u64> s_rollback_burst_other_ns{0};
-std::atomic<u32> s_rollback_burst_replay_frames{0};
-std::atomic<u64> s_frame_pacing_sequence{0};
-std::atomic<u64> s_frame_pacing_serial{0};
-std::atomic<u64> s_frame_pacing_boundary_time_ns{0};
-std::atomic<u64> s_frame_pacing_throttle_start_time_ns{0};
-std::atomic<u64> s_frame_pacing_throttle_end_time_ns{0};
-std::atomic<u64> s_frame_pacing_throttle_requested_ns{0};
-std::atomic<u64> s_frame_pacing_throttle_actual_ns{0};
-std::atomic<s32> s_frame_pacing_gekko_frame{0};
-std::atomic<bool> s_frame_pacing_follows_rollback{false};
 ResimEventStats s_resim_event_stats;
 std::unordered_map<u32, ResimGuestHotspot> s_resim_guest_hotspots;
 ResimJitMemoryStats s_resim_jit_memory_stats;
@@ -70,7 +56,8 @@ constexpr u32 PHYSICAL_MASK = 0x1FFFFFFFu;
 
 double MillisecondsSince(std::chrono::steady_clock::time_point start)
 {
-  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+      .count();
 }
 
 void HashRamPages(const u8* data, std::size_t size, std::vector<u64>* hashes)
@@ -102,24 +89,51 @@ void AuditRestoredRamPages(const u8* data, std::size_t size, const std::vector<u
   }
 }
 
-void AuditStateRoundTrip(std::span<const u8> expected, const State::RollbackStateLayout& expected_layout,
-                         std::span<const u8> actual, const State::RollbackStateLayout& actual_layout,
-                         s64 frame, std::string_view comparison = "state roundtrip")
+void AuditStateRoundTrip(std::span<const u8> expected,
+                         const State::RollbackStateLayout& expected_layout,
+                         std::span<const u8> actual,
+                         const State::RollbackStateLayout& actual_layout, s64 frame,
+                         std::string_view comparison = "state roundtrip")
 {
-  static constexpr std::array<std::string_view, State::ROLLBACK_STATE_SECTION_COUNT> section_names = {
-      "Movie", "VideoBackend", "CoreTiming", "HW", "PowerPC", "Wiimote", "Gecko"};
+  static constexpr std::array<std::string_view, State::ROLLBACK_STATE_SECTION_COUNT> section_names =
+      {"Movie", "VideoBackend", "CoreTiming", "HW", "PowerPC", "Wiimote", "Gecko"};
   static constexpr std::array<std::string_view, State::ROLLBACK_HW_SECTION_COUNT> hw_names = {
-      "Memory", "MemoryInterface", "VideoInterface", "SerialInterface", "ProcessorInterface",
-      "DSP", "DVDInterface", "GPFifo", "ExpansionInterface", "AudioInterface", "HSP",
-      "WiiIPC", "IOSHLE", "WIIHW"};
+      "Memory",
+      "MemoryInterface",
+      "VideoInterface",
+      "SerialInterface",
+      "ProcessorInterface",
+      "DSP",
+      "DVDInterface",
+      "GPFifo",
+      "ExpansionInterface",
+      "AudioInterface",
+      "HSP",
+      "WiiIPC",
+      "IOSHLE",
+      "WIIHW"};
   static constexpr std::array<std::string_view, State::ROLLBACK_VIDEO_SECTION_COUNT> video_names = {
-      "BPMemory", "CPMemory", "XFMemory", "TextureDecoder", "TMEM", "FIFO",
-      "CommandProcessor", "PixelEngine", "PixelShaderManager", "VertexShaderManager",
-      "GeometryShaderManager", "VertexManager", "FramebufferManager", "TextureCache",
-      "Presenter", "BoundingBox", "Widescreen", "XFStateManager"};
+      "BPMemory",
+      "CPMemory",
+      "XFMemory",
+      "TextureDecoder",
+      "TMEM",
+      "FIFO",
+      "CommandProcessor",
+      "PixelEngine",
+      "PixelShaderManager",
+      "VertexShaderManager",
+      "GeometryShaderManager",
+      "VertexManager",
+      "FramebufferManager",
+      "TextureCache",
+      "Presenter",
+      "BoundingBox",
+      "Widescreen",
+      "XFStateManager"};
   static constexpr std::array<std::string_view, State::ROLLBACK_PPC_SECTION_COUNT> ppc_names = {
-      "GPR", "PC", "CR", "Scalar", "FPR", "SR", "SPR", "TLB", "PageTable",
-      "Reserve", "ICache", "DCache", "MMU", "JIT"};
+      "GPR", "PC",        "CR",      "Scalar", "FPR",    "SR",  "SPR",
+      "TLB", "PageTable", "Reserve", "ICache", "DCache", "MMU", "JIT"};
 
   const auto log_range = [&](std::string_view group, std::string_view name,
                              std::size_t expected_begin, std::size_t actual_begin,
@@ -154,8 +168,7 @@ void AuditStateRoundTrip(std::span<const u8> expected, const State::RollbackStat
   for (std::size_t i = 0; i < section_names.size(); ++i)
   {
     log_range("section", section_names[i], expected_begin, actual_begin,
-              expected_layout.section_ends[i],
-              actual_layout.section_ends[i]);
+              expected_layout.section_ends[i], actual_layout.section_ends[i]);
     expected_begin = expected_layout.section_ends[i];
     actual_begin = actual_layout.section_ends[i];
   }
@@ -164,8 +177,7 @@ void AuditStateRoundTrip(std::span<const u8> expected, const State::RollbackStat
   actual_begin = actual_layout.section_ends[2];
   for (std::size_t i = 0; i < hw_names.size(); ++i)
   {
-    log_range("HW", hw_names[i], expected_begin, actual_begin,
-              expected_layout.hw_section_ends[i],
+    log_range("HW", hw_names[i], expected_begin, actual_begin, expected_layout.hw_section_ends[i],
               actual_layout.hw_section_ends[i]);
     expected_begin = expected_layout.hw_section_ends[i];
     actual_begin = actual_layout.hw_section_ends[i];
@@ -193,12 +205,12 @@ void AuditStateRoundTrip(std::span<const u8> expected, const State::RollbackStat
 }
 
 std::size_t CountDifferentPageHashes(const std::vector<u64>& original,
-                                     const std::vector<u64>& replayed, u32 physical_base,
-                                     s64 frame, std::string_view area, bool report)
+                                     const std::vector<u64>& replayed, u32 physical_base, s64 frame,
+                                     std::string_view area, bool report)
 {
   const std::size_t common = std::min(original.size(), replayed.size());
   std::size_t different = original.size() > replayed.size() ? original.size() - replayed.size() :
-                                                             replayed.size() - original.size();
+                                                              replayed.size() - original.size();
   std::size_t reported = 0;
   for (std::size_t page = 0; page < common; ++page)
   {
@@ -302,6 +314,8 @@ IOS::HLE::FS::HostFileSystem* HostNand(Core::System& system)
 }
 }  // namespace
 
+thread_local bool g_resim_profiling_active = false;
+
 bool InSnapshotDoState()
 {
   return s_in_snapshot.load(std::memory_order_relaxed);
@@ -315,6 +329,8 @@ bool IsResimulating()
 void SetResimulating(bool resimulating)
 {
   s_resimulating.store(resimulating, std::memory_order_relaxed);
+  g_resim_profiling_active =
+      resimulating && s_detailed_resim_profiling.load(std::memory_order_relaxed);
   VideoCommon_SetSkipRender(resimulating);
 }
 
@@ -326,6 +342,17 @@ bool IsDetailedResimProfilingEnabled()
 void SetDetailedResimProfilingEnabled(bool enabled)
 {
   s_detailed_resim_profiling.store(enabled, std::memory_order_relaxed);
+  g_resim_profiling_active = enabled && s_resimulating.load(std::memory_order_relaxed);
+}
+
+bool IsPerformanceLoggingEnabled()
+{
+  return s_performance_logging.load(std::memory_order_relaxed);
+}
+
+void SetPerformanceLoggingEnabled(bool enabled)
+{
+  s_performance_logging.store(enabled, std::memory_order_relaxed);
 }
 
 bool UseCoarseFifoTiming()
@@ -338,21 +365,13 @@ void SetCoarseFifoTiming(bool enabled)
   s_coarse_fifo_timing.store(enabled, std::memory_order_relaxed);
 }
 
-void RecordRollbackBurst(u64 duration_ns, u64 load_ns, u64 exec_ns, u64 save_ns, u64 other_ns,
-                         u32 replay_frames)
+void RecordRollbackBurst(u64 duration_ns)
 {
-  const u64 end_time_ns = static_cast<u64>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
+  const u64 end_time_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::steady_clock::now().time_since_epoch())
+                                               .count());
   s_rollback_burst_sequence.fetch_add(1, std::memory_order_acq_rel);
-  s_rollback_burst_start_time_ns.store(end_time_ns - duration_ns, std::memory_order_relaxed);
   s_rollback_burst_duration_ns.store(duration_ns, std::memory_order_relaxed);
-  s_rollback_burst_load_ns.store(load_ns, std::memory_order_relaxed);
-  s_rollback_burst_exec_ns.store(exec_ns, std::memory_order_relaxed);
-  s_rollback_burst_save_ns.store(save_ns, std::memory_order_relaxed);
-  s_rollback_burst_other_ns.store(other_ns, std::memory_order_relaxed);
-  s_rollback_burst_replay_frames.store(replay_frames, std::memory_order_relaxed);
   s_rollback_burst_end_time_ns.store(end_time_ns, std::memory_order_relaxed);
   s_rollback_burst_serial.fetch_add(1, std::memory_order_relaxed);
   s_rollback_burst_sequence.fetch_add(1, std::memory_order_release);
@@ -367,68 +386,9 @@ RollbackBurstMarker GetLastRollbackBurst()
     if ((sequence_before & 1) != 0)
       continue;
     marker.serial = s_rollback_burst_serial.load(std::memory_order_relaxed);
-    marker.start_time_ns = s_rollback_burst_start_time_ns.load(std::memory_order_relaxed);
     marker.end_time_ns = s_rollback_burst_end_time_ns.load(std::memory_order_relaxed);
     marker.duration_ns = s_rollback_burst_duration_ns.load(std::memory_order_relaxed);
-    marker.load_ns = s_rollback_burst_load_ns.load(std::memory_order_relaxed);
-    marker.exec_ns = s_rollback_burst_exec_ns.load(std::memory_order_relaxed);
-    marker.save_ns = s_rollback_burst_save_ns.load(std::memory_order_relaxed);
-    marker.other_ns = s_rollback_burst_other_ns.load(std::memory_order_relaxed);
-    marker.replay_frames = s_rollback_burst_replay_frames.load(std::memory_order_relaxed);
     const u64 sequence_after = s_rollback_burst_sequence.load(std::memory_order_acquire);
-    if (sequence_before == sequence_after)
-      return marker;
-  }
-}
-
-void RecordFramePacingBoundary(s32 gekko_frame, bool follows_rollback)
-{
-  const u64 now_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                          std::chrono::steady_clock::now().time_since_epoch())
-                                          .count());
-  s_frame_pacing_sequence.fetch_add(1, std::memory_order_acq_rel);
-  s_frame_pacing_boundary_time_ns.store(now_ns, std::memory_order_relaxed);
-  s_frame_pacing_throttle_start_time_ns.store(0, std::memory_order_relaxed);
-  s_frame_pacing_throttle_end_time_ns.store(0, std::memory_order_relaxed);
-  s_frame_pacing_throttle_requested_ns.store(0, std::memory_order_relaxed);
-  s_frame_pacing_throttle_actual_ns.store(0, std::memory_order_relaxed);
-  s_frame_pacing_gekko_frame.store(gekko_frame, std::memory_order_relaxed);
-  s_frame_pacing_follows_rollback.store(follows_rollback, std::memory_order_relaxed);
-  s_frame_pacing_serial.fetch_add(1, std::memory_order_relaxed);
-  s_frame_pacing_sequence.fetch_add(1, std::memory_order_release);
-}
-
-void RecordFramePacingThrottle(u64 start_time_ns, u64 end_time_ns, u64 requested_ns, u64 actual_ns)
-{
-  s_frame_pacing_sequence.fetch_add(1, std::memory_order_acq_rel);
-  s_frame_pacing_throttle_start_time_ns.store(start_time_ns, std::memory_order_relaxed);
-  s_frame_pacing_throttle_end_time_ns.store(end_time_ns, std::memory_order_relaxed);
-  s_frame_pacing_throttle_requested_ns.store(requested_ns, std::memory_order_relaxed);
-  s_frame_pacing_throttle_actual_ns.store(actual_ns, std::memory_order_relaxed);
-  s_frame_pacing_sequence.fetch_add(1, std::memory_order_release);
-}
-
-FramePacingMarker GetLastFramePacingMarker()
-{
-  FramePacingMarker marker;
-  while (true)
-  {
-    const u64 sequence_before = s_frame_pacing_sequence.load(std::memory_order_acquire);
-    if ((sequence_before & 1) != 0)
-      continue;
-    marker.serial = s_frame_pacing_serial.load(std::memory_order_relaxed);
-    marker.boundary_time_ns = s_frame_pacing_boundary_time_ns.load(std::memory_order_relaxed);
-    marker.throttle_start_time_ns =
-        s_frame_pacing_throttle_start_time_ns.load(std::memory_order_relaxed);
-    marker.throttle_end_time_ns =
-        s_frame_pacing_throttle_end_time_ns.load(std::memory_order_relaxed);
-    marker.throttle_requested_ns =
-        s_frame_pacing_throttle_requested_ns.load(std::memory_order_relaxed);
-    marker.throttle_actual_ns = s_frame_pacing_throttle_actual_ns.load(std::memory_order_relaxed);
-    marker.gekko_frame = s_frame_pacing_gekko_frame.load(std::memory_order_relaxed);
-    marker.follows_rollback =
-        s_frame_pacing_follows_rollback.load(std::memory_order_relaxed);
-    const u64 sequence_after = s_frame_pacing_sequence.load(std::memory_order_acquire);
     if (sequence_before == sequence_after)
       return marker;
   }
@@ -497,6 +457,15 @@ void RecordResimEvent(ResimEventCategory category, u64 nanoseconds)
   ++s_resim_event_stats.callbacks[index];
 }
 
+void RecordResimFifoBreakdown(const ResimEventStats::FifoBreakdown& breakdown)
+{
+  s_resim_event_stats.fifo.copy_nanoseconds += breakdown.copy_nanoseconds;
+  s_resim_event_stats.fifo.decode_nanoseconds += breakdown.decode_nanoseconds;
+  s_resim_event_stats.fifo.simd_nanoseconds += breakdown.simd_nanoseconds;
+  s_resim_event_stats.fifo.status_nanoseconds += breakdown.status_nanoseconds;
+  s_resim_event_stats.fifo.chunks += breakdown.chunks;
+}
+
 ResimEventStats GetResimEventStats()
 {
   return s_resim_event_stats;
@@ -558,9 +527,8 @@ bool SnapshotRing::UseDirtyPageTracking(Core::System& system, bool* armed_now)
   }
   if (!m_dirty_page_tracking)
   {
-    m_dirty_page_tracking =
-        DirtyPages::ArmForSystem(system, this, m_force_full_scan, m_keep_jit_tracking,
-                                 m_audit_untracked_writes);
+    m_dirty_page_tracking = DirtyPages::ArmForSystem(system, this, m_force_full_scan,
+                                                     m_keep_jit_tracking, m_audit_untracked_writes);
     *armed_now = *m_dirty_page_tracking;
   }
   return *m_dirty_page_tracking;
@@ -661,8 +629,8 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   bool armed_now;
   const bool dirty_page_tracking = UseDirtyPageTracking(system, &armed_now);
   if (trace)
-    NOTICE_LOG_FMT(CORE, "Rollback trace: save frame {} tracking ready (dirty={}, armed={})",
-                   frame, dirty_page_tracking, armed_now);
+    NOTICE_LOG_FMT(CORE, "Rollback trace: save frame {} tracking ready (dirty={}, armed={})", frame,
+                   dirty_page_tracking, armed_now);
   const auto buffers = [slot] {
     return std::tuple{slot->state.data(), slot->mem1.capacity(), slot->mem2.capacity()};
   };
@@ -672,8 +640,7 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   {
     const auto phase_start = std::chrono::steady_clock::now();
     SnapshotScope scope;
-    slot->state_size =
-        State::SaveToBufferForRollback(system, slot->state, &slot->state_layout);
+    slot->state_size = State::SaveToBufferForRollback(system, slot->state, &slot->state_layout);
     if (trace)
       NOTICE_LOG_FMT(CORE, "Rollback trace: save frame {} state done ({} bytes)", frame,
                      slot->state_size);
@@ -742,15 +709,13 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   {
     const std::span<const u8> original_state{m_state_replay_audit.data(), original_state_size};
     const std::span<const u8> replayed_state{slot->state.data(), slot->state_size};
-    const std::size_t mem1_pages =
-        CountDifferentPageHashes(m_replay_mem1_audit, slot->audit_mem1_pages, 0, frame, "MEM1",
-                                 false);
+    const std::size_t mem1_pages = CountDifferentPageHashes(
+        m_replay_mem1_audit, slot->audit_mem1_pages, 0, frame, "MEM1", false);
     const std::size_t mem2_pages = CountDifferentPageHashes(
         m_replay_mem2_audit, slot->audit_mem2_pages, 0x10000000u, frame, "MEM2", false);
     const u64 replayed_l1_hash = XXH3_64bits(slot->l1_cache.data(), slot->l1_cache.size());
-    const bool state_differs =
-        DeterministicStateDiffers(original_state, original_state_layout, replayed_state,
-                                  slot->state_layout);
+    const bool state_differs = DeterministicStateDiffers(original_state, original_state_layout,
+                                                         replayed_state, slot->state_layout);
     const bool l1_differs = original_l1_hash != replayed_l1_hash;
     const bool nand_differs = original_nand_mark != slot->nand_journal_mark;
     if (!m_replay_mismatch_reported &&
@@ -760,14 +725,13 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
       ERROR_LOG_FMT(CORE,
                     "Rollback replay audit: FIRST original/replay mismatch at snapshot frame {}: "
                     "MEM1_pages={} MEM2_pages={} deterministic_state={} L1={} NAND_mark={}/{}",
-                    frame, mem1_pages, mem2_pages, state_differs, l1_differs,
-                    original_nand_mark, slot->nand_journal_mark);
-      CountDifferentPageHashes(m_replay_mem1_audit, slot->audit_mem1_pages, 0, frame, "MEM1",
-                               true);
+                    frame, mem1_pages, mem2_pages, state_differs, l1_differs, original_nand_mark,
+                    slot->nand_journal_mark);
+      CountDifferentPageHashes(m_replay_mem1_audit, slot->audit_mem1_pages, 0, frame, "MEM1", true);
       CountDifferentPageHashes(m_replay_mem2_audit, slot->audit_mem2_pages, 0x10000000u, frame,
                                "MEM2", true);
-      AuditStateRoundTrip(original_state, original_state_layout, replayed_state,
-                          slot->state_layout, frame, "replay audit");
+      AuditStateRoundTrip(original_state, original_state_layout, replayed_state, slot->state_layout,
+                          frame, "replay audit");
     }
   }
 
@@ -834,8 +798,7 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
   {
     RestoreRam(memory.GetRAM(), slot->mem1, MEM1_VIRTUAL, &m_changed_blocks, &m_changed_ranges);
     if (memory.GetEXRAM() && !slot->mem2.empty())
-      RestoreRam(memory.GetEXRAM(), slot->mem2, MEM2_VIRTUAL, &m_changed_blocks,
-                 &m_changed_ranges);
+      RestoreRam(memory.GetEXRAM(), slot->mem2, MEM2_VIRTUAL, &m_changed_blocks, &m_changed_ranges);
   }
   if (m_audit_untracked_writes)
   {
@@ -863,8 +826,7 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
         physical < DirtyPages::GC_ARAM_PHYSICAL + DSP::ARAM_SIZE)
       continue;
     const bool fake_vmem = physical >= DirtyPages::GC_FAKE_VMEM_PHYSICAL &&
-                           physical < DirtyPages::GC_FAKE_VMEM_PHYSICAL +
-                                          memory.GetFakeVMemSize();
+                           physical < DirtyPages::GC_FAKE_VMEM_PHYSICAL + memory.GetFakeVMemSize();
     const u32 effective = fake_vmem ? physical | 0x60000000u : physical | MEM1_VIRTUAL;
     jit.InvalidateICache(effective, range.length, true);
   }
@@ -920,10 +882,9 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
       }
       else
       {
-        AuditStateRoundTrip(std::span<const u8>(slot->state.data(), slot->state_size),
-                            slot->state_layout,
-                            std::span<const u8>(m_state_roundtrip_audit.data(), loaded_size),
-                            loaded_layout, frame);
+        AuditStateRoundTrip(
+            std::span<const u8>(slot->state.data(), slot->state_size), slot->state_layout,
+            std::span<const u8>(m_state_roundtrip_audit.data(), loaded_size), loaded_layout, frame);
       }
     }
   }

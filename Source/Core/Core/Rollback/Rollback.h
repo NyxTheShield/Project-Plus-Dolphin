@@ -92,6 +92,17 @@ struct ResimEventStats
 {
   std::array<u64, static_cast<std::size_t>(ResimEventCategory::Count)> nanoseconds{};
   std::array<u64, static_cast<std::size_t>(ResimEventCategory::Count)> callbacks{};
+
+  // Exclusive sub-phases of FifoManager::RunGpuOnCpu. The Fifo event category above remains the
+  // inclusive callback time so the regular replay subsystem accounting is unchanged.
+  struct FifoBreakdown
+  {
+    u64 copy_nanoseconds = 0;
+    u64 decode_nanoseconds = 0;
+    u64 simd_nanoseconds = 0;
+    u64 status_nanoseconds = 0;
+    u64 chunks = 0;
+  } fifo;
 };
 
 struct ChangedMemoryRange
@@ -103,26 +114,8 @@ struct ChangedMemoryRange
 struct RollbackBurstMarker
 {
   u64 serial = 0;
-  u64 start_time_ns = 0;
   u64 end_time_ns = 0;
   u64 duration_ns = 0;
-  u64 load_ns = 0;
-  u64 exec_ns = 0;
-  u64 save_ns = 0;
-  u64 other_ns = 0;
-  u32 replay_frames = 0;
-};
-
-struct FramePacingMarker
-{
-  u64 serial = 0;
-  u64 boundary_time_ns = 0;
-  u64 throttle_start_time_ns = 0;
-  u64 throttle_end_time_ns = 0;
-  u64 throttle_requested_ns = 0;
-  u64 throttle_actual_ns = 0;
-  s32 gekko_frame = 0;
-  bool follows_rollback = false;
 };
 
 // True while a rollback snapshot is being saved or loaded (CPU thread; single core only).
@@ -135,6 +128,16 @@ void SetResimulating(bool resimulating);
 // Keep it independent from the lightweight per-frame rollback timing.
 bool IsDetailedResimProfilingEnabled();
 void SetDetailedResimProfilingEnabled(bool enabled);
+// Lightweight aggregate timing still reads host clocks and emits periodic logs. Keep it
+// session-scoped so production matches can avoid all optional performance instrumentation.
+bool IsPerformanceLoggingEnabled();
+void SetPerformanceLoggingEnabled(bool enabled);
+// Hot resimulation callsites use this combined predicate to avoid two atomic reads per callback.
+extern thread_local bool g_resim_profiling_active;
+inline bool IsResimProfilingActive()
+{
+  return g_resim_profiling_active;
+}
 bool UseCoarseFifoTiming();
 void SetCoarseFifoTiming(bool enabled);
 void RecordResimJitCompile(u64 nanoseconds);
@@ -144,14 +147,10 @@ std::vector<ResimGuestHotspot> TakeResimGuestHotspots(std::size_t limit);
 void RecordResimJitMemoryHelper(bool write, u64 nanoseconds);
 ResimJitMemoryStats TakeResimJitMemoryStats();
 void RecordResimEvent(ResimEventCategory category, u64 nanoseconds);
+void RecordResimFifoBreakdown(const ResimEventStats::FifoBreakdown& breakdown);
 ResimEventStats GetResimEventStats();
-void RecordRollbackBurst(u64 duration_ns, u64 load_ns, u64 exec_ns, u64 save_ns, u64 other_ns,
-                         u32 replay_frames);
+void RecordRollbackBurst(u64 duration_ns);
 RollbackBurstMarker GetLastRollbackBurst();
-void RecordFramePacingBoundary(s32 gekko_frame, bool follows_rollback);
-void RecordFramePacingThrottle(u64 start_time_ns, u64 end_time_ns, u64 requested_ns,
-                               u64 actual_ns);
-FramePacingMarker GetLastFramePacingMarker();
 
 // Holds InSnapshotDoState() true for its lifetime.
 class SnapshotScope

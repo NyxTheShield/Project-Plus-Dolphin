@@ -182,45 +182,46 @@ std::size_t Mixer::Mix(s16* samples, std::size_t num_samples)
   for (auto& mixer : m_gba_mixers)
     mixer.Mix(samples, num_samples);
 
-  // Audio callback and FIFO diagnostics. These counters are observational only and are reported
-  // infrequently through Core logging so rollback tests capture them with the Gekko metrics.
-  static std::optional<std::chrono::steady_clock::time_point> s_last_mix;
-  static u64 s_mix_calls = 0;
-  static u64 s_mixed_frames = 0;
-  static double s_callback_interval_ms = 0.0;
-  static double s_callback_interval_max_ms = 0.0;
-  const auto now = std::chrono::steady_clock::now();
-  if (s_last_mix)
+  if (Rollback::IsPerformanceLoggingEnabled())
   {
-    const double interval =
-        std::chrono::duration<double, std::milli>(now - *s_last_mix).count();
-    s_callback_interval_ms += interval;
-    s_callback_interval_max_ms = std::max(s_callback_interval_max_ms, interval);
-  }
-  s_last_mix = now;
-  ++s_mix_calls;
-  s_mixed_frames += num_samples;
-  if (s_mix_calls == 300)
-  {
-    const MixerFifo::Diagnostics dma = m_dma_mixer.ExchangeDiagnostics();
-    const MixerFifo::Diagnostics stream = m_streaming_mixer.ExchangeDiagnostics();
-    NOTICE_LOG_FMT(
-        CORE,
-        "Audio perf: callback_interval {:.3f}/{:.3f} ms avg/max (300); mixed_frames {}; "
-        "DMA pushed/suppressed {}/{} empty/gap/overflow/depth {}/{}/{}/{}; "
-        "stream pushed/suppressed {}/{} empty/gap/overflow/depth {}/{}/{}/{}",
-        s_callback_interval_ms / 299.0, s_callback_interval_max_ms, s_mixed_frames,
-        m_diag_dma_pushed.exchange(0, std::memory_order_relaxed),
-        m_diag_dma_suppressed.exchange(0, std::memory_order_relaxed), dma.empty_dequeues,
-        dma.gap_fills, dma.overflows, dma.queue_depth,
-        m_diag_stream_pushed.exchange(0, std::memory_order_relaxed),
-        m_diag_stream_suppressed.exchange(0, std::memory_order_relaxed), stream.empty_dequeues,
-        stream.gap_fills, stream.overflows, stream.queue_depth);
-    s_mix_calls = 0;
-    s_mixed_frames = 0;
-    s_callback_interval_ms = 0.0;
-    s_callback_interval_max_ms = 0.0;
-    s_last_mix.reset();
+    // Audio callback and FIFO diagnostics are opt-in because this callback runs frequently.
+    static std::optional<std::chrono::steady_clock::time_point> s_last_mix;
+    static u64 s_mix_calls = 0;
+    static u64 s_mixed_frames = 0;
+    static double s_callback_interval_ms = 0.0;
+    static double s_callback_interval_max_ms = 0.0;
+    const auto now = std::chrono::steady_clock::now();
+    if (s_last_mix)
+    {
+      const double interval = std::chrono::duration<double, std::milli>(now - *s_last_mix).count();
+      s_callback_interval_ms += interval;
+      s_callback_interval_max_ms = std::max(s_callback_interval_max_ms, interval);
+    }
+    s_last_mix = now;
+    ++s_mix_calls;
+    s_mixed_frames += num_samples;
+    if (s_mix_calls == 300)
+    {
+      const MixerFifo::Diagnostics dma = m_dma_mixer.ExchangeDiagnostics();
+      const MixerFifo::Diagnostics stream = m_streaming_mixer.ExchangeDiagnostics();
+      NOTICE_LOG_FMT(
+          CORE,
+          "Audio perf: callback_interval {:.3f}/{:.3f} ms avg/max (300); mixed_frames {}; "
+          "DMA pushed/suppressed {}/{} empty/gap/overflow/depth {}/{}/{}/{}; "
+          "stream pushed/suppressed {}/{} empty/gap/overflow/depth {}/{}/{}/{}",
+          s_callback_interval_ms / 299.0, s_callback_interval_max_ms, s_mixed_frames,
+          m_diag_dma_pushed.exchange(0, std::memory_order_relaxed),
+          m_diag_dma_suppressed.exchange(0, std::memory_order_relaxed), dma.empty_dequeues,
+          dma.gap_fills, dma.overflows, dma.queue_depth,
+          m_diag_stream_pushed.exchange(0, std::memory_order_relaxed),
+          m_diag_stream_suppressed.exchange(0, std::memory_order_relaxed), stream.empty_dequeues,
+          stream.gap_fills, stream.overflows, stream.queue_depth);
+      s_mix_calls = 0;
+      s_mixed_frames = 0;
+      s_callback_interval_ms = 0.0;
+      s_callback_interval_max_ms = 0.0;
+      s_last_mix.reset();
+    }
   }
 
   return num_samples;
@@ -262,10 +263,12 @@ void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
   // Orca rollback: frames re-run after a load already played their sound the first time.
   if (Rollback::IsResimulating())
   {
-    m_diag_dma_suppressed.fetch_add(num_samples, std::memory_order_relaxed);
+    if (Rollback::IsPerformanceLoggingEnabled())
+      m_diag_dma_suppressed.fetch_add(num_samples, std::memory_order_relaxed);
     return;
   }
-  m_diag_dma_pushed.fetch_add(num_samples, std::memory_order_relaxed);
+  if (Rollback::IsPerformanceLoggingEnabled())
+    m_diag_dma_pushed.fetch_add(num_samples, std::memory_order_relaxed);
   if (IsOutputSampleRateValid())
   {
     // Big-endian RL-orderered stereo samples.
@@ -291,10 +294,12 @@ void Mixer::PushStreamingSamples(const s16* samples, std::size_t num_samples)
 {
   if (Rollback::IsResimulating())
   {
-    m_diag_stream_suppressed.fetch_add(num_samples, std::memory_order_relaxed);
+    if (Rollback::IsPerformanceLoggingEnabled())
+      m_diag_stream_suppressed.fetch_add(num_samples, std::memory_order_relaxed);
     return;
   }
-  m_diag_stream_pushed.fetch_add(num_samples, std::memory_order_relaxed);
+  if (Rollback::IsPerformanceLoggingEnabled())
+    m_diag_stream_pushed.fetch_add(num_samples, std::memory_order_relaxed);
   if (IsOutputSampleRateValid())
   {
     // Big-endian RL-orderered stereo samples.
@@ -593,7 +598,8 @@ void Mixer::MixerFifo::Enqueue()
   const std::size_t next_head = (head + 1) & GRANULE_QUEUE_MASK;
   if (next_head == m_queue_tail.load(std::memory_order_acquire))
   {
-    m_diag_overflows.fetch_add(1, std::memory_order_relaxed);
+    if (Rollback::IsPerformanceLoggingEnabled())
+      m_diag_overflows.fetch_add(1, std::memory_order_relaxed);
     WARN_LOG_FMT(AUDIO,
                  "Granule Queue has completely filled and audio samples are being dropped. "
                  "This should not happen unless the audio backend has stopped requesting audio.");
@@ -629,12 +635,14 @@ bool Mixer::MixerFifo::Dequeue(Granule* granule)
   std::size_t next_tail = (tail + 1) & GRANULE_QUEUE_MASK;
   if (next_tail == head)
   {
-    m_diag_empty_dequeues.fetch_add(1, std::memory_order_relaxed);
+    if (Rollback::IsPerformanceLoggingEnabled())
+      m_diag_empty_dequeues.fetch_add(1, std::memory_order_relaxed);
     // Only fill gaps when running to prevent stutter on pause.
     const bool is_running = Core::GetState(Core::System::GetInstance()) == Core::State::Running;
     if (m_mixer->m_config_fill_audio_gaps && is_running)
     {
-      m_diag_gap_fills.fetch_add(1, std::memory_order_relaxed);
+      if (Rollback::IsPerformanceLoggingEnabled())
+        m_diag_gap_fills.fetch_add(1, std::memory_order_relaxed);
       // Jump the playhead to half the queue size behind the head.
       // This provides smoother audio playback than suddenly stopping.
       const std::size_t gap = std::max<std::size_t>(2, granule_queue_size >> 1) - 1;

@@ -16,6 +16,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/Jit64/Jit.h"
 #include "Core/PowerPC/Jit64Common/Jit64PowerPCState.h"
+#include "Core/Rollback/DirtyBitmap.h"
 #include "Core/System.h"
 
 using namespace Gen;
@@ -107,6 +108,12 @@ void Jit64AsmRoutineManager::Generate()
   SetJumpTarget(skipToRealDispatch);
 
   dispatcher_no_check = GetCodePtr();
+
+  // Active rollback blocks keep this pointer live across linked blocks and remove R12 from the
+  // guest register allocation order. Reloading at dispatch also makes the transition from a
+  // guarded pre-session block safe when dirty tracking arms and clears the block cache.
+  MOV(64, R(RDIRTYBITMAP),
+      Imm64(reinterpret_cast<u64>(&Rollback::JITDirtyBitmap::Get())));
 
   // The following is a translation of JitBaseBlockCache::Dispatch into assembly.
   const bool assembly_dispatcher = true;

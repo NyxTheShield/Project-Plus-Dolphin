@@ -19,5 +19,8 @@ constexpr Gen::X64Reg RMEM = Gen::RBX;
 // RPPCSTATE points to ppcState + 0x80.  It's offset because we want to be able
 // to address as much as possible in a one-byte offset form.
 constexpr Gen::X64Reg RPPCSTATE = Gen::RBP;
+// Active rollback blocks reserve this callee-saved register for the dirty bitmap. The dispatcher
+// refreshes it before entering a block, so guarded pre-session blocks may still allocate it.
+constexpr Gen::X64Reg RDIRTYBITMAP = Gen::R12;
 
 constexpr size_t CODE_SIZE = 1024 * 1024 * 128;

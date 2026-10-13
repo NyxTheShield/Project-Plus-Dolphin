@@ -181,9 +181,10 @@ bool Jit64::BackPatch(uintptr_t access_address, SContext* ctx)
 
   if (!IsInSpace(codePtr))
   {
-    ERROR_LOG_FMT(DYNA_REC,
-                  "Jit64 backpatch rejected host PC outside main JIT space: host_pc={}, access={:#018x}",
-                  fmt::ptr(codePtr), access_address);
+    ERROR_LOG_FMT(
+        DYNA_REC,
+        "Jit64 backpatch rejected host PC outside main JIT space: host_pc={}, access={:#018x}",
+        fmt::ptr(codePtr), access_address);
     return false;  // this will become a regular crash real soon after this
   }
 
@@ -195,8 +196,8 @@ bool Jit64::BackPatch(uintptr_t access_address, SContext* ctx)
     for (const auto& [candidate, unused] : m_back_patch_info)
     {
       const uintptr_t candidate_pc = reinterpret_cast<uintptr_t>(candidate);
-      const uintptr_t distance = candidate_pc > ctx->CTX_PC ? candidate_pc - ctx->CTX_PC :
-                                                               ctx->CTX_PC - candidate_pc;
+      const uintptr_t distance =
+          candidate_pc > ctx->CTX_PC ? candidate_pc - ctx->CTX_PC : ctx->CTX_PC - candidate_pc;
       if (distance < nearest_distance)
       {
         nearest_pc = candidate_pc;
@@ -244,9 +245,10 @@ bool Jit64::BackPatch(uintptr_t access_address, SContext* ctx)
   const u8* trampoline = trampolines.GenerateTrampoline(info);
   if (!trampoline)
   {
-    ERROR_LOG_FMT(DYNA_REC,
-                  "Jit64 trampoline generation failed: host_pc={}, access={:#018x}, guest_pc={:#010x}",
-                  fmt::ptr(codePtr), access_address, info.pc);
+    ERROR_LOG_FMT(
+        DYNA_REC,
+        "Jit64 trampoline generation failed: host_pc={}, access={:#018x}, guest_pc={:#010x}",
+        fmt::ptr(codePtr), access_address, info.pc);
     js.generatingTrampoline = false;
     js.trampolineExceptionHandler = nullptr;
     return false;
@@ -837,17 +839,15 @@ void Jit64::Trace()
 
 void Jit64::Jit(u32 em_address)
 {
-  const bool measure_resim_compile =
-      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
+  const bool measure_resim_compile = Rollback::IsResimProfilingActive();
   const auto compile_start = measure_resim_compile ? std::chrono::steady_clock::now() :
                                                      std::chrono::steady_clock::time_point{};
   Jit(em_address, true);
   if (measure_resim_compile)
   {
-    const u64 nanoseconds = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
-                                                             compile_start)
-            .count());
+    const u64 nanoseconds = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now() - compile_start)
+                                                 .count());
     Rollback::RecordResimJitCompile(nanoseconds);
   }
 }

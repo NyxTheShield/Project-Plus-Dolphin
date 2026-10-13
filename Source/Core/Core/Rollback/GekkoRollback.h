@@ -43,7 +43,9 @@ struct GekkoSessionOptions
   u32 stress_interval = 1;
   bool compare_confirmed_ram = false;
   bool stop_ram_compare_on_mismatch = false;
+  bool performance_logging = false;
   bool deep_logging = false;
+  bool video_timing = false;
   bool coarse_fifo_timing = false;
   bool late_vi_guard = true;
   FrameBoundary frame_boundary = FrameBoundary::VINewField;
@@ -51,6 +53,9 @@ struct GekkoSessionOptions
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
   bool parallel_dirty_compare = false;
+  // Optional NPR source for this process's own local player. The recorded seat matching
+  // local_player is submitted through the normal networked Gekko actor.
+  std::string replay_input_path;
 };
 
 // Wire format for GameCube controller input over GekkoNet (8 bytes)
@@ -105,13 +110,14 @@ void RecordGekkoInputPresentation(u64 present_time_ns);
 bool BeginNetplayReplayRecording(const std::string& game_key);
 bool SaveNetplayReplay(const std::string& path);
 bool LoadNetplayReplay(const std::string& path);
-bool StartNetplayReplaySession();
+bool StartNetplayReplaySession(bool performance_logging = false);
 std::string GetNetplayReplayGameID();
 int GetNetplayReplayPlayerCount();
 u64 GetNetplayReplayInitialRTC();
 std::vector<u8> GetNetplayReplaySysconf();
 bool IsNetplayReplayRecording();
 bool IsNetplayReplayPlaying();
+bool IsNetplayReplayInputActive();
 void StopNetplayReplay();
 
 }  // namespace Rollback

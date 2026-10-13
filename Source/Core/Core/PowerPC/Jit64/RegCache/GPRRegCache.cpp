@@ -6,6 +6,7 @@
 #include "Common/x64Reg.h"
 #include "Core/PowerPC/Jit64/Jit.h"
 #include "Core/PowerPC/Jit64Common/Jit64PowerPCState.h"
+#include "Core/Rollback/DirtyBitmap.h"
 
 using namespace Gen;
 
@@ -101,6 +102,17 @@ std::span<const X64Reg> GPRRegCache::GetAllocationOrder() const
       R8,  R9,  R10, R11, RCX
 #endif
   };
+  static constexpr X64Reg rollback_allocation_order[] = {
+#ifdef _WIN32
+      RSI, RDI, R13, R14, R15, R8,
+      R9,  R10, R11, RCX
+#else
+      R13, R14, R15, RSI, RDI,
+      R8,  R9,  R10, R11, RCX
+#endif
+  };
+  if (Rollback::JITDirtyBitmap::Get().IsEnabled())
+    return rollback_allocation_order;
   return allocation_order;
 }
 

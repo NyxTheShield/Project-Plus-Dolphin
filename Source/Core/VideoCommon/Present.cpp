@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/Present.h"
+#include "VideoCommon/RollbackVideoTiming.h"
 
 #include <algorithm>
 #include <array>
@@ -109,7 +110,6 @@ static float SourceAspectRatioToPMWide(float aspect)
 {
   return (69.0f / 40.0f);
 }
-
 
 Presenter::Presenter()
 {
@@ -356,8 +356,8 @@ void Presenter::SetBackbuffer(int backbuffer_width, int backbuffer_height)
   OnBackbufferSet(size_changed, is_first);
   if (is_first || size_changed)
   {
-    INFO_LOG_FMT(VIDEO, "Presenter backbuffer: {}x{} -> {}x{} (first={})", old_width,
-                 old_height, backbuffer_width, backbuffer_height, is_first);
+    INFO_LOG_FMT(VIDEO, "Presenter backbuffer: {}x{} -> {}x{} (first={})", old_width, old_height,
+                 backbuffer_width, backbuffer_height, is_first);
   }
 }
 
@@ -378,8 +378,8 @@ void Presenter::SetBackbuffer(SurfaceInfo info)
   OnBackbufferSet(size_changed, is_first);
   if (is_first || size_changed)
   {
-    INFO_LOG_FMT(VIDEO, "Presenter backbuffer: {}x{} -> {}x{} (first={}, scale={:.3f})",
-                 old_width, old_height, info.width, info.height, is_first, info.scale);
+    INFO_LOG_FMT(VIDEO, "Presenter backbuffer: {}x{} -> {}x{} (first={}, scale={:.3f})", old_width,
+                 old_height, info.width, info.height, is_first, info.scale);
   }
 }
 
@@ -583,8 +583,6 @@ float Presenter::CalculateDrawAspectRatio(bool allow_stretch) const
       resulting_aspect_ratio /= 2.0;
     }
   }
-  
-  
 
   return resulting_aspect_ratio;
 }
@@ -950,6 +948,7 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
 
 void Presenter::Present(PresentInfo* present_info)
 {
+  const RollbackVideoTiming::Scope timing(RollbackVideoTiming::Phase::NormalPresent);
   m_present_count++;
 
   if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
@@ -970,8 +969,6 @@ void Presenter::Present(PresentInfo* present_info)
     }
     return;
   }
-
-  const TimePoint present_entry_time = Clock::now();
 
   // Since we use the common pipelines here and draw vertices if a batch is currently being
   // built by the vertex loader, we end up trampling over its pointer, as we share the buffer
@@ -1005,253 +1002,174 @@ void Presenter::Present(PresentInfo* present_info)
   {
     std::lock_guard<std::mutex> guard(m_swap_mutex);
 
+    const bool performance_logging = Rollback::IsPerformanceLoggingEnabled();
     double presentation_wait_ms = 0.0;
-    double present_draw_ms = 0.0;
 
     if (present_info != nullptr)
     {
       const auto present_time = GetUpdatedPresentationTime(present_info->intended_present_time);
 
-      const TimePoint wait_start = Clock::now();
-      present_draw_ms =
-          std::chrono::duration<double, std::milli>(wait_start - present_entry_time).count();
+      const TimePoint wait_start = performance_logging ? Clock::now() : TimePoint{};
       Core::System::GetInstance().GetCoreTiming().SleepUntil(present_time);
-      presentation_wait_ms =
-          std::chrono::duration<double, std::milli>(Clock::now() - wait_start).count();
+      if (performance_logging)
+      {
+        presentation_wait_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - wait_start).count();
+      }
 
       // Perhaps in the future a more accurate time can be acquired from the various backends.
       present_info->actual_present_time = Clock::now();
       present_info->present_time_accuracy = PresentInfo::PresentTimeAccuracy::PresentInProgress;
     }
 
-    const TimePoint backend_start = Clock::now();
+    const TimePoint backend_start = performance_logging ? Clock::now() : TimePoint{};
     g_gfx->PresentBackbuffer();
     const double backend_ms =
-        std::chrono::duration<double, std::milli>(Clock::now() - backend_start).count();
+        performance_logging ?
+            std::chrono::duration<double, std::milli>(Clock::now() - backend_start).count() :
+            0.0;
 
     // Measure actual submissions to the window system. Correlating them with completed rollback
     // bursts distinguishes time spent replaying from presentation waits and ordinary frame work.
-    static std::optional<TimePoint> s_last_present_time;
-    static std::array<double, 300> s_intervals{};
-    static std::size_t s_interval_count = 0;
-    static double s_interval_sum = 0.0;
-    static double s_interval_squared_sum = 0.0;
-    static double s_wait_sum = 0.0;
-    static double s_backend_sum = 0.0;
-    static u64 s_over_20 = 0;
-    static u64 s_over_25 = 0;
-    static u64 s_over_33 = 0;
-    static u64 s_over_50 = 0;
-    static u64 s_long_short_pairs = 0;
-    static std::optional<double> s_previous_interval;
-    static u64 s_last_burst_serial = 0;
-    static u64 s_last_pacing_serial = 0;
-    static u64 s_burst_intervals = 0;
-    static u64 s_bursts_observed = 0;
-    static double s_burst_interval_sum = 0.0;
-    static double s_burst_duration_sum = 0.0;
-    static double s_burst_wait_sum = 0.0;
-    static double s_burst_backend_sum = 0.0;
-    static double s_burst_end_to_present_sum = 0.0;
-    static double s_burst_start_to_present_sum = 0.0;
-    static double s_burst_start_to_present_max = 0.0;
-    static u64 s_burst_start_to_present_over_budget = 0;
-    static u64 s_clean_intervals = 0;
-    static double s_clean_interval_sum = 0.0;
-    const TimePoint actual_present_time = Clock::now();
-    const u64 actual_present_ns = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(actual_present_time.time_since_epoch())
-            .count());
-    Rollback::RecordGekkoInputPresentation(actual_present_ns);
-    const Rollback::RollbackBurstMarker burst = Rollback::GetLastRollbackBurst();
-    const Rollback::FramePacingMarker pacing = Rollback::GetLastFramePacingMarker();
-    if (!s_last_present_time)
+    if (performance_logging)
     {
-      s_last_burst_serial = burst.serial;
-      s_last_pacing_serial = pacing.serial;
-    }
-    if (s_last_present_time)
-    {
-      const double interval_ms =
-          std::chrono::duration<double, std::milli>(actual_present_time - *s_last_present_time)
-              .count();
-      s_intervals[s_interval_count++] = interval_ms;
-      s_interval_sum += interval_ms;
-      s_interval_squared_sum += interval_ms * interval_ms;
-      s_wait_sum += presentation_wait_ms;
-      s_backend_sum += backend_ms;
-      s_over_20 += interval_ms > 20.0;
-      s_over_25 += interval_ms > 25.0;
-      s_over_33 += interval_ms > (100.0 / 3.0);
-      s_over_50 += interval_ms > 50.0;
-      if (s_previous_interval && *s_previous_interval > 25.0 && interval_ms < 10.0)
-        ++s_long_short_pairs;
-      s_previous_interval = interval_ms;
-
-      const u64 previous_present_ns = static_cast<u64>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              s_last_present_time->time_since_epoch())
-              .count());
-      const bool contains_burst = burst.serial != s_last_burst_serial &&
-                                  burst.end_time_ns > previous_present_ns &&
-                                  burst.end_time_ns <= actual_present_ns;
-      if (contains_burst)
+      static std::optional<TimePoint> s_last_present_time;
+      static std::array<double, 300> s_intervals{};
+      static std::size_t s_interval_count = 0;
+      static double s_interval_sum = 0.0;
+      static double s_interval_squared_sum = 0.0;
+      static double s_wait_sum = 0.0;
+      static double s_backend_sum = 0.0;
+      static u64 s_over_20 = 0;
+      static u64 s_over_25 = 0;
+      static u64 s_over_33 = 0;
+      static u64 s_over_50 = 0;
+      static u64 s_long_short_pairs = 0;
+      static std::optional<double> s_previous_interval;
+      static u64 s_last_burst_serial = 0;
+      static u64 s_burst_intervals = 0;
+      static u64 s_bursts_observed = 0;
+      static double s_burst_interval_sum = 0.0;
+      static double s_burst_duration_sum = 0.0;
+      static double s_burst_wait_sum = 0.0;
+      static double s_burst_backend_sum = 0.0;
+      static double s_burst_end_to_present_sum = 0.0;
+      static u64 s_clean_intervals = 0;
+      static double s_clean_interval_sum = 0.0;
+      const TimePoint actual_present_time = Clock::now();
+      const u64 actual_present_ns =
+          static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               actual_present_time.time_since_epoch())
+                               .count());
+      Rollback::RecordGekkoInputPresentation(actual_present_ns);
+      const Rollback::RollbackBurstMarker burst = Rollback::GetLastRollbackBurst();
+      if (!s_last_present_time)
+        s_last_burst_serial = burst.serial;
+      if (s_last_present_time)
       {
-        ++s_burst_intervals;
-        s_bursts_observed += burst.serial - s_last_burst_serial;
-        s_burst_interval_sum += interval_ms;
-        s_burst_duration_sum += static_cast<double>(burst.duration_ns) / 1'000'000.0;
-        s_burst_wait_sum += presentation_wait_ms;
-        s_burst_backend_sum += backend_ms;
-        s_burst_end_to_present_sum +=
-            static_cast<double>(actual_present_ns - burst.end_time_ns) / 1'000'000.0;
-        const double start_to_present_ms =
-            static_cast<double>(burst.duration_ns + actual_present_ns - burst.end_time_ns) /
-            1'000'000.0;
-        s_burst_start_to_present_sum += start_to_present_ms;
-        s_burst_start_to_present_max =
-            std::max(s_burst_start_to_present_max, start_to_present_ms);
-        s_burst_start_to_present_over_budget += start_to_present_ms > (1000.0 / 60.0);
-      }
-      else
-      {
-        ++s_clean_intervals;
-        s_clean_interval_sum += interval_ms;
-      }
-      s_last_burst_serial = burst.serial;
+        const double interval_ms =
+            std::chrono::duration<double, std::milli>(actual_present_time - *s_last_present_time)
+                .count();
+        s_intervals[s_interval_count++] = interval_ms;
+        s_interval_sum += interval_ms;
+        s_interval_squared_sum += interval_ms * interval_ms;
+        s_wait_sum += presentation_wait_ms;
+        s_backend_sum += backend_ms;
+        s_over_20 += interval_ms > 20.0;
+        s_over_25 += interval_ms > 25.0;
+        s_over_33 += interval_ms > (100.0 / 3.0);
+        s_over_50 += interval_ms > 50.0;
+        if (s_previous_interval && *s_previous_interval > 25.0 && interval_ms < 10.0)
+          ++s_long_short_pairs;
+        s_previous_interval = interval_ms;
 
-      const bool contains_boundary =
-          pacing.serial != s_last_pacing_serial && pacing.boundary_time_ns > previous_present_ns &&
-          pacing.boundary_time_ns <= actual_present_ns;
-      if (interval_ms > 20.0 && Rollback::IsDetailedResimProfilingEnabled())
-      {
-        const auto ns_to_ms = [](u64 value) {
-          return static_cast<double>(value) / 1'000'000.0;
-        };
-        const auto between_ms = [&ns_to_ms](u64 end, u64 start) {
-          return end >= start ? ns_to_ms(end - start) : 0.0;
-        };
-
-        if (contains_boundary)
+        const u64 previous_present_ns =
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 s_last_present_time->time_since_epoch())
+                                 .count());
+        const bool contains_burst = burst.serial != s_last_burst_serial &&
+                                    burst.end_time_ns > previous_present_ns &&
+                                    burst.end_time_ns <= actual_present_ns;
+        if (contains_burst)
         {
-          const bool burst_matches =
-              pacing.follows_rollback && contains_burst && burst.start_time_ns > previous_present_ns &&
-              burst.end_time_ns <= pacing.boundary_time_ns;
-          const bool throttle_matches =
-              pacing.throttle_start_time_ns >= pacing.boundary_time_ns &&
-              pacing.throttle_end_time_ns >= pacing.throttle_start_time_ns &&
-              pacing.throttle_end_time_ns <= actual_present_ns;
-          const u64 work_start_ns = burst_matches ? burst.start_time_ns : pacing.boundary_time_ns;
-          const u64 work_end_ns = burst_matches ? burst.end_time_ns : pacing.boundary_time_ns;
-          const u64 throttle_start_ns =
-              throttle_matches ? pacing.throttle_start_time_ns : work_end_ns;
-          const u64 throttle_end_ns = throttle_matches ? pacing.throttle_end_time_ns : work_end_ns;
-          const u64 present_entry_ns = static_cast<u64>(
-              std::chrono::duration_cast<std::chrono::nanoseconds>(
-                  present_entry_time.time_since_epoch())
-                  .count());
-          const double before_work_ms = between_ms(work_start_ns, previous_present_ns);
-          const double burst_ms = burst_matches ? ns_to_ms(burst.duration_ns) : 0.0;
-          const double work_to_throttle_ms = between_ms(throttle_start_ns, work_end_ns);
-          const double throttle_ms = throttle_matches ? ns_to_ms(pacing.throttle_actual_ns) : 0.0;
-          const double final_guest_video_ms = between_ms(present_entry_ns, throttle_end_ns);
-          const double accounted_ms = before_work_ms + burst_ms + work_to_throttle_ms + throttle_ms +
-                                      final_guest_video_ms + present_draw_ms +
-                                      presentation_wait_ms + backend_ms;
-          NOTICE_LOG_FMT(
-              CORE,
-              "Frame pacing late: interval {:.3f} ms frame={} marker_gap={} rollback={} depth={}; "
-              "before_work {:.3f}; burst {:.3f} [load {:.3f} exec {:.3f} save {:.3f} other "
-              "{:.3f}]; work_to_throttle {:.3f}; throttle requested/actual {:.3f}/{:.3f}; "
-              "final_guest_video {:.3f}; present_draw {:.3f}; present_wait {:.3f}; backend "
-              "{:.3f}; unaccounted {:.3f} ms",
-              interval_ms, pacing.gekko_frame, pacing.serial - s_last_pacing_serial, burst_matches,
-              burst_matches ? burst.replay_frames : 0, before_work_ms, burst_ms,
-              burst_matches ? ns_to_ms(burst.load_ns) : 0.0,
-              burst_matches ? ns_to_ms(burst.exec_ns) : 0.0,
-              burst_matches ? ns_to_ms(burst.save_ns) : 0.0,
-              burst_matches ? ns_to_ms(burst.other_ns) : 0.0, work_to_throttle_ms,
-              throttle_matches ? ns_to_ms(pacing.throttle_requested_ns) : 0.0, throttle_ms,
-              final_guest_video_ms, present_draw_ms, presentation_wait_ms, backend_ms,
-              interval_ms - accounted_ms);
+          ++s_burst_intervals;
+          s_bursts_observed += burst.serial - s_last_burst_serial;
+          s_burst_interval_sum += interval_ms;
+          s_burst_duration_sum += static_cast<double>(burst.duration_ns) / 1'000'000.0;
+          s_burst_wait_sum += presentation_wait_ms;
+          s_burst_backend_sum += backend_ms;
+          s_burst_end_to_present_sum +=
+              static_cast<double>(actual_present_ns - burst.end_time_ns) / 1'000'000.0;
         }
         else
         {
-          NOTICE_LOG_FMT(CORE,
-                         "Frame pacing late: interval {:.3f} ms with no matching real-frame "
-                         "boundary (latest frame={}, marker_gap={})",
-                         interval_ms, pacing.gekko_frame, pacing.serial - s_last_pacing_serial);
+          ++s_clean_intervals;
+          s_clean_interval_sum += interval_ms;
+        }
+        s_last_burst_serial = burst.serial;
+
+        if (s_interval_count == s_intervals.size())
+        {
+          std::array<double, 300> sorted = s_intervals;
+          std::ranges::sort(sorted);
+          const auto percentile = [&sorted](double fraction) {
+            const std::size_t index = static_cast<std::size_t>(
+                std::ceil(fraction * static_cast<double>(sorted.size() - 1)));
+            return sorted[index];
+          };
+          const double mean = s_interval_sum / static_cast<double>(s_interval_count);
+          const double variance = std::max(
+              0.0, s_interval_squared_sum / static_cast<double>(s_interval_count) - mean * mean);
+          const auto average = [](double total, u64 count) { return count ? total / count : 0.0; };
+          NOTICE_LOG_FMT(
+              CORE,
+              "Present cadence: interval min/p50/p90/p95/p99/max {:.3f}/{:.3f}/{:.3f}/{:.3f}/"
+              "{:.3f}/{:.3f} ms, avg {:.3f}, stddev {:.3f}; gaps >20/>25/>33.3/>50 "
+              "{}/{}/{}/{}; long-to-short pairs {} (300)",
+              sorted.front(), percentile(0.50), percentile(0.90), percentile(0.95),
+              percentile(0.99), sorted.back(), mean, std::sqrt(variance), s_over_20, s_over_25,
+              s_over_33, s_over_50, s_long_short_pairs);
+          NOTICE_LOG_FMT(
+              CORE,
+              "Present rollback correlation: burst intervals {} ({} bursts), interval {:.3f} ms, "
+              "burst {:.3f} ms, burst-end-to-present {:.3f} ms, present-wait {:.3f} ms, backend "
+              "{:.3f} ms, remainder {:.3f} ms; clean intervals {} avg {:.3f} ms; all present-wait "
+              "{:.3f} ms, backend {:.3f} ms",
+              s_burst_intervals, s_bursts_observed,
+              average(s_burst_interval_sum, s_burst_intervals),
+              average(s_burst_duration_sum, s_burst_intervals),
+              average(s_burst_end_to_present_sum, s_burst_intervals),
+              average(s_burst_wait_sum, s_burst_intervals),
+              average(s_burst_backend_sum, s_burst_intervals),
+              average(s_burst_interval_sum - s_burst_duration_sum - s_burst_wait_sum -
+                          s_burst_backend_sum,
+                      s_burst_intervals),
+              s_clean_intervals, average(s_clean_interval_sum, s_clean_intervals),
+              s_wait_sum / static_cast<double>(s_interval_count),
+              s_backend_sum / static_cast<double>(s_interval_count));
+          s_interval_count = 0;
+          s_interval_sum = 0.0;
+          s_interval_squared_sum = 0.0;
+          s_wait_sum = 0.0;
+          s_backend_sum = 0.0;
+          s_over_20 = 0;
+          s_over_25 = 0;
+          s_over_33 = 0;
+          s_over_50 = 0;
+          s_long_short_pairs = 0;
+          s_burst_intervals = 0;
+          s_bursts_observed = 0;
+          s_burst_interval_sum = 0.0;
+          s_burst_duration_sum = 0.0;
+          s_burst_wait_sum = 0.0;
+          s_burst_backend_sum = 0.0;
+          s_burst_end_to_present_sum = 0.0;
+          s_clean_intervals = 0;
+          s_clean_interval_sum = 0.0;
         }
       }
-      s_last_pacing_serial = pacing.serial;
-
-      if (s_interval_count == s_intervals.size())
-      {
-        std::array<double, 300> sorted = s_intervals;
-        std::ranges::sort(sorted);
-        const auto percentile = [&sorted](double fraction) {
-          const std::size_t index = static_cast<std::size_t>(
-              std::ceil(fraction * static_cast<double>(sorted.size() - 1)));
-          return sorted[index];
-        };
-        const double mean = s_interval_sum / static_cast<double>(s_interval_count);
-        const double variance = std::max(
-            0.0, s_interval_squared_sum / static_cast<double>(s_interval_count) - mean * mean);
-        const auto average = [](double total, u64 count) { return count ? total / count : 0.0; };
-        NOTICE_LOG_FMT(
-            CORE,
-            "Present cadence: interval min/p50/p90/p95/p99/max {:.3f}/{:.3f}/{:.3f}/{:.3f}/"
-            "{:.3f}/{:.3f} ms, avg {:.3f}, stddev {:.3f}; gaps >20/>25/>33.3/>50 "
-            "{}/{}/{}/{}; long-to-short pairs {} (300)",
-            sorted.front(), percentile(0.50), percentile(0.90), percentile(0.95),
-            percentile(0.99), sorted.back(), mean, std::sqrt(variance), s_over_20, s_over_25,
-            s_over_33, s_over_50, s_long_short_pairs);
-        NOTICE_LOG_FMT(
-            CORE,
-            "Present rollback correlation: burst intervals {} ({} bursts), interval {:.3f} ms, "
-            "burst {:.3f} ms, burst-end-to-present {:.3f} ms, catchup load-to-present "
-            "{:.3f}/{:.3f} ms avg/max ({} over 16.67), present-wait {:.3f} ms, backend "
-            "{:.3f} ms, remainder {:.3f} ms; clean intervals {} avg {:.3f} ms; all present-wait "
-            "{:.3f} ms, backend {:.3f} ms",
-            s_burst_intervals, s_bursts_observed,
-            average(s_burst_interval_sum, s_burst_intervals),
-            average(s_burst_duration_sum, s_burst_intervals),
-            average(s_burst_end_to_present_sum, s_burst_intervals),
-            average(s_burst_start_to_present_sum, s_burst_intervals),
-            s_burst_start_to_present_max, s_burst_start_to_present_over_budget,
-            average(s_burst_wait_sum, s_burst_intervals),
-            average(s_burst_backend_sum, s_burst_intervals),
-            average(s_burst_interval_sum - s_burst_duration_sum - s_burst_wait_sum -
-                        s_burst_backend_sum,
-                    s_burst_intervals),
-            s_clean_intervals, average(s_clean_interval_sum, s_clean_intervals),
-            s_wait_sum / static_cast<double>(s_interval_count),
-            s_backend_sum / static_cast<double>(s_interval_count));
-        s_interval_count = 0;
-        s_interval_sum = 0.0;
-        s_interval_squared_sum = 0.0;
-        s_wait_sum = 0.0;
-        s_backend_sum = 0.0;
-        s_over_20 = 0;
-        s_over_25 = 0;
-        s_over_33 = 0;
-        s_over_50 = 0;
-        s_long_short_pairs = 0;
-        s_burst_intervals = 0;
-        s_bursts_observed = 0;
-        s_burst_interval_sum = 0.0;
-        s_burst_duration_sum = 0.0;
-        s_burst_wait_sum = 0.0;
-        s_burst_backend_sum = 0.0;
-        s_burst_end_to_present_sum = 0.0;
-        s_burst_start_to_present_sum = 0.0;
-        s_burst_start_to_present_max = 0.0;
-        s_burst_start_to_present_over_budget = 0;
-        s_clean_intervals = 0;
-        s_clean_interval_sum = 0.0;
-      }
+      s_last_present_time = actual_present_time;
     }
-    s_last_present_time = actual_present_time;
   }
 
   if (m_xfb_entry)

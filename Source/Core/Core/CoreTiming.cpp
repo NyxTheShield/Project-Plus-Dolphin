@@ -377,21 +377,19 @@ void CoreTimingManager::MoveEvents()
 
 void CoreTimingManager::Advance()
 {
-  const bool profile_resim =
-      Rollback::IsResimulating() && Rollback::IsDetailedResimProfilingEnabled();
-  const auto profile_start = profile_resim ? std::chrono::steady_clock::now() :
-                                             std::chrono::steady_clock::time_point{};
+  const bool profile_resim = Rollback::IsResimProfilingActive();
+  const auto profile_start =
+      profile_resim ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   u64 profile_guest_nanoseconds = 0;
   u32 profile_guest_pc = 0;
   if (profile_resim && s_resim_guest_start)
   {
-    profile_guest_nanoseconds = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(profile_start -
-                                                             s_resim_guest_start->time)
-            .count());
+    profile_guest_nanoseconds =
+        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             profile_start - s_resim_guest_start->time)
+                             .count());
     profile_guest_pc = s_resim_guest_start->pc;
-    Rollback::RecordResimEvent(
-        Rollback::ResimEventCategory::GuestCpu, profile_guest_nanoseconds);
+    Rollback::RecordResimEvent(Rollback::ResimEventCategory::GuestCpu, profile_guest_nanoseconds);
   }
   const Rollback::ResimEventStats profile_events_start =
       profile_resim ? Rollback::GetResimEventStats() : Rollback::ResimEventStats{};
@@ -449,8 +447,7 @@ void CoreTimingManager::Advance()
   if (!m_event_queue.empty())
   {
     m_globals.slice_length = static_cast<int>(
-        std::clamp<s64>(m_event_queue.front().time - m_globals.global_timer, 0,
-                        MAX_SLICE_LENGTH));
+        std::clamp<s64>(m_event_queue.front().time - m_globals.global_timer, 0, MAX_SLICE_LENGTH));
   }
 
   ppc_state.downcount = CyclesToDowncount(m_globals.slice_length);
@@ -471,12 +468,11 @@ void CoreTimingManager::Advance()
       if (i != static_cast<std::size_t>(Rollback::ResimEventCategory::CoreTiming))
         callback_nanoseconds += events_now.nanoseconds[i] - profile_events_start.nanoseconds[i];
     }
-    const u64 total_nanoseconds = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count());
-    Rollback::RecordResimEvent(Rollback::ResimEventCategory::CoreTiming,
-                               total_nanoseconds > callback_nanoseconds ?
-                                   total_nanoseconds - callback_nanoseconds :
-                                   0);
+    const u64 total_nanoseconds =
+        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count());
+    Rollback::RecordResimEvent(
+        Rollback::ResimEventCategory::CoreTiming,
+        total_nanoseconds > callback_nanoseconds ? total_nanoseconds - callback_nanoseconds : 0);
   }
 
   if (profile_resim)
@@ -494,8 +490,8 @@ TimePoint CoreTimingManager::CalculateTargetHostTimeInternal(s64 target_cycle)
   const auto scaled_duration =
       Clock::duration{std::chrono::seconds{elapsed_cycles}} / effective_clock;
   return m_throttle_reference_time +
-         Clock::duration{static_cast<s64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                             scaled_duration).count())};
+         Clock::duration{static_cast<s64>(
+             std::chrono::duration_cast<std::chrono::nanoseconds>(scaled_duration).count())};
 }
 
 bool CoreTimingManager::IsSpeedUnlimited() const
@@ -641,25 +637,19 @@ void CoreTimingManager::Throttle(const s64 target_cycle)
 
   UpdateVISkip(time, target_time);
 
-  const bool measure_rollback_throttle = Rollback::IsGekkoSessionActive();
+  const bool measure_rollback_throttle = Rollback::IsPerformanceLoggingEnabled();
   const bool first_after_burst = measure_rollback_throttle && m_rollback_throttle_pending;
   const u64 requested_ns =
-      target_time > time ?
-          static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(target_time - time)
-                               .count()) :
+      measure_rollback_throttle && target_time > time ?
+          static_cast<u64>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(target_time - time).count()) :
           0;
-  const TimePoint sleep_start = Clock::now();
+  const TimePoint sleep_start = measure_rollback_throttle ? Clock::now() : TimePoint{};
   SleepUntil(target_time);
   if (measure_rollback_throttle)
   {
-    const TimePoint sleep_end = Clock::now();
     const u64 actual_ns = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_end - sleep_start).count());
-    const u64 sleep_start_ns = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_start.time_since_epoch()).count());
-    const u64 sleep_end_ns = static_cast<u64>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_end.time_since_epoch()).count());
-    Rollback::RecordFramePacingThrottle(sleep_start_ns, sleep_end_ns, requested_ns, actual_ns);
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - sleep_start).count());
     ++m_rollback_throttle_stats.normal_calls;
     m_rollback_throttle_stats.normal_requested_ns += requested_ns;
     m_rollback_throttle_stats.normal_requested_max_ns =
@@ -898,8 +888,8 @@ bool RunPreciseVITail()
     prepared_timing_slice = true;
 
     const bool diagnose_tail = Rollback::IsDeterminismDiagnosticsEnabled();
-    const auto tail_start = diagnose_tail ? std::chrono::steady_clock::now() :
-                                            std::chrono::steady_clock::time_point{};
+    const auto tail_start =
+        diagnose_tail ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const u64 start_tick = diagnose_tail ? core_timing.GetTicks() : 0;
     const u32 start_pc = diagnose_tail ? ppc_state.pc : 0;
     u32 instructions = 0;

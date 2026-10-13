@@ -11,6 +11,10 @@
 #include <mutex>
 #include <string_view>
 
+#ifdef _M_X86_64
+#include <emmintrin.h>
+#endif
+
 #include "Common/Buffer.h"
 #include "Common/Logging/Log.h"
 #include "Common/WorkQueueThread.h"
@@ -46,12 +50,40 @@ struct CompareJob
   std::size_t end;
 };
 
+bool PagesEqual(const u8* lhs, const u8* rhs)
+{
+#ifdef _M_X86_64
+  // MSVC does not reliably inline or vectorize fixed-size memcmp calls. Compare one cache line at
+  // a time so equal dirty marks stay on a tight SSE2 path while changed pages still exit early.
+  for (std::size_t offset = 0; offset < PAGE; offset += 64)
+  {
+    const __m128i lhs0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(lhs + offset));
+    const __m128i rhs0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(rhs + offset));
+    const __m128i lhs1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(lhs + offset + 16));
+    const __m128i rhs1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(rhs + offset + 16));
+    const __m128i lhs2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(lhs + offset + 32));
+    const __m128i rhs2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(rhs + offset + 32));
+    const __m128i lhs3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(lhs + offset + 48));
+    const __m128i rhs3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(rhs + offset + 48));
+    const __m128i equal01 =
+        _mm_and_si128(_mm_cmpeq_epi8(lhs0, rhs0), _mm_cmpeq_epi8(lhs1, rhs1));
+    const __m128i equal23 =
+        _mm_and_si128(_mm_cmpeq_epi8(lhs2, rhs2), _mm_cmpeq_epi8(lhs3, rhs3));
+    if (_mm_movemask_epi8(_mm_and_si128(equal01, equal23)) != 0xffff)
+      return false;
+  }
+  return true;
+#else
+  return std::memcmp(lhs, rhs, PAGE) == 0;
+#endif
+}
+
 void CompareCandidates(CompareJob job)
 {
   for (std::size_t i = job.begin; i < job.end; ++i)
   {
     const DirtyCandidate& candidate = (*job.candidates)[i];
-    (*job.changed)[i] = std::memcmp(candidate.live, candidate.mirror, PAGE) != 0;
+    (*job.changed)[i] = !PagesEqual(candidate.live, candidate.mirror);
   }
 }
 
@@ -279,7 +311,7 @@ void CommitDirtyPages(Tracker& t, s64 frame)
       u8* const mirror = t.mirrors[a].data() + i * PAGE;
       const auto compare_start = profile ? std::chrono::steady_clock::now() :
                                            std::chrono::steady_clock::time_point{};
-      const bool differs = std::memcmp(live, mirror, PAGE) != 0;
+      const bool differs = !PagesEqual(live, mirror);
       if (profile)
       {
         t.last_commit_timings.compare_ms +=

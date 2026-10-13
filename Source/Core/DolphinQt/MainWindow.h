@@ -286,6 +286,7 @@ private:
     u16 game_revision = 0;
     std::string status_path;
     std::string replay_output_path;
+    std::string replay_input_path;
     int seat = 0;
     int player_count = 0;
     std::vector<std::string> player_ids;
@@ -309,6 +310,8 @@ private:
     bool compare_confirmed_ram = false;
     bool stop_ram_compare_on_mismatch = false;
     bool deep_logging = false;
+    bool performance_logging = false;
+    bool video_timing = false;
     bool enable_netplay_replays = false;
     bool netplay_replay_recording_started = false;
     bool coarse_fifo_timing = false;
