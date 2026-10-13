@@ -521,7 +521,6 @@ struct GekkoManager
   double target_scale = 1.0;
   int timesync_counter = 0;
   std::optional<std::pair<s64, TimePoint>> throttle_reference_before_load;
-  Common::PrecisionTimer wait_timer;
 
   // Rolling diagnostics. These distinguish emulator snapshot cost from time spent waiting for
   // GekkoNet to authorize the next frame.
@@ -1896,7 +1895,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
                                  !Core::System::GetInstance().IsDualCoreMode());
   DirtyPages::SetCommitProfilingEnabled(options.deep_logging);
   DirtyPages::SetParallelCompareEnabled(options.parallel_dirty_compare);
-  SetCoarseFifoTiming(true);
+  SetCoarseFifoTiming(options.coarse_fifo_timing);
   g_manager.late_vi_guard = options.late_vi_guard;
   g_manager.ram_diagnostic_dumped = false;
   g_manager.frame_boundary = options.frame_boundary;
@@ -3780,10 +3779,10 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
       return;
     }
 
-    // A sub-millisecond std::this_thread::sleep_for can consume a full scheduler quantum on
-    // Windows. That turns a brief GekkoNet wait into a lost emulated frame. Dolphin's precision
-    // timer preserves the intended 100 us polling cadence.
-    g_manager.wait_timer.SleepUntil(Clock::now() + std::chrono::microseconds(WAIT_SLEEP_US));
+    // No advance yet. Yield the CPU while waiting so another local Dolphin process can submit the
+    // input that unblocks this session. PrecisionTimer busy-spins for waits this short and can
+    // starve the peer that the pump is waiting for.
+    std::this_thread::sleep_for(std::chrono::microseconds(WAIT_SLEEP_US));
     PumpSimulatedPeer();
     if (!g_manager.netplay_replay_session)
       gekko_network_poll(g_manager.session);
