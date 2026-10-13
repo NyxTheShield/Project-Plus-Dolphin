@@ -82,8 +82,7 @@ using namespace WiimoteCommon;
 u32 GetGekkoInputDelayForPing(const u32 ping_ms, const u32 reduction)
 {
   const u64 network_frames = (static_cast<u64>(ping_ms) * 3 + 50) / 100;
-  const int delay =
-      static_cast<int>(network_frames) - static_cast<int>(std::min(reduction, 60u));
+  const int delay = static_cast<int>(network_frames) - static_cast<int>(std::min(reduction, 60u));
   return static_cast<u32>(std::clamp(delay, 1, 60));
 }
 
@@ -551,22 +550,6 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnPowerButton();
     break;
 
-  case MessageID::PresentationPauseBegin:
-    OnPresentationPauseBegin(packet);
-    break;
-
-  case MessageID::PresentationPauseReady:
-    OnPresentationPauseReady(packet);
-    break;
-
-  case MessageID::PresentationPauseEnd:
-    OnPresentationPauseEnd(packet);
-    break;
-
-  case MessageID::PresentationPauseReject:
-    OnPresentationPauseReject(packet);
-    break;
-
   case MessageID::Ping:
     OnPing(packet);
     break;
@@ -676,8 +659,8 @@ void NetPlayClient::OnChunkedDataStart(sf::Packet& packet)
   packet >> title;
   const u64 data_size = Common::PacketReadU64(packet);
 
-  NOTICE_LOG_FMT(NETPLAY, "Save sync transport: receiving chunk {} ('{}', {} bytes).", cid,
-                 title, data_size);
+  NOTICE_LOG_FMT(NETPLAY, "Save sync transport: receiving chunk {} ('{}', {} bytes).", cid, title,
+                 data_size);
 
   m_chunked_data_receive_queue.emplace(cid, sf::Packet{});
 
@@ -920,8 +903,7 @@ void NetPlayClient::OnGekkoAutoPing(sf::Packet& packet)
   if (!m_managed_config || !m_managed_config->auto_input_delay)
     return;
 
-  const u32 delay =
-      GetGekkoInputDelayForPing(ping, m_managed_config->input_delay_reduction);
+  const u32 delay = GetGekkoInputDelayForPing(ping, m_managed_config->input_delay_reduction);
   AdjustPlayerPadBufferSize(delay);
   INFO_LOG_FMT(NETPLAY, "Managed input delay: ping={} ms, reduction={}, session_delay={}", ping,
                m_managed_config->input_delay_reduction, delay);
@@ -1157,107 +1139,6 @@ void NetPlayClient::OnPowerButton()
   m_dialog->OnMsgPowerButton();
 }
 
-void NetPlayClient::OnPresentationPauseBegin(sf::Packet& packet)
-{
-  u32 generation;
-  PlayerId requester;
-  packet >> generation >> requester;
-
-  auto& system = Core::System::GetInstance();
-  const bool can_pause = m_is_running.IsSet() && Core::GetState(system) == Core::State::Running;
-  {
-    std::lock_guard lock(m_presentation_pause_mutex);
-    if (!can_pause || m_presentation_pause_active)
-    {
-      sf::Packet response;
-      response << MessageID::PresentationPauseAck << generation << false;
-      Send(response);
-      WARN_LOG_FMT(NETPLAY,
-                   "Rejected presentation pause {} while local core was not ready (state={}, "
-                   "active={})",
-                   generation, static_cast<int>(Core::GetState(system)),
-                   m_presentation_pause_active);
-      return;
-    }
-    m_presentation_pause_generation = generation;
-    m_presentation_pause_requester = requester;
-    m_presentation_pause_active = true;
-    m_presentation_pause_ready = false;
-    m_presentation_pause_aborted = false;
-    m_paused_by_presentation = true;
-  }
-
-  Core::SetState(system, Core::State::Paused, false, true);
-  {
-    // Do not acknowledge until the CPU has actually reached the paused state.
-    const Core::CPUThreadGuard guard(system);
-  }
-
-  sf::Packet response;
-  response << MessageID::PresentationPauseAck << generation << true;
-  Send(response);
-  INFO_LOG_FMT(NETPLAY, "Presentation pause {} acknowledged", generation);
-}
-
-void NetPlayClient::OnPresentationPauseReady(sf::Packet& packet)
-{
-  u32 generation;
-  packet >> generation;
-
-  {
-    std::lock_guard lock(m_presentation_pause_mutex);
-    if (!m_presentation_pause_active || generation != m_presentation_pause_generation)
-      return;
-    m_presentation_pause_ready = true;
-  }
-  m_presentation_pause_cv.notify_all();
-}
-
-void NetPlayClient::OnPresentationPauseEnd(sf::Packet& packet)
-{
-  u32 generation;
-  packet >> generation;
-
-  bool resume = false;
-  {
-    std::lock_guard lock(m_presentation_pause_mutex);
-    if (!m_presentation_pause_active || generation != m_presentation_pause_generation)
-      return;
-    resume = m_paused_by_presentation;
-    m_presentation_pause_aborted = !m_presentation_pause_ready;
-  }
-
-  auto& system = Core::System::GetInstance();
-  {
-    const Core::CPUThreadGuard guard(system);
-    system.GetCoreTiming().ResetThrottleToNow();
-  }
-  if (resume && m_is_running.IsSet())
-    Core::SetState(system, Core::State::Running, false, true);
-
-  {
-    std::lock_guard lock(m_presentation_pause_mutex);
-    m_presentation_pause_active = false;
-    m_presentation_pause_ready = false;
-    m_presentation_pause_requester = 0;
-    m_paused_by_presentation = false;
-  }
-  m_presentation_pause_cv.notify_all();
-  INFO_LOG_FMT(NETPLAY, "Presentation pause {} ended", generation);
-}
-
-void NetPlayClient::OnPresentationPauseReject(sf::Packet& packet)
-{
-  u32 generation;
-  packet >> generation;
-  {
-    std::lock_guard lock(m_presentation_pause_mutex);
-    m_presentation_pause_request_rejected = true;
-  }
-  m_presentation_pause_cv.notify_all();
-  WARN_LOG_FMT(NETPLAY, "Presentation pause request rejected (active generation {})", generation);
-}
-
 void NetPlayClient::OnPing(sf::Packet& packet)
 {
   u32 ping_key = 0;
@@ -1360,8 +1241,7 @@ void NetPlayClient::OnSyncSaveDataNotify(sf::Packet& packet)
   m_wii_sync_redirect_folder.clear();
   m_wii_sync_data_ready = false;
 
-  NOTICE_LOG_FMT(NETPLAY, "Save sync: client expects {} logical chunk(s).",
-                 m_sync_save_data_count);
+  NOTICE_LOG_FMT(NETPLAY, "Save sync: client expects {} logical chunk(s).", m_sync_save_data_count);
 
   if (m_sync_save_data_count == 0)
   {
@@ -2158,10 +2038,8 @@ bool NetPlayClient::StartGame(const std::string& path)
   else
   {
     // Manual NetPlay keeps command-line/current-run diagnostics available to developers.
-    rollback_options.debug_p2_cstick =
-        Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
-    rollback_options.simulate_remote_p2 =
-        Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
+    rollback_options.debug_p2_cstick = Config::Get(Config::NETPLAY_ROLLBACK_DEBUG_P2_CSTICK);
+    rollback_options.simulate_remote_p2 = Config::Get(Config::NETPLAY_ROLLBACK_SIMULATE_REMOTE_P2);
     rollback_options.stress_test = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_TEST);
     rollback_options.native_stress = Config::Get(Config::NETPLAY_ROLLBACK_NATIVE_STRESS);
     rollback_options.stress_interval = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL);
@@ -2170,8 +2048,9 @@ bool NetPlayClient::StartGame(const std::string& path)
     rollback_options.stop_ram_compare_on_mismatch =
         Config::Get(Config::NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH);
     rollback_options.deep_logging = Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING);
-    rollback_options.coarse_fifo_timing =
-        Config::Get(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING);
+    rollback_options.performance_logging =
+        Config::Get(Config::NETPLAY_ROLLBACK_PERFORMANCE_LOGGING);
+    rollback_options.coarse_fifo_timing = Config::Get(Config::NETPLAY_ROLLBACK_COARSE_FIFO_TIMING);
     rollback_options.late_vi_guard = Config::Get(Config::NETPLAY_ROLLBACK_LATE_VI_GUARD);
     rollback_options.tracked_bitmap_clear =
         Config::Get(Config::NETPLAY_ROLLBACK_TRACKED_BITMAP_CLEAR);
@@ -2187,10 +2066,8 @@ bool NetPlayClient::StartGame(const std::string& path)
                       static_cast<u32>(Rollback::FrameBoundary::VINewField)));
   }
   const bool simulate_remote_p2 =
-      m_local_player->IsHost() && m_players.size() == 1 &&
-      !rollback_options.native_stress &&
-      (rollback_options.simulate_remote_p2 ||
-       (!m_managed_config && rollback_options.stress_test));
+      m_local_player->IsHost() && m_players.size() == 1 && !rollback_options.native_stress &&
+      (rollback_options.simulate_remote_p2 || (!m_managed_config && rollback_options.stress_test));
   rollback_options.simulate_remote_p2 = simulate_remote_p2;
 
   m_net_settings.local_player_id = m_local_player->pid;
@@ -2203,6 +2080,9 @@ bool NetPlayClient::StartGame(const std::string& path)
     boot_net_settings.pad_map.fill(0);
     for (int seat = 1; seat <= m_managed_config->player_count; ++seat)
       boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
+    NOTICE_LOG_FMT(NETPLAY, "Managed pad map: ticket_seat={} netplay_pid={} map=[{}]",
+                   m_managed_config->seat, m_local_player->pid,
+                   fmt::join(boot_net_settings.pad_map, ","));
   }
   // GekkoNet synchronizes GC pads only. Any lobby Wii Remote mapping makes NetPlayConfigLoader
   // force WiimoteSource::Emulated, which routes every Bluetooth poll through Dolphin's legacy
@@ -2749,66 +2629,6 @@ void NetPlayClient::SendPowerButtonEvent()
   sf::Packet packet;
   packet << MessageID::PowerButton;
   SendAsync(std::move(packet));
-}
-
-bool NetPlayClient::RunSynchronizedPresentationChange(const std::function<void()>& change)
-{
-  if (!change || !m_is_connected || !m_is_running.IsSet())
-    return false;
-
-  {
-    std::lock_guard lock(m_presentation_pause_mutex);
-    if (m_presentation_pause_active)
-      return false;
-    m_presentation_pause_request_rejected = false;
-    m_presentation_pause_aborted = false;
-  }
-
-  sf::Packet request;
-  request << MessageID::PresentationPauseRequest;
-  SendAsync(std::move(request));
-
-  std::unique_lock lock(m_presentation_pause_mutex);
-  const bool completed = m_presentation_pause_cv.wait_for(lock, std::chrono::seconds(5), [this] {
-    return m_presentation_pause_request_rejected || m_presentation_pause_aborted ||
-           (m_presentation_pause_active && m_presentation_pause_ready &&
-            m_presentation_pause_requester == m_pid);
-  });
-  const bool ready = completed && !m_presentation_pause_request_rejected &&
-                     !m_presentation_pause_aborted && m_presentation_pause_active &&
-                     m_presentation_pause_ready && m_presentation_pause_requester == m_pid;
-  if (!ready)
-  {
-    if (m_presentation_pause_active && m_presentation_pause_requester == m_pid)
-    {
-      const u32 generation = m_presentation_pause_generation;
-      lock.unlock();
-      sf::Packet abort;
-      abort << MessageID::PresentationPauseEnd << generation;
-      SendAsync(std::move(abort));
-      ERROR_LOG_FMT(NETPLAY, "Aborted presentation pause {} before it became ready", generation);
-    }
-    else
-    {
-      ERROR_LOG_FMT(NETPLAY, "Presentation pause request was rejected or timed out");
-    }
-    return false;
-  }
-
-  const u32 generation = m_presentation_pause_generation;
-  lock.unlock();
-  change();
-
-  sf::Packet complete;
-  complete << MessageID::PresentationPauseEnd << generation;
-  SendAsync(std::move(complete));
-
-  lock.lock();
-  const bool resumed = m_presentation_pause_cv.wait_for(
-      lock, std::chrono::seconds(5), [this] { return !m_presentation_pause_active; });
-  if (!resumed)
-    ERROR_LOG_FMT(NETPLAY, "Timed out waiting for presentation pause {} to end", generation);
-  return resumed;
 }
 
 void NetPlayClient::RequestGolfControl(const PlayerId pid)

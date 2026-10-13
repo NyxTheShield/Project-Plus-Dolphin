@@ -66,12 +66,12 @@
 #include "Core/HW/GCKeyboard.h"
 #include "Core/HW/GCPad.h"
 #include "Core/HW/ProcessorInterface.h"
-#include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SI/SI.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/Wiimote.h"
 #include "Core/HotkeyManager.h"
-#include "Core/IOS/USB/Bluetooth/BTEmu.h"
 #include "Core/IOS/FS/FileSystem.h"
+#include "Core/IOS/USB/Bluetooth/BTEmu.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
@@ -452,7 +452,6 @@ void MainWindow::InitCoreCallbacks()
     {
       QTimer::singleShot(0, this, &MainWindow::TryStartManagedNetplayReplay);
     }
-
   });
   installEventFilter(this);
   m_render_widget->installEventFilter(this);
@@ -836,8 +835,8 @@ void MainWindow::TryCompleteFullscreenBoot()
     INFO_LOG_FMT(VIDEO,
                  "Fullscreen boot: window settled at {}x{} (observed surface {}x{}, dpr={:.3f}); "
                  "initializing backend {}",
-                 current_width, current_height, m_fullscreen_boot_width,
-                 m_fullscreen_boot_height, dpr, Config::Get(Config::MAIN_GFX_BACKEND));
+                 current_width, current_height, m_fullscreen_boot_width, m_fullscreen_boot_height,
+                 dpr, Config::Get(Config::MAIN_GFX_BACKEND));
 
     auto parameters = std::move(m_pending_fullscreen_boot);
     m_fullscreen_boot_state_observed = false;
@@ -1360,9 +1359,8 @@ void MainWindow::BootGame(std::unique_ptr<BootParameters>&& parameters)
   const qreal dpr = m_render_widget->devicePixelRatioF();
   INFO_LOG_FMT(VIDEO,
                "Boot surface: fullscreen={}, widget={}x{}, physical={}x{}, dpr={:.3f}, backend={}",
-               m_render_widget->isFullScreen(), m_render_widget->width(),
-               m_render_widget->height(), qRound(m_render_widget->width() * dpr),
-               qRound(m_render_widget->height() * dpr), dpr,
+               m_render_widget->isFullScreen(), m_render_widget->width(), m_render_widget->height(),
+               qRound(m_render_widget->width() * dpr), qRound(m_render_widget->height() * dpr), dpr,
                Config::Get(Config::MAIN_GFX_BACKEND));
 
   // Boot up, show an error if it fails to load the game.
@@ -1378,7 +1376,6 @@ void MainWindow::BootGame(std::unique_ptr<BootParameters>&& parameters)
   if (!NetPlay::IsNetPlayRunning())
     Discord::UpdateDiscordPresence();
 #endif
-
 }
 
 void MainWindow::SetFullScreenResolution(bool fullscreen)
@@ -1857,6 +1854,10 @@ void MainWindow::StartManagedNetPlay()
       return std::nullopt;
     return it->second.get<std::string>();
   };
+  const auto read_bool = [&ticket](const char* name, bool fallback = false) {
+    const auto it = ticket.find(name);
+    return it != ticket.end() && it->second.is<bool>() ? it->second.get<bool>() : fallback;
+  };
   const auto match_id = read_string("match_id");
   const auto player_id = read_string("player_id");
   const auto game = read_string("game");
@@ -1870,6 +1871,7 @@ void MainWindow::StartManagedNetPlay()
   const auto mode = read_string("mode");
   const auto replay_path = read_string("replay_path");
   const auto replay_output_path = read_string("replay_output_path");
+  const auto replay_input_path = read_string("replay_input_path");
 
   if (mode == "netplay_replay")
   {
@@ -1935,7 +1937,7 @@ void MainWindow::StartManagedNetPlay()
                          port < replay_players ? SerialInterface::SIDEVICE_GC_CONTROLLER :
                                                  SerialInterface::SIDEVICE_NONE);
     }
-    if (!Rollback::StartNetplayReplaySession())
+    if (!Rollback::StartNetplayReplaySession(read_bool("performance_logging")))
     {
       Rollback::StopNetplayReplay();
       FailManagedSession("The Netplay Replay session could not be started");
@@ -2048,6 +2050,7 @@ void MainWindow::StartManagedNetPlay()
     m_managed_session->game_revision = static_cast<u16>(game_revision_it->second.get<double>());
   m_managed_session->status_path = *status_path;
   m_managed_session->replay_output_path = replay_output_path.value_or("");
+  m_managed_session->replay_input_path = replay_input_path.value_or("");
   m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
   m_managed_session->player_count =
       static_cast<int>(players_it->second.get<picojson::array>().size());
@@ -2152,7 +2155,15 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->deep_logging = deep_logging_it != ticket.end() &&
                                     deep_logging_it->second.is<bool>() &&
                                     deep_logging_it->second.get<bool>();
+  const auto performance_logging_it = ticket.find("performance_logging");
+  m_managed_session->performance_logging = performance_logging_it != ticket.end() &&
+                                           performance_logging_it->second.is<bool>() &&
+                                           performance_logging_it->second.get<bool>();
   const auto netplay_replays_it = ticket.find("enable_netplay_replays");
+  const auto video_timing_it = ticket.find("video_timing");
+  m_managed_session->video_timing = video_timing_it != ticket.end() &&
+                                    video_timing_it->second.is<bool>() &&
+                                    video_timing_it->second.get<bool>();
   m_managed_session->enable_netplay_replays = netplay_replays_it != ticket.end() &&
                                               netplay_replays_it->second.is<bool>() &&
                                               netplay_replays_it->second.get<bool>();
@@ -2481,13 +2492,14 @@ bool MainWindow::NetPlayJoin()
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
     rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;
-    rollback_options.disable_project_plus_music =
-        m_managed_session->disable_project_plus_music;
+    rollback_options.disable_project_plus_music = m_managed_session->disable_project_plus_music;
     rollback_options.native_stress = m_managed_session->native_stress;
     rollback_options.stress_interval = m_managed_session->stress_interval;
     rollback_options.compare_confirmed_ram = m_managed_session->compare_confirmed_ram;
     rollback_options.stop_ram_compare_on_mismatch = m_managed_session->stop_ram_compare_on_mismatch;
     rollback_options.deep_logging = m_managed_session->deep_logging;
+    rollback_options.performance_logging = m_managed_session->performance_logging;
+    rollback_options.video_timing = m_managed_session->video_timing;
     rollback_options.coarse_fifo_timing = m_managed_session->coarse_fifo_timing;
     rollback_options.late_vi_guard = m_managed_session->late_vi_guard;
     rollback_options.frame_boundary =
@@ -2496,6 +2508,7 @@ bool MainWindow::NetPlayJoin()
     rollback_options.full_scan_benchmark = m_managed_session->full_scan_benchmark;
     rollback_options.full_scan_keep_tracking = m_managed_session->full_scan_keep_tracking;
     rollback_options.parallel_dirty_compare = m_managed_session->parallel_dirty_compare;
+    rollback_options.replay_input_path = m_managed_session->replay_input_path;
   }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
       host_ip, host_port, m_netplay_dialog, nickname,

@@ -197,13 +197,6 @@ enum class MessageID : u8
   ClientCapabilities = 0xA5,
   HostInputAuthority = 0xA6,
   PowerButton = 0xA7,
-  PresentationPauseRequest = 0xA8,
-  PresentationPauseBegin = 0xA9,
-  PresentationPauseAck = 0xAA,
-  PresentationPauseReady = 0xAB,
-  PresentationPauseEnd = 0xAC,
-  PresentationPauseReject = 0xAD,
-
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,
   ComputeGameDigest = 0xC0,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/TextureCacheBase.h"
+#include "VideoCommon/RollbackVideoTiming.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1243,6 +1244,7 @@ private:
 
 TCacheEntry* TextureCacheBase::Load(u32 stage)
 {
+  const RollbackVideoTiming::Scope timing(RollbackVideoTiming::Phase::NormalTextures);
   if (auto entry = LoadImpl(stage, false))
   {
     if (!DidLinkedAssetsChange(*entry))

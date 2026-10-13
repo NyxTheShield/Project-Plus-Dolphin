@@ -226,6 +226,8 @@ add_library(videocommon
   VideoConfig.h
   VideoState.cpp
   VideoState.h
+  RollbackVideoTiming.cpp
+  RollbackVideoTiming.h
   Widescreen.cpp
   Widescreen.h
   XFMemory.cpp

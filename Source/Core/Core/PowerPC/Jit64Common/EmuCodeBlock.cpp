@@ -142,9 +142,14 @@ FixupBranch EmuCodeBlock::CheckIfSafeAddress(const OpArg& reg_value, X64Reg reg_
 }
 
 void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 size,
-                                            BitSet32 registers_to_preserve)
+                                            BitSet32 registers_to_preserve, u32 alignment)
 {
   ASSERT(size != 0);
+  ASSERT(alignment != 0 && (alignment & (alignment - 1)) == 0 &&
+         alignment <= Rollback::DIRTY_PAGE_SIZE);
+  // Alignment describes the effective address including offset. A store fitting within its
+  // alignment cannot cross a dirty page; this also holds through the FakeVMEM aliases.
+  const bool can_cross_page = size > alignment;
   auto& bitmap = Rollback::JITDirtyBitmap::Get();
   // Full-scan benchmark mode makes snapshot boundaries find changes without JIT instrumentation.
   if (!bitmap.ShouldEmitUpdates())
@@ -155,7 +160,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
   registers_to_preserve |= BitSet32{static_cast<int>(reg_addr)};
   const bool preserve_scratch = registers_to_preserve[RSCRATCH];
   const bool preserve_scratch2 = registers_to_preserve[RSCRATCH2];
-  const bool preserve_extra = size > 1 && registers_to_preserve[RSCRATCH_EXTRA];
+  const bool preserve_extra = can_cross_page && registers_to_preserve[RSCRATCH_EXTRA];
   if (preserve_scratch)
     PUSH(RSCRATCH);
   if (preserve_scratch2)
@@ -167,7 +172,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
     MOV(32, R(RSCRATCH), R(reg_addr));
   if (offset != 0)
     ADD(32, R(RSCRATCH), Imm32(static_cast<u32>(offset)));
-  if (size > 1)
+  if (can_cross_page)
     MOV(32, R(RSCRATCH_EXTRA), R(RSCRATCH));
 
   const bool tracking_active = bitmap.IsEnabled();
@@ -245,7 +250,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
         Imm8(1));
   }
 
-  if (size > 1)
+  if (can_cross_page)
   {
     ADD(32, R(RSCRATCH_EXTRA), Imm32(size - 1));
     canonicalize(RSCRATCH_EXTRA);
@@ -261,7 +266,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
         Imm8(1));
   }
 
-  if (size > 1)
+  if (can_cross_page)
   {
     CMP(32, R(RSCRATCH_EXTRA), R(RSCRATCH));
     const FixupBranch same_page = J_CC(CC_E, Jump::Near);

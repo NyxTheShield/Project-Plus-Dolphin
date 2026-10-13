@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/VideoState.h"
+#include "VideoCommon/RollbackVideoTiming.h"
 
 #include "Common/ChunkFile.h"
 #include "Core/System.h"
@@ -197,5 +198,11 @@ void VideoCommon_DoState(PointerWrap& p, std::array<std::size_t, 18>* rollback_s
   // that. Submit encoded work here (no wait): some backends (Metal) otherwise submit only on
   // present, and re-run frames present nothing.
   if (s_rollback_snapshot && !p.IsMeasureMode())
+  {
+    using Phase = RollbackVideoTiming::Phase;
+    const Phase phase = p.IsReadMode() ? Phase::SubmitLoad :
+                        VideoCommon_IsSkippingRender() ? Phase::SubmitReplaySave : Phase::SubmitSave;
+    const RollbackVideoTiming::Scope timing(phase, p.IsReadMode() || p.IsWriteMode());
     g_gfx->Flush();
+  }
 }
