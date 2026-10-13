@@ -1895,7 +1895,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
                                  !Core::System::GetInstance().IsDualCoreMode());
   DirtyPages::SetCommitProfilingEnabled(options.deep_logging);
   DirtyPages::SetParallelCompareEnabled(options.parallel_dirty_compare);
-  SetCoarseFifoTiming(options.coarse_fifo_timing);
+  SetCoarseFifoTiming(true);
   g_manager.late_vi_guard = options.late_vi_guard;
   g_manager.ram_diagnostic_dumped = false;
   g_manager.frame_boundary = options.frame_boundary;
