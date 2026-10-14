@@ -200,8 +200,14 @@ void CoreTimingManager::RefreshConfig()
   m_use_precision_timer = Config::Get(Config::MAIN_PRECISION_FRAME_TIMING);
 }
 
-void CoreTimingManager::DoState(PointerWrap& p)
+void CoreTimingManager::DoState(PointerWrap& p,
+                                std::array<std::size_t, 2>* rollback_section_ends,
+                                u8* rollback_layout_base)
 {
+  const auto note_section_end = [&](std::size_t section) {
+    if (rollback_section_ends && rollback_layout_base)
+      (*rollback_section_ends)[section] = p.GetOffsetFromPreviousPosition(rollback_layout_base);
+  };
   std::lock_guard lk(m_ts_write_lock);
   p.Do(m_globals.slice_length);
   p.Do(m_globals.global_timer);
@@ -215,6 +221,7 @@ void CoreTimingManager::DoState(PointerWrap& p)
   p.Do(m_event_fifo_id);
 
   p.DoMarker("CoreTimingData");
+  note_section_end(0);
 
   MoveEvents();
   p.DoEachElement(m_event_queue, [this](PointerWrap& pw, Event& ev) {
@@ -249,6 +256,7 @@ void CoreTimingManager::DoState(PointerWrap& p)
     }
   });
   p.DoMarker("CoreTimingEvents");
+  note_section_end(1);
 
   if (p.IsReadMode())
   {

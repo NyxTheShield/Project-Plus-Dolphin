@@ -16,6 +16,8 @@
 // inside callback:
 //   ScheduleEvent(periodInCycles - cyclesLate, callback, "whatever")
 
+#include <array>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <tuple>
@@ -134,7 +136,8 @@ public:
 
   void RefreshConfig();
 
-  void DoState(PointerWrap& p);
+  void DoState(PointerWrap& p, std::array<std::size_t, 2>* rollback_section_ends = nullptr,
+               u8* rollback_layout_base = nullptr);
 
   // Returns the event_type identifier. if name is not unique, an existing event_type will be
   // discarded.

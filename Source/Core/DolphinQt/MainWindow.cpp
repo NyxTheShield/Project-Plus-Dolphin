@@ -2146,6 +2146,14 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->compare_confirmed_ram = compare_ram_it != ticket.end() &&
                                              compare_ram_it->second.is<bool>() &&
                                              compare_ram_it->second.get<bool>();
+  const auto remote_ram_match_it = ticket.find("remote_ram_match");
+  m_managed_session->remote_ram_match = remote_ram_match_it != ticket.end() &&
+                                        remote_ram_match_it->second.is<bool>() &&
+                                        remote_ram_match_it->second.get<bool>();
+  const auto compare_video_it = ticket.find("compare_confirmed_video");
+  m_managed_session->compare_confirmed_video = compare_video_it != ticket.end() &&
+                                               compare_video_it->second.is<bool>() &&
+                                               compare_video_it->second.get<bool>();
   const auto stop_ram_compare_it = ticket.find("stop_ram_compare_on_mismatch");
   m_managed_session->stop_ram_compare_on_mismatch = stop_ram_compare_it != ticket.end() &&
                                                     stop_ram_compare_it->second.is<bool>() &&
@@ -2488,6 +2496,8 @@ bool MainWindow::NetPlayJoin()
     rollback_options.native_stress = m_managed_session->native_stress;
     rollback_options.stress_interval = m_managed_session->stress_interval;
     rollback_options.compare_confirmed_ram = m_managed_session->compare_confirmed_ram;
+    rollback_options.remote_ram_match = m_managed_session->remote_ram_match;
+    rollback_options.compare_confirmed_video = m_managed_session->compare_confirmed_video;
     rollback_options.stop_ram_compare_on_mismatch = m_managed_session->stop_ram_compare_on_mismatch;
     rollback_options.deep_logging = m_managed_session->deep_logging;
     rollback_options.coarse_fifo_timing = m_managed_session->coarse_fifo_timing;

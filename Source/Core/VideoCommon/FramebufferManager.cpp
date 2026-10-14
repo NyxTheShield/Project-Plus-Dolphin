@@ -1134,6 +1134,51 @@ void FramebufferManager::DoSaveState(PointerWrap& p)
   g_texture_cache->SerializeTexture(depth_texture, depth_texture_config, p);
 }
 
+bool FramebufferManager::CaptureEFBRollbackAudit(EFBRollbackAuditCapture* capture)
+{
+  if (!capture)
+    return false;
+  capture->valid = false;
+
+  FlushEFBPokes();
+  const MathUtil::Rectangle<int> color_rect = m_efb_color_texture->GetRect();
+  const MathUtil::Rectangle<int> depth_rect = m_efb_depth_texture->GetRect();
+  AbstractTexture* const color_texture = ResolveEFBColorTexture(color_rect);
+  AbstractTexture* const depth_texture = ResolveEFBDepthTexture(depth_rect, true);
+  if (!color_texture || !depth_texture)
+    return false;
+
+  const auto capture_texture = [](AbstractTexture* texture, AbstractTextureFormat format,
+                                  EFBRollbackAuditImage* image) {
+    image->width = texture->GetWidth();
+    image->height = texture->GetHeight();
+    image->layers = texture->GetLayers();
+    image->format = format;
+    image->stride = AbstractTexture::CalculateStrideForFormat(format, image->width);
+    image->bytes.resize(static_cast<std::size_t>(image->stride) * image->height * image->layers);
+
+    const TextureConfig staging_config(image->width, image->height, 1, 1, 1, format, 0,
+                                       AbstractTextureType::Texture_2DArray);
+    std::unique_ptr<AbstractStagingTexture> staging =
+        g_gfx->CreateStagingTexture(StagingTextureType::Readback, staging_config);
+    if (!staging)
+      return false;
+
+    const MathUtil::Rectangle<int> rect = texture->GetRect();
+    const std::size_t layer_size = static_cast<std::size_t>(image->stride) * image->height;
+    for (u32 layer = 0; layer < image->layers; ++layer)
+    {
+      staging->CopyFromTexture(texture, rect, layer, 0, rect);
+      staging->ReadTexels(rect, image->bytes.data() + layer * layer_size, image->stride);
+    }
+    return true;
+  };
+
+  capture->valid = capture_texture(color_texture, GetEFBColorFormat(), &capture->color) &&
+                   capture_texture(depth_texture, GetEFBDepthCopyFormat(), &capture->depth);
+  return capture->valid;
+}
+
 void FramebufferManager::DoLoadState(PointerWrap& p)
 {
   // Invalidate any peek cache tiles.

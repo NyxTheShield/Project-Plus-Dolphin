@@ -2184,6 +2184,8 @@ bool NetPlayClient::StartGame(const std::string& path)
     rollback_options.stress_interval = Config::Get(Config::NETPLAY_ROLLBACK_STRESS_INTERVAL);
     rollback_options.compare_confirmed_ram =
         Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM);
+    rollback_options.compare_confirmed_video =
+        Config::Get(Config::NETPLAY_ROLLBACK_COMPARE_CONFIRMED_VIDEO);
     rollback_options.stop_ram_compare_on_mismatch =
         Config::Get(Config::NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH);
     rollback_options.deep_logging = Config::Get(Config::NETPLAY_ROLLBACK_DEEP_LOGGING);

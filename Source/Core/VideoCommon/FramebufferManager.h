@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #include "Common/CommonTypes.h"
 #include "Common/EnumFormatter.h"
@@ -44,6 +45,23 @@ inline bool AddressRangesOverlap(u32 aLower, u32 aUpper, u32 bLower, u32 bUpper)
 {
   return !((aLower >= bUpper) || (bLower >= aUpper));
 }
+
+struct EFBRollbackAuditImage
+{
+  u32 width = 0;
+  u32 height = 0;
+  u32 layers = 0;
+  u32 stride = 0;
+  AbstractTextureFormat format = AbstractTextureFormat::Undefined;
+  std::vector<u8> bytes;
+};
+
+struct EFBRollbackAuditCapture
+{
+  bool valid = false;
+  EFBRollbackAuditImage color;
+  EFBRollbackAuditImage depth;
+};
 
 class FramebufferManager final
 {
@@ -130,6 +148,10 @@ public:
 
   // Save state load/save.
   void DoState(PointerWrap& p);
+
+  // Diagnostic-only backend-neutral readback. This observes the resolved EFB without changing
+  // rollback snapshot or restore semantics.
+  bool CaptureEFBRollbackAudit(EFBRollbackAuditCapture* capture);
 
 protected:
   struct EFBPokeVertex

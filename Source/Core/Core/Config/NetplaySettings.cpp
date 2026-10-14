@@ -69,6 +69,8 @@ const Info<bool> NETPLAY_ROLLBACK_FULL_SCAN_KEEP_TRACKING{
     {System::Main, "NetPlay", "RollbackFullScanKeepTracking"}, false};
 const Info<bool> NETPLAY_ROLLBACK_COMPARE_CONFIRMED_RAM{
     {System::Main, "NetPlay", "RollbackCompareConfirmedRAM"}, false};
+const Info<bool> NETPLAY_ROLLBACK_COMPARE_CONFIRMED_VIDEO{
+    {System::Main, "NetPlay", "RollbackCompareConfirmedVideo"}, false};
 const Info<bool> NETPLAY_ROLLBACK_STOP_RAM_COMPARE_ON_MISMATCH{
     {System::Main, "NetPlay", "RollbackStopRAMCompareOnMismatch"}, false};
 const Info<bool> NETPLAY_ROLLBACK_DEEP_LOGGING{

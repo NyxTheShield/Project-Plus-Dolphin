@@ -188,7 +188,8 @@ static void DoState(Core::System& system, PointerWrap& p, RollbackStateLayout* l
 
   // CoreTiming needs to be restored before restoring Hardware because
   // the controller code might need to schedule an event if the controller has changed.
-  system.GetCoreTiming().DoState(p);
+  system.GetCoreTiming().DoState(
+      p, layout ? &layout->core_timing_section_ends : nullptr, layout_base);
   p.DoMarker("CoreTiming");
   note_section_end(2);
 

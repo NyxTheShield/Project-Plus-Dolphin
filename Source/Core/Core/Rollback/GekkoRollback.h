@@ -42,6 +42,8 @@ struct GekkoSessionOptions
   bool native_stress = false;
   u32 stress_interval = 1;
   bool compare_confirmed_ram = false;
+  bool remote_ram_match = false;
+  bool compare_confirmed_video = false;
   bool stop_ram_compare_on_mismatch = false;
   bool deep_logging = false;
   bool coarse_fifo_timing = false;

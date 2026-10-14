@@ -308,6 +308,8 @@ private:
     u32 input_delay_reduction = 2;
     std::string input_delay_mode = "safe";
     bool compare_confirmed_ram = false;
+    bool remote_ram_match = false;
+    bool compare_confirmed_video = false;
     bool stop_ram_compare_on_mismatch = false;
     bool deep_logging = false;
     bool enable_netplay_replays = false;
