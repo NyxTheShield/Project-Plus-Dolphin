@@ -1257,7 +1257,7 @@ void NetPlayDialog::LoadSettings()
   m_player_buffer_size_box->setValue(player_buffer_size);
   const int frame_boundary_index =
       m_frame_boundary_combo->findData(static_cast<int>(rollback_frame_boundary));
-  const int default_frame_boundary_index = m_frame_boundary_combo->findData(3);
+  const int default_frame_boundary_index = m_frame_boundary_combo->findData(1);
   m_frame_boundary_combo->setCurrentIndex(frame_boundary_index >= 0 ? frame_boundary_index :
                                                                       default_frame_boundary_index);
 

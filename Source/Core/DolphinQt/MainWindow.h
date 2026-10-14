@@ -298,7 +298,7 @@ private:
     bool native_stress = false;
     u32 stress_interval = 1;
     std::optional<u32> rollback_window_override;
-    u32 frame_boundary = 3;
+    u32 frame_boundary = 1;
     bool full_scan_benchmark = false;
     bool full_scan_keep_tracking = false;
     bool parallel_dirty_compare = false;

@@ -46,7 +46,7 @@ struct GekkoSessionOptions
   bool deep_logging = false;
   bool coarse_fifo_timing = false;
   bool late_vi_guard = true;
-  FrameBoundary frame_boundary = FrameBoundary::VINewField;
+  FrameBoundary frame_boundary = FrameBoundary::VIBeginField;
   bool tracked_bitmap_clear = true;
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
