@@ -51,6 +51,10 @@ struct GekkoSessionOptions
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
   bool parallel_dirty_compare = false;
+  bool dual_core = true;
+  // Optional NPR source for this process's own local player. The recorded seat matching
+  // local_player is submitted through the normal networked Gekko actor.
+  std::string replay_input_path;
 };
 
 // Wire format for GameCube controller input over GekkoNet (8 bytes)
@@ -112,6 +116,7 @@ u64 GetNetplayReplayInitialRTC();
 std::vector<u8> GetNetplayReplaySysconf();
 bool IsNetplayReplayRecording();
 bool IsNetplayReplayPlaying();
+bool IsNetplayReplayInputActive();
 void StopNetplayReplay();
 
 }  // namespace Rollback

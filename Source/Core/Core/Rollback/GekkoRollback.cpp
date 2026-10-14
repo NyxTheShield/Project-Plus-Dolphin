@@ -489,6 +489,10 @@ struct GekkoManager
   std::map<s32, std::vector<u8>> netplay_replay_frames;
   std::vector<std::pair<s32, std::vector<u8>>> netplay_replay_playback_frames;
   std::size_t netplay_replay_playback_index = 0;
+  std::vector<std::pair<s32, WirePad>> replay_local_inputs;
+  std::vector<std::pair<s32, std::vector<u8>>> replay_expected_inputs;
+  bool replay_input_mismatch_reported = false;
+  bool replay_input_environment_active = false;
   u64 netplay_replay_initial_rtc = 0;
   RamDigest netplay_replay_initial_digest{};
   bool netplay_replay_initial_digest_valid = false;
@@ -1481,10 +1485,20 @@ bool SaveNetplayReplay(const std::string& path)
   return true;
 }
 
-bool LoadNetplayReplay(const std::string& path)
+namespace
+{
+struct ParsedNetplayReplay
+{
+  NetplayReplayHeader header;
+  std::vector<u64> initial_mem1_page_hashes;
+  std::vector<u8> sysconf;
+  std::vector<std::pair<s32, std::vector<u8>>> frames;
+};
+
+bool ReadNetplayReplay(const std::string& path, ParsedNetplayReplay* replay)
 {
   File::IOFile file(path, "rb");
-  NetplayReplayHeader header{};
+  NetplayReplayHeader& header = replay->header;
   if (!file || !file.ReadArray(&header, 1) || header.magic != NETPLAY_REPLAY_MAGIC ||
       header.version != NETPLAY_REPLAY_VERSION || header.players < 1 ||
       header.players > MAX_PORTS ||
@@ -1494,44 +1508,46 @@ bool LoadNetplayReplay(const std::string& path)
     return false;
   }
 
-  std::vector<u64> initial_mem1_page_hashes;
   if ((header.reserved[0] & NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES) != 0)
   {
     if (header.reserved[1] != NETPLAY_REPLAY_MEM1_PAGE_SHIFT)
       return false;
     u32 page_count = 0;
-    constexpr u32 MAX_MEM1_PAGE_COUNT =
-        Memory::MEM1_SIZE_MAX / NETPLAY_REPLAY_MEM1_PAGE_SIZE;
+    constexpr u32 MAX_MEM1_PAGE_COUNT = Memory::MEM1_SIZE_MAX / NETPLAY_REPLAY_MEM1_PAGE_SIZE;
     if (!file.ReadArray(&page_count, 1) || page_count == 0 || page_count > MAX_MEM1_PAGE_COUNT)
       return false;
-    initial_mem1_page_hashes.resize(page_count);
-    if (!file.ReadArray(initial_mem1_page_hashes.data(), page_count))
+    replay->initial_mem1_page_hashes.resize(page_count);
+    if (!file.ReadArray(replay->initial_mem1_page_hashes.data(), page_count))
       return false;
   }
 
-  std::vector<u8> replay_sysconf;
   if ((header.reserved[0] & NETPLAY_REPLAY_HAS_SYSCONF) != 0)
   {
     u32 sysconf_size = 0;
     if (!file.ReadArray(&sysconf_size, 1) || sysconf_size != NETPLAY_REPLAY_SYSCONF_SIZE)
       return false;
-    replay_sysconf.resize(sysconf_size);
-    if (!file.ReadBytes(replay_sysconf.data(), replay_sysconf.size()))
+    replay->sysconf.resize(sysconf_size);
+    if (!file.ReadBytes(replay->sysconf.data(), replay->sysconf.size()))
       return false;
   }
 
-  std::vector<std::pair<s32, std::vector<u8>>> frames;
-  frames.reserve(static_cast<std::size_t>(header.frame_count));
+  replay->frames.reserve(static_cast<std::size_t>(header.frame_count));
   for (u64 i = 0; i < header.frame_count; ++i)
   {
     s32 frame = 0;
     std::vector<u8> inputs(header.bytes_per_frame);
     if (!file.ReadArray(&frame, 1) || !file.ReadBytes(inputs.data(), inputs.size()))
       return false;
-    if (!frames.empty() && frame <= frames.back().first)
+    if (!replay->frames.empty() && frame <= replay->frames.back().first)
       return false;
-    frames.emplace_back(frame, std::move(inputs));
+    replay->frames.emplace_back(frame, std::move(inputs));
   }
+  return true;
+}
+
+bool InstallNetplayReplay(ParsedNetplayReplay replay)
+{
+  const NetplayReplayHeader& header = replay.header;
 
   std::lock_guard lk(g_manager.mutex);
   g_manager.netplay_replay_recording = false;
@@ -1544,7 +1560,7 @@ bool LoadNetplayReplay(const std::string& path)
   const auto game_key_end = std::find(header.game_key.begin(), header.game_key.end(), '\0');
   g_manager.netplay_replay_game_key.assign(
       header.game_key.data(), static_cast<std::size_t>(game_key_end - header.game_key.begin()));
-  g_manager.netplay_replay_playback_frames = std::move(frames);
+  g_manager.netplay_replay_playback_frames = std::move(replay.frames);
   g_manager.netplay_replay_playback_index = 0;
   g_manager.netplay_replay_initial_rtc = header.initial_rtc;
   g_manager.netplay_replay_initial_digest.frame = header.first_frame;
@@ -1556,13 +1572,12 @@ bool LoadNetplayReplay(const std::string& path)
   g_manager.netplay_replay_initial_digest.l1 = header.initial_l1;
   g_manager.netplay_replay_initial_digest.core_ticks = header.initial_core_ticks;
   g_manager.netplay_replay_initial_digest.timebase = header.initial_timebase;
-  g_manager.netplay_replay_initial_digest.fake_tb_start_value =
-      header.initial_fake_tb_start_value;
+  g_manager.netplay_replay_initial_digest.fake_tb_start_value = header.initial_fake_tb_start_value;
   g_manager.netplay_replay_initial_digest.fake_tb_start_ticks = header.initial_fake_tb_start_ticks;
   g_manager.netplay_replay_initial_digest.decrementer = header.initial_decrementer;
   g_manager.netplay_replay_initial_digest_valid = true;
-  g_manager.netplay_replay_initial_mem1_page_hashes = std::move(initial_mem1_page_hashes);
-  g_manager.netplay_replay_sysconf = std::move(replay_sysconf);
+  g_manager.netplay_replay_initial_mem1_page_hashes = std::move(replay.initial_mem1_page_hashes);
+  g_manager.netplay_replay_sysconf = std::move(replay.sysconf);
   g_manager.latched_pads.fill(GCPadStatus{});
   g_manager.late_vi_guard = true;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
@@ -1572,6 +1587,13 @@ bool LoadNetplayReplay(const std::string& path)
                  header.frame_count, header.players,
                  FrameBoundaryName(g_manager.netplay_replay_boundary));
   return true;
+}
+}  // namespace
+
+bool LoadNetplayReplay(const std::string& path)
+{
+  ParsedNetplayReplay replay{};
+  return ReadNetplayReplay(path, &replay) && InstallNetplayReplay(std::move(replay));
 }
 
 bool IsNetplayReplayRecording()
@@ -1608,6 +1630,12 @@ bool IsNetplayReplayPlaying()
 {
   std::lock_guard lk(g_manager.mutex);
   return g_manager.netplay_replay_playing.load(std::memory_order_relaxed);
+}
+
+bool IsNetplayReplayInputActive()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.replay_input_environment_active;
 }
 
 void StopNetplayReplay()
@@ -1698,6 +1726,45 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
     ERROR_LOG_FMT(CORE, "GekkoNet: native stress requires a one-player stress session without a "
                         "simulated peer");
     return false;
+  }
+
+  std::vector<std::pair<s32, WirePad>> replay_local_inputs;
+  std::vector<std::pair<s32, std::vector<u8>>> replay_expected_inputs;
+  u64 replay_input_initial_rtc = 0;
+  std::vector<u8> replay_input_sysconf;
+  if (!replay_playback && !options.replay_input_path.empty())
+  {
+    ParsedNetplayReplay replay{};
+    if (!ReadNetplayReplay(options.replay_input_path, &replay) ||
+        replay.header.players != static_cast<u32>(players) ||
+        replay.header.frame_boundary != static_cast<u32>(options.frame_boundary))
+    {
+      ERROR_LOG_FMT(CORE, "GekkoNet: Invalid local NPR input source {}", options.replay_input_path);
+      return false;
+    }
+
+    const std::size_t input_offset = static_cast<std::size_t>(local_player - 1) * sizeof(WirePad);
+    replay_local_inputs.reserve(replay.frames.size());
+    replay_expected_inputs.reserve(replay.frames.size());
+    replay_input_initial_rtc = replay.header.initial_rtc;
+    replay_input_sysconf = replay.sysconf;
+    s32 source_frame = replay.header.first_frame;
+    s32 logical_frame = 0;
+    for (const auto& [frame, inputs] : replay.frames)
+    {
+      if (frame != source_frame || inputs.size() < input_offset + sizeof(WirePad))
+      {
+        ERROR_LOG_FMT(CORE, "GekkoNet: Local NPR input source is missing recorded frame {}",
+                      source_frame);
+        return false;
+      }
+      WirePad wire{};
+      std::memcpy(&wire, inputs.data() + input_offset, sizeof(wire));
+      replay_local_inputs.emplace_back(logical_frame, wire);
+      replay_expected_inputs.emplace_back(logical_frame, inputs);
+      ++source_frame;
+      ++logical_frame;
+    }
   }
   if (!gekko_create(&g_manager.session,
                     options.native_stress ? GekkoStressSession : GekkoGameSession))
@@ -1811,6 +1878,15 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.configured_prediction_window = clamped_prediction;
   g_manager.session_id = session_id;
   g_manager.local_input_frame = 0;
+  g_manager.replay_local_inputs = std::move(replay_local_inputs);
+  g_manager.replay_expected_inputs = std::move(replay_expected_inputs);
+  g_manager.replay_input_mismatch_reported = false;
+  g_manager.replay_input_environment_active = !g_manager.replay_local_inputs.empty();
+  if (g_manager.replay_input_environment_active)
+  {
+    g_manager.netplay_replay_initial_rtc = replay_input_initial_rtc;
+    g_manager.netplay_replay_sysconf = std::move(replay_input_sysconf);
+  }
   // GetRollbackPad is active throughout boot, before Gekko emits the first Advance event. Never
   // expose pads left latched at the end of the previous session to the next game's SI startup.
   g_manager.latched_pads.fill(GCPadStatus{});
@@ -2044,7 +2120,10 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       "compare_confirmed_ram={}, "
       "frame_boundary={})",
       game_name, players, local_player, session_id, clamped_delay, clamped_rollback_window,
-      clamped_prediction, g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad",
+      clamped_prediction,
+      g_manager.replay_local_inputs.empty() ?
+          (g_manager.local_uses_gc_adapter ? "gc_adapter" : "emulated_pad") :
+          "npr",
       options.debug_p2_cstick, options.simulate_remote_p2,
       options.simulate_remote_p2 && !options.stress_test ? SIMULATED_P2_LATENCY.count() : 0,
       options.stress_test, options.native_stress, options.enable_random_inputs,
@@ -2118,6 +2197,10 @@ void StopGekkoSession()
   }
   ResetSimulatedLink();
   g_manager.pending_events.clear();
+  g_manager.replay_local_inputs.clear();
+  g_manager.replay_expected_inputs.clear();
+  g_manager.replay_input_mismatch_reported = false;
+  g_manager.replay_input_environment_active = false;
   g_manager.visible_frame_pacing_pending = false;
   g_manager.deferred_visible_follows_rollback = false;
   g_manager.throttle_reference_before_load.reset();
@@ -2182,39 +2265,52 @@ static bool SubmitLocalInput()
   if (g_manager.netplay_replay_session)
     return SubmitNetplayReplayInputs();
 
-  g_controller_interface.SetCurrentInputChannel(ciface::InputChannel::SerialInterface);
-  g_controller_interface.UpdateInput();
-
-  // The Gekko player number is an in-game/network slot, not a local controller index.
-  // Like Dolphin NetPlay, each client maps its first configured local pad to its assigned slot.
-  // Using local_player - 1 here made player 2 read GCPad2 even though its controller is GCPad1.
-  constexpr int LOCAL_PAD = 0;
-  GCPadStatus local_status;
-  if (g_manager.local_uses_gc_adapter)
+  WirePad wire{};
+  const u64 sample_time_ns = static_cast<u64>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+          .count());
+  if (!g_manager.replay_local_inputs.empty())
   {
-    local_status = GCAdapter::Input(LOCAL_PAD);
+    // NPR stores the input applied to each logical frame. Read ahead by the configured local delay
+    // so Gekko's normal delay places that recorded input back onto the same target frame.
+    const u64 source_frame = g_manager.local_input_frame + g_manager.configured_local_delay;
+    if (source_frame >= g_manager.replay_local_inputs.size())
+    {
+      NOTICE_LOG_FMT(CORE, "GekkoNet: Local NPR input stream completed at frame {}",
+                     g_manager.local_input_frame);
+      return false;
+    }
+    const auto& [recorded_frame, recorded_wire] = g_manager.replay_local_inputs[source_frame];
+    if (recorded_frame != static_cast<s32>(source_frame))
+    {
+      ERROR_LOG_FMT(CORE, "GekkoNet: Local NPR input expected frame {}, found {}", source_frame,
+                    recorded_frame);
+      return false;
+    }
+    wire = recorded_wire;
   }
   else
   {
-    local_status = Pad::GetStatus(LOCAL_PAD);
+    g_controller_interface.SetCurrentInputChannel(ciface::InputChannel::SerialInterface);
+    g_controller_interface.UpdateInput();
+
+    // The network seat is not a local controller index. Every client samples its first local pad.
+    constexpr int LOCAL_PAD = 0;
+    GCPadStatus local_status =
+        g_manager.local_uses_gc_adapter ? GCAdapter::Input(LOCAL_PAD) : Pad::GetStatus(LOCAL_PAD);
+    const bool input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
+    if (g_manager.debug_p2_cstick && input_spam_active)
+    {
+      ApplyDebugCStickPattern(&local_status,
+                              g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
+    }
+    if (g_manager.enable_random_inputs && input_spam_active)
+    {
+      ApplyStressCStickPattern(&local_status,
+                               g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
+    }
+    wire = EncodePad(local_status);
   }
-  const u64 sample_time_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                  Clock::now().time_since_epoch())
-                                                  .count());
-  const bool input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
-  // Debug input belongs to this Dolphin process. Modify its sampled local pad before the input is
-  // serialized for GekkoNet; the local actor then carries it to whichever seat matchmaking gave
-  // this client. Never select a physical pad or a target stream from the network seat number.
-  if (g_manager.debug_p2_cstick && input_spam_active)
-  {
-    ApplyDebugCStickPattern(&local_status, g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
-  }
-  if (g_manager.enable_random_inputs && input_spam_active)
-  {
-    ApplyStressCStickPattern(&local_status,
-                             g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
-  }
-  WirePad wire = EncodePad(local_status);
 
   const bool sampled_start = WirePadHasStart(wire);
   if (sampled_start != g_manager.last_sampled_start)
@@ -2326,6 +2422,47 @@ static void LatchInputs(const unsigned char* raw_inputs)
       g_manager.latched_pads[p] = DecodePad(wire);
     }
   }
+}
+
+static void VerifyConfirmedReplayInputs(const QueuedEvent& event)
+{
+  if (g_manager.replay_expected_inputs.empty() || g_manager.replay_input_mismatch_reported ||
+      event.frame < 0 ||
+      static_cast<std::size_t>(event.frame) >= g_manager.replay_expected_inputs.size())
+  {
+    return;
+  }
+
+  // Predictions may differ transiently. Compare only once every actor has supplied this frame.
+  for (const int handle : g_manager.player_handles)
+  {
+    if (handle < 0 || gekko_last_received_frame(g_manager.session, handle) < event.frame)
+      return;
+  }
+
+  const auto& [expected_frame, expected] =
+      g_manager.replay_expected_inputs[static_cast<std::size_t>(event.frame)];
+  if (expected_frame != event.frame)
+    return;
+
+  const std::size_t compared_size = std::min(expected.size(), event.inputs.size());
+  std::size_t mismatch = compared_size;
+  for (std::size_t i = 0; i < compared_size; ++i)
+  {
+    if (expected[i] != event.inputs[i])
+    {
+      mismatch = i;
+      break;
+    }
+  }
+  if (mismatch == compared_size && expected.size() == event.inputs.size())
+    return;
+
+  g_manager.replay_input_mismatch_reported = true;
+  ERROR_LOG_FMT(CORE,
+                "GekkoNet: confirmed NPR input mismatch at frame {} byte {} (expected_size={}, "
+                "actual_size={})",
+                event.frame, mismatch, expected.size(), event.inputs.size());
 }
 
 static void RecordNetplayReplayFrame(Core::System& system, s32 frame)
@@ -3191,6 +3328,7 @@ static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
       g_manager.last_advance_has_start = !start_players.empty();
       if (!resimulating)
         applied_sample_time_ns = MeasureLocalInputDelay(event.frame, event.inputs);
+      VerifyConfirmedReplayInputs(event);
       LatchInputs(event.inputs.data());
       RecordNetplayReplayFrame(system, event.frame);
       const auto advance_now = std::chrono::steady_clock::now();

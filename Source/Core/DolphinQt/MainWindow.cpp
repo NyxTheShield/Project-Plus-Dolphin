@@ -1870,6 +1870,7 @@ void MainWindow::StartManagedNetPlay()
   const auto mode = read_string("mode");
   const auto replay_path = read_string("replay_path");
   const auto replay_output_path = read_string("replay_output_path");
+  const auto replay_input_path = read_string("replay_input_path");
 
   if (mode == "netplay_replay")
   {
@@ -2048,6 +2049,7 @@ void MainWindow::StartManagedNetPlay()
     m_managed_session->game_revision = static_cast<u16>(game_revision_it->second.get<double>());
   m_managed_session->status_path = *status_path;
   m_managed_session->replay_output_path = replay_output_path.value_or("");
+  m_managed_session->replay_input_path = replay_input_path.value_or("");
   m_managed_session->seat = static_cast<int>(seat_it->second.get<double>());
   m_managed_session->player_count =
       static_cast<int>(players_it->second.get<picojson::array>().size());
@@ -2496,6 +2498,8 @@ bool MainWindow::NetPlayJoin()
     rollback_options.full_scan_benchmark = m_managed_session->full_scan_benchmark;
     rollback_options.full_scan_keep_tracking = m_managed_session->full_scan_keep_tracking;
     rollback_options.parallel_dirty_compare = m_managed_session->parallel_dirty_compare;
+    rollback_options.dual_core = m_managed_session->dual_core;
+    rollback_options.replay_input_path = m_managed_session->replay_input_path;
   }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
       host_ip, host_port, m_netplay_dialog, nickname,

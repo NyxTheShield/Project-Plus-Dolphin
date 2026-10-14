@@ -411,10 +411,17 @@ u32 CEXIIPL::GetEmulatedTime(Core::System& system, u32 epoch)
     // let's keep time moving forward, regardless of what it starts at
     ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
   }
+  else if (Rollback::IsNetplayReplayInputActive())
+  {
+    // Reproduce the recording's deterministic clock while transporting its inputs through a real
+    // two-peer Gekko session.
+    ltime = Rollback::GetNetplayReplayInitialRTC();
+    ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
+  }
   else if (NetPlay::IsNetPlayRunning() || Rollback::IsNetplayReplayPlaying())
   {
     ltime = NetPlay::IsNetPlayRunning() ? NetPlay_GetEmulatedTime() :
-                                         Rollback::GetNetplayReplayInitialRTC();
+                                          Rollback::GetNetplayReplayInitialRTC();
 
     // let's keep time moving forward, regardless of what it starts at
     ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();

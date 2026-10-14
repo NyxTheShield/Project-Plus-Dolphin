@@ -286,6 +286,7 @@ private:
     u16 game_revision = 0;
     std::string status_path;
     std::string replay_output_path;
+    std::string replay_input_path;
     int seat = 0;
     int player_count = 0;
     std::vector<std::string> player_ids;

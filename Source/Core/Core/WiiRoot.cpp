@@ -156,8 +156,9 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
   // Replay playback is loaded before the emulated boot begins. Use its authoritative runtime
   // state as well as the boot marker so every boot path receives the same deterministic Wii-save
   // initialization as the session that produced the input stream.
-  const bool netplay_replay =
-      boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying();
+  const bool netplay_replay = boot_session_data.IsNetplayReplay() ||
+                              Rollback::IsNetplayReplayPlaying() ||
+                              Rollback::IsNetplayReplayInputActive();
   const u64 title_id = SConfig::GetInstance().GetTitleID();
   const auto configured_fs = FS::MakeFileSystem(FS::Location::Configured);
   if (movie.IsRecordingInput())
@@ -486,13 +487,14 @@ void InitializeWiiFileSystemContents(
     }
 
     InitializeDeterministicWiiSaves(fs.get(), boot_session_data);
-    if (boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying())
+    if (boot_session_data.IsNetplayReplay() || Rollback::IsNetplayReplayPlaying() ||
+        Rollback::IsNetplayReplayInputActive())
     {
       const std::vector<u8> replay_sysconf = Rollback::GetNetplayReplaySysconf();
       if (!replay_sysconf.empty())
       {
-        const auto file = fs->OpenFile(IOS::PID_KERNEL, IOS::PID_KERNEL,
-                                       "/shared2/sys/SYSCONF", FS::Mode::ReadWrite);
+        const auto file = fs->OpenFile(IOS::PID_KERNEL, IOS::PID_KERNEL, "/shared2/sys/SYSCONF",
+                                       FS::Mode::ReadWrite);
         if (!file || !file->Seek(0, FS::SeekMode::Set) ||
             !file->Write(replay_sysconf.data(), replay_sysconf.size()))
         {
