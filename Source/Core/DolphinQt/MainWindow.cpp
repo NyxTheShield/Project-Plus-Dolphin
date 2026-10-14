@@ -2611,7 +2611,6 @@ bool MainWindow::NetPlayJoin()
     rollback_options.full_scan_benchmark = m_managed_session->full_scan_benchmark;
     rollback_options.full_scan_keep_tracking = m_managed_session->full_scan_keep_tracking;
     rollback_options.parallel_dirty_compare = m_managed_session->parallel_dirty_compare;
-    rollback_options.dual_core = m_managed_session->dual_core;
     rollback_options.replay_input_path = m_managed_session->replay_input_path;
   }
   Settings::Instance().ResetNetPlayClient(new NetPlay::NetPlayClient(
