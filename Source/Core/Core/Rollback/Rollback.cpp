@@ -47,7 +47,9 @@ ResimEventStats s_resim_event_stats;
 std::unordered_map<u32, ResimGuestHotspot> s_resim_guest_hotspots;
 ResimJitMemoryStats s_resim_jit_memory_stats;
 
-constexpr std::size_t RESTORE_PAGE = 4096;
+// Coarse block used by full-copy RAM diffs, restore audits, and learned-address invalidation.
+// Dirty-page snapshots have their own granularity in DirtyBitmap.h.
+constexpr std::size_t RAM_DIFF_BLOCK_SIZE = 4096;
 constexpr std::size_t JIT_CACHE_LINE = 32;
 constexpr u32 MEM1_VIRTUAL = 0x80000000u;
 constexpr u32 MEM2_VIRTUAL = 0x90000000u;
@@ -62,11 +64,12 @@ double MillisecondsSince(std::chrono::steady_clock::time_point start)
 
 void HashRamPages(const u8* data, std::size_t size, std::vector<u64>* hashes)
 {
-  hashes->resize((size + RESTORE_PAGE - 1) / RESTORE_PAGE);
+  hashes->resize((size + RAM_DIFF_BLOCK_SIZE - 1) / RAM_DIFF_BLOCK_SIZE);
   for (std::size_t page = 0; page < hashes->size(); ++page)
   {
-    const std::size_t offset = page * RESTORE_PAGE;
-    (*hashes)[page] = XXH3_64bits(data + offset, std::min(RESTORE_PAGE, size - offset));
+    const std::size_t offset = page * RAM_DIFF_BLOCK_SIZE;
+    (*hashes)[page] =
+        XXH3_64bits(data + offset, std::min(RAM_DIFF_BLOCK_SIZE, size - offset));
   }
 }
 
@@ -76,8 +79,9 @@ void AuditRestoredRamPages(const u8* data, std::size_t size, const std::vector<u
   std::size_t reported = 0;
   for (std::size_t page = 0; page < expected.size(); ++page)
   {
-    const std::size_t offset = page * RESTORE_PAGE;
-    const u64 actual = XXH3_64bits(data + offset, std::min(RESTORE_PAGE, size - offset));
+    const std::size_t offset = page * RAM_DIFF_BLOCK_SIZE;
+    const u64 actual =
+        XXH3_64bits(data + offset, std::min(RAM_DIFF_BLOCK_SIZE, size - offset));
     if (actual == expected[page])
       continue;
     ERROR_LOG_FMT(CORE,
@@ -222,7 +226,7 @@ std::size_t CountDifferentPageHashes(const std::vector<u64>& original,
       ERROR_LOG_FMT(CORE,
                     "Rollback replay audit: frame {} {} page differs physical=0x{:08x} "
                     "original={:016x} replayed={:016x}",
-                    frame, area, physical_base + static_cast<u32>(page * RESTORE_PAGE),
+                    frame, area, physical_base + static_cast<u32>(page * RAM_DIFF_BLOCK_SIZE),
                     original[page], replayed[page]);
     }
   }
@@ -266,9 +270,9 @@ void RestoreRam(u8* live, const std::vector<u8>& saved, u32 virtual_base,
                 std::vector<u32>* changed_pages, std::vector<ChangedMemoryRange>* changed_ranges)
 {
   const std::size_t size = saved.size();
-  for (std::size_t offset = 0; offset < size; offset += RESTORE_PAGE)
+  for (std::size_t offset = 0; offset < size; offset += RAM_DIFF_BLOCK_SIZE)
   {
-    const std::size_t length = std::min(RESTORE_PAGE, size - offset);
+    const std::size_t length = std::min(RAM_DIFF_BLOCK_SIZE, size - offset);
     if (std::memcmp(live + offset, saved.data() + offset, length) == 0)
       continue;
     const u32 physical = (virtual_base + static_cast<u32>(offset)) & PHYSICAL_MASK;
@@ -297,7 +301,7 @@ void ForgetLearnedJitAddresses(Core::System& system, const std::vector<u32>& cha
   if (!jit || changed_pages.empty())
     return;
   const auto in_changed_page = [&changed_pages](u32 address) {
-    const u32 page = address & PHYSICAL_MASK & ~static_cast<u32>(RESTORE_PAGE - 1);
+    const u32 page = address & PHYSICAL_MASK & ~static_cast<u32>(RAM_DIFF_BLOCK_SIZE - 1);
     return std::binary_search(changed_pages.begin(), changed_pages.end(), page);
   };
   std::erase_if(jit->js.fifoWriteAddresses, in_changed_page);
@@ -782,7 +786,7 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
             slot->page_snapshot_id,
             [this](u32 physical, u32 length) {
               m_changed_ranges.push_back({physical, length});
-              const u32 page = physical & ~static_cast<u32>(RESTORE_PAGE - 1);
+              const u32 page = physical & ~static_cast<u32>(RAM_DIFF_BLOCK_SIZE - 1);
               if (m_changed_blocks.empty() || m_changed_blocks.back() != page)
                 m_changed_blocks.push_back(page);
             },

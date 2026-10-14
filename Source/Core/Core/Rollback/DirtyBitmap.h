@@ -3,8 +3,8 @@
 
 // Dirty page bitmap for guest RAM, ported from FaultyPine's dolphin fork (DeltaSaveSlot.h).
 //
-// One byte per 4 KB page of the guest physical address space. Every write to guest RAM sets the
-// byte for each page it touches, and rollback snapshots copy and clear the pages that are set. The
+// One byte per tracking unit of the guest physical address space. Every write to guest RAM sets
+// the byte for each unit it touches, and rollback snapshots copy and clear the units that are set. The
 // JIT sets the bytes inline (EmuCodeBlock::EmitJITDirtyBitmapUpdate), so nothing traps and no
 // page protection is needed. Writes that do not go through the JIT call MarkPhysicalRangeDirty.
 //
@@ -21,8 +21,10 @@
 
 namespace Rollback
 {
-// Guest physical pages are 4 KB regardless of the host page size.
-constexpr std::size_t DIRTY_PAGE_SIZE = 4096;
+// Rollback tracking granularity is independent of both host pages and JIT cache lines. Keep the
+// shift and size coupled because generated JIT stores use the shift directly.
+constexpr u32 DIRTY_PAGE_SHIFT = 9;
+constexpr std::size_t DIRTY_PAGE_SIZE = std::size_t{1} << DIRTY_PAGE_SHIFT;
 
 // Plain global so the JIT can embed its address as an absolute immediate (see
 // EmuCodeBlock::EmitJITDirtyBitmapUpdate).
