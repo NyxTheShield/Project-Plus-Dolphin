@@ -199,6 +199,9 @@ public:
     m_pending.framebuffer = fb;
   }
 
+  // Drop render-target references before their backing swap chain is resized.
+  void UnsetFramebuffer();
+
   void SetOMUAV(ID3D11UnorderedAccessView* uav)
   {
     if (m_current.uav != uav)

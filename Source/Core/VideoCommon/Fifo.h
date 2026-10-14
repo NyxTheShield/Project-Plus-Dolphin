@@ -70,6 +70,8 @@ public:
 
   void FlushGpu();
   void RunGpu();
+  void WakeGpuForBlockingRequest();
+  void SetRollbackSnapshotExecutionSuspended(bool suspended);
   void GpuMaySleep();
   void RunGpuLoop();
   void ExitGpuLoop();
@@ -89,6 +91,7 @@ private:
   Common::BlockingLoop m_gpu_mainloop;
 
   Common::Flag m_emu_running_state;
+  std::atomic<bool> m_rollback_snapshot_execution_suspended{false};
 
   // Most of this array is unlikely to be faulted in...
   u8 m_fifo_aux_data[FIFO_SIZE]{};

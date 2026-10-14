@@ -298,6 +298,9 @@ void FifoManager::RunGpuLoop()
         // Run events from the CPU thread.
         AsyncRequests::GetInstance()->PullEvents();
 
+        if (m_rollback_snapshot_execution_suspended.load(std::memory_order_acquire))
+          return;
+
         // Do nothing while paused
         if (!m_emu_running_state.IsSet())
           return;
@@ -440,6 +443,19 @@ void FifoManager::RunGpu()
   }
 }
 
+void FifoManager::WakeGpuForBlockingRequest()
+{
+  if (m_system.IsDualCoreMode())
+    m_gpu_mainloop.Wakeup();
+}
+
+void FifoManager::SetRollbackSnapshotExecutionSuspended(bool suspended)
+{
+  m_rollback_snapshot_execution_suspended.store(suspended, std::memory_order_release);
+  if (!suspended)
+    m_gpu_mainloop.Wakeup();
+}
+
 int FifoManager::RunGpuOnCpu(int ticks)
 {
   const bool profile_resim =
@@ -449,6 +465,7 @@ int FifoManager::RunGpuOnCpu(int ticks)
   auto& command_processor = m_system.GetCommandProcessor();
   auto& fifo = command_processor.GetFifo();
   bool reset_simd_state = false;
+  bool deterministic_work_produced = false;
   int available_ticks = int(ticks * m_config_sync_gpu_overclock) + m_sync_ticks.load();
   while (fifo.bFF_GPReadEnable.load(std::memory_order_relaxed) &&
          fifo.CPReadWriteDistance.load(std::memory_order_relaxed) && !AtBreakpoint(m_system) &&
@@ -457,7 +474,7 @@ int FifoManager::RunGpuOnCpu(int ticks)
     if (m_use_deterministic_gpu_thread)
     {
       ReadDataFromFifoOnCPU(fifo.CPReadPointer.load(std::memory_order_relaxed));
-      m_gpu_mainloop.Wakeup();
+      deterministic_work_produced = true;
     }
     else
     {
@@ -487,6 +504,9 @@ int FifoManager::RunGpuOnCpu(int ticks)
 
     fifo.CPReadWriteDistance.fetch_sub(GPFifo::GATHER_PIPE_SIZE, std::memory_order_relaxed);
   }
+
+  if (deterministic_work_produced)
+    m_gpu_mainloop.Wakeup();
 
   command_processor.SetCPStatusFromGPU();
 

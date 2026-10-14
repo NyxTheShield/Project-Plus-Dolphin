@@ -26,6 +26,14 @@ std::unique_ptr<StateManager> stateman;
 StateManager::StateManager() = default;
 StateManager::~StateManager() = default;
 
+void StateManager::UnsetFramebuffer()
+{
+  D3D::context->OMSetRenderTargets(0, nullptr, nullptr);
+  m_current.framebuffer = nullptr;
+  m_pending.framebuffer = nullptr;
+  m_dirtyFlags.reset(DirtyFlag_Framebuffer);
+}
+
 void StateManager::Apply()
 {
   if (m_dirtyFlags.none())

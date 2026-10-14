@@ -17,9 +17,11 @@ void VideoCommon_DoState(PointerWrap& p,
 // Orca: skip host rendering on throwaway re-run frames. The GX command stream is still parsed, so
 // registers, TMEM, PE tokens, interrupts and emulated GPU timing match a rendered frame; only
 // vertex loading, draws, copies, clears and presentation are skipped. Texture-only copies still
-// write their placeholder, so RAM matches too. Refused in dual core.
+// write their placeholder, so RAM matches too.
 void VideoCommon_SetSkipRender(bool skip);
 bool VideoCommon_IsSkippingRender();
+// Historical replay frames are not exposed to the host window.
+bool VideoCommon_IsSkippingPresent();
 
 // Orca: set around a rollback snapshot's DoState (the same for measure, save and load). Host GPU
 // state is then skipped: no EFB readback, texture cache or bounding box. None of it reaches RAM in

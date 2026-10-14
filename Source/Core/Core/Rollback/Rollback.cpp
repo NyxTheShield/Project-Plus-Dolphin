@@ -15,6 +15,8 @@
 
 #include "Common/FPURoundMode.h"
 #include "Common/Logging/Log.h"
+#include "Core/Core.h"
+#include "Core/DSPEmulator.h"
 #include "Core/HW/DSP.h"
 #include "Core/HW/Memmap.h"
 #include "Core/IOS/FS/HostBackend/FS.h"
@@ -26,6 +28,7 @@
 #include "Core/Rollback/DirtyPages.h"
 #include "Core/State.h"
 #include "Core/System.h"
+#include "VideoCommon/Fifo.h"
 #include "VideoCommon/VideoState.h"
 
 namespace Rollback
@@ -72,6 +75,46 @@ double MillisecondsSince(std::chrono::steady_clock::time_point start)
 {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
+
+// A rollback snapshot represents one emulated instant. Drain deterministic FIFO work and hold the
+// DSP lock across the complete Orca save or restore so the GPU and DSP cannot advance between the
+// serialized device state and RAM commit. The GPU loop stays alive to service blocking video-state
+// requests, but restored FIFO commands remain suspended until the whole snapshot operation ends.
+class SnapshotExecutionBarrier
+{
+public:
+  explicit SnapshotExecutionBarrier(Core::System& system) : m_system(system)
+  {
+    if (!system.IsDualCoreMode() || !Core::IsRunning(system))
+      return;
+
+    const auto start = std::chrono::steady_clock::now();
+    system.GetDSP().GetDSPEmulator()->PauseAndLock();
+    system.GetFifo().SyncGPU(Fifo::SyncGPUReason::Other);
+    system.GetFifo().SetRollbackSnapshotExecutionSuspended(true);
+    m_wait_ms = MillisecondsSince(start);
+    m_active = true;
+  }
+
+  ~SnapshotExecutionBarrier()
+  {
+    if (!m_active)
+      return;
+
+    m_system.GetFifo().SetRollbackSnapshotExecutionSuspended(false);
+    m_system.GetDSP().GetDSPEmulator()->UnpauseAndUnlock();
+  }
+
+  SnapshotExecutionBarrier(const SnapshotExecutionBarrier&) = delete;
+  SnapshotExecutionBarrier& operator=(const SnapshotExecutionBarrier&) = delete;
+
+  double WaitMilliseconds() const { return m_wait_ms; }
+
+private:
+  Core::System& m_system;
+  bool m_active = false;
+  double m_wait_ms = 0.0;
+};
 
 void HashRamPages(const u8* data, std::size_t size, std::vector<u64>* hashes)
 {
@@ -314,6 +357,11 @@ bool IsResimulating()
 
 void SetResimulating(bool resimulating)
 {
+  const bool changed = s_resimulating.load(std::memory_order_relaxed) != resimulating;
+  auto& system = Core::System::GetInstance();
+  if (changed && system.IsDualCoreMode() && Core::IsRunning(system))
+    system.GetFifo().SyncGPU(Fifo::SyncGPUReason::Other);
+
   s_resimulating.store(resimulating, std::memory_order_relaxed);
   VideoCommon_SetSkipRender(resimulating);
 }
@@ -631,6 +679,8 @@ bool SnapshotRing::Save(Core::System& system, s64 frame)
   if (trace)
     NOTICE_LOG_FMT(CORE, "Rollback trace: save frame {} begin", frame);
   m_last_save_timings = {};
+  SnapshotExecutionBarrier execution_barrier(system);
+  m_last_save_timings.execution_barrier_ms = execution_barrier.WaitMilliseconds();
   // Re-saving a frame after a rewind reuses its slot; otherwise take the next one.
   Slot* slot = Find(frame);
   const bool compare_replayed_frame =
@@ -797,6 +847,8 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
   if (trace)
     NOTICE_LOG_FMT(CORE, "Rollback trace: load frame {} begin", frame);
   m_last_load_timings = {};
+  SnapshotExecutionBarrier execution_barrier(system);
+  m_last_load_timings.execution_barrier_ms = execution_barrier.WaitMilliseconds();
   Slot* slot = Find(frame);
   if (!slot || slot->state_size == 0)
   {
@@ -952,6 +1004,7 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
 
 bool SnapshotRing::Capture(Core::System& system, MachineImage* image, bool stop_journal)
 {
+  SnapshotExecutionBarrier execution_barrier(system);
   Common::UniqueBuffer<u8> state;
   std::size_t state_size;
   {

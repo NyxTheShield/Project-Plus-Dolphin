@@ -30,12 +30,15 @@ void AsyncRequests::PullEvents()
   }
 }
 
-void AsyncRequests::QueueEvent(Event&& event)
+void AsyncRequests::QueueEvent(Event&& event, bool blocking)
 {
   m_queue.Push(std::move(event));
 
   auto& system = Core::System::GetInstance();
-  system.GetFifo().RunGpu();
+  if (blocking)
+    system.GetFifo().WakeGpuForBlockingRequest();
+  else
+    system.GetFifo().RunGpu();
 }
 
 void AsyncRequests::WaitForEmptyQueue()

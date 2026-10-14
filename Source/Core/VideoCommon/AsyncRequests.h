@@ -33,7 +33,7 @@ public:
       return;
     }
 
-    QueueEvent(Event{std::forward<F>(callback)});
+    QueueEvent(Event{std::forward<F>(callback)}, false);
   }
 
   template <std::invocable<> F>
@@ -43,7 +43,7 @@ public:
       return std::invoke(std::forward<F>(callback));
 
     std::packaged_task task{std::forward<F>(callback)};
-    QueueEvent(Event{[&] { task(); }});
+    QueueEvent(Event{[&] { task(); }}, true);
 
     return task.get_future().get();
   }
@@ -56,7 +56,7 @@ public:
 private:
   using Event = Common::MoveOnlyFunction<void()>;
 
-  void QueueEvent(Event&& event);
+  void QueueEvent(Event&& event, bool blocking);
 
   static AsyncRequests s_singleton;
 

@@ -33,42 +33,45 @@
 #include "Common/Logging/Log.h"
 
 static std::atomic<bool> s_skip_render{false};
-static bool s_rollback_snapshot = false;
-static bool s_snapshot_redisplays = false;
+static std::atomic<bool> s_skip_present{false};
+static std::atomic<bool> s_rollback_snapshot{false};
+static std::atomic<bool> s_snapshot_redisplays{false};
 
 void VideoCommon_SetRollbackSnapshot(bool snapshot)
 {
-  s_rollback_snapshot = snapshot;
+  s_rollback_snapshot.store(snapshot, std::memory_order_relaxed);
 }
 
 bool VideoCommon_IsRollbackSnapshot()
 {
-  return s_rollback_snapshot;
+  return s_rollback_snapshot.load(std::memory_order_relaxed);
 }
 
 void VideoCommon_SetSnapshotRedisplays(bool redisplays)
 {
-  s_snapshot_redisplays = redisplays;
+  s_snapshot_redisplays.store(redisplays, std::memory_order_relaxed);
 }
 
 bool VideoCommon_LoadRedisplays()
 {
-  return !s_rollback_snapshot || s_snapshot_redisplays;
+  return !s_rollback_snapshot.load(std::memory_order_relaxed) ||
+         s_snapshot_redisplays.load(std::memory_order_relaxed);
 }
 
 void VideoCommon_SetSkipRender(bool skip)
 {
-  if (skip && Core::System::GetInstance().IsDualCoreMode())
-  {
-    WARN_LOG_FMT(VIDEO, "Skip render refused: dual core");
-    skip = false;
-  }
+  s_skip_present.store(skip, std::memory_order_relaxed);
   s_skip_render.store(skip, std::memory_order_relaxed);
 }
 
 bool VideoCommon_IsSkippingRender()
 {
   return s_skip_render.load(std::memory_order_relaxed);
+}
+
+bool VideoCommon_IsSkippingPresent()
+{
+  return s_skip_present.load(std::memory_order_relaxed);
 }
 
 void VideoCommon_DoState(PointerWrap& p, std::array<std::size_t, 18>* rollback_section_ends,
@@ -157,12 +160,12 @@ void VideoCommon_DoState(PointerWrap& p, std::array<std::size_t, 18>* rollback_s
   p.DoMarker("VertexManager");
   note_section_end(11);
 
-  if (!s_rollback_snapshot)
+  if (!s_rollback_snapshot.load(std::memory_order_relaxed))
     g_framebuffer_manager->DoState(p);
   p.DoMarker("FramebufferManager");
   note_section_end(12);
 
-  if (!s_rollback_snapshot)
+  if (!s_rollback_snapshot.load(std::memory_order_relaxed))
     g_texture_cache->DoState(p);
   p.DoMarker("TextureCache");
   note_section_end(13);
@@ -172,7 +175,7 @@ void VideoCommon_DoState(PointerWrap& p, std::array<std::size_t, 18>* rollback_s
   p.DoMarker("Presenter");
   note_section_end(14);
 
-  if (!s_rollback_snapshot)
+  if (!s_rollback_snapshot.load(std::memory_order_relaxed))
     g_bounding_box->DoState(p);
   p.DoMarker("Bounding Box");
   note_section_end(15);
@@ -196,6 +199,6 @@ void VideoCommon_DoState(PointerWrap& p, std::array<std::size_t, 18>* rollback_s
   // Orca: a full save submits GPU work through its EFB readback, but a rollback snapshot skips
   // that. Submit encoded work here (no wait): some backends (Metal) otherwise submit only on
   // present, and re-run frames present nothing.
-  if (s_rollback_snapshot && !p.IsMeasureMode())
+  if (s_rollback_snapshot.load(std::memory_order_relaxed) && !p.IsMeasureMode())
     g_gfx->Flush();
 }

@@ -256,7 +256,7 @@ bool VKGfx::BindBackbuffer(const ClearColor& clear_color)
   if (res != VK_SUCCESS)
   {
     // Execute cmdbuffer before resizing, as the last frame could still be presenting.
-    ExecuteCommandBuffer(false, true);
+    PrepareForSwapChainRecreation();
 
     // Was this a lost exclusive fullscreen?
     if (res == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
@@ -365,7 +365,7 @@ void VKGfx::CheckForSurfaceChange()
                m_swap_chain->GetWidth(), m_swap_chain->GetHeight());
 
   // Submit the current draws up until rendering the XFB.
-  ExecuteCommandBuffer(false, true);
+  PrepareForSwapChainRecreation();
 
   // Clear the present failed flag, since we don't want to resize after recreating.
   g_command_buffer_mgr->CheckLastPresentFail();
@@ -397,7 +397,7 @@ void VKGfx::CheckForSurfaceResize()
                m_swap_chain->GetHeight());
 
   // Wait for the GPU to catch up since we're going to destroy the swap chain.
-  ExecuteCommandBuffer(false, true);
+  PrepareForSwapChainRecreation();
 
   // Clear the present failed flag, since we don't want to resize after recreating.
   g_command_buffer_mgr->CheckLastPresentFail();
@@ -419,14 +419,14 @@ void VKGfx::OnConfigChanged(u32 bits)
   // For vsync, we need to change the present mode, which means recreating the swap chain.
   if (m_swap_chain && (bits & CONFIG_CHANGE_BIT_VSYNC))
   {
-    ExecuteCommandBuffer(false, true);
+    PrepareForSwapChainRecreation();
     m_swap_chain->SetVSync(g_ActiveConfig.bVSyncActive);
   }
 
   // For quad-buffered stereo we need to change the layer count, so recreate the swap chain.
   if (m_swap_chain && ((bits & CONFIG_CHANGE_BIT_STEREO_MODE) || (bits & CONFIG_CHANGE_BIT_HDR)))
   {
-    ExecuteCommandBuffer(false, true);
+    PrepareForSwapChainRecreation();
     m_swap_chain->RecreateSwapChain();
   }
 
@@ -436,6 +436,16 @@ void VKGfx::OnConfigChanged(u32 bits)
     ExecuteCommandBuffer(false, true);
     ResetSamplerStates();
   }
+}
+
+void VKGfx::PrepareForSwapChainRecreation()
+{
+  ExecuteCommandBuffer(false, true);
+
+  // Swap-chain image framebuffers are owned by the swap chain. Clear both raw-pointer caches
+  // before those objects are destroyed so allocator address reuse cannot suppress the new bind.
+  StateTracker::GetInstance()->SetFramebuffer(nullptr);
+  m_current_framebuffer = nullptr;
 }
 
 void VKGfx::OnSwapChainResized()

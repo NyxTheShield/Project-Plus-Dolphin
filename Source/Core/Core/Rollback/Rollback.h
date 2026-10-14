@@ -35,6 +35,9 @@ namespace Rollback
 {
 struct SnapshotPhaseTimings
 {
+  // Time spent waiting for the GPU/DSP execution barrier in dual-core mode. Time spent while the
+  // barrier is held is already represented by the individual snapshot phases below.
+  double execution_barrier_ms = 0.0;
   double state_ms = 0.0;
   double dirty_pages_ms = 0.0;
   double dirty_bitmap_scan_ms = 0.0;

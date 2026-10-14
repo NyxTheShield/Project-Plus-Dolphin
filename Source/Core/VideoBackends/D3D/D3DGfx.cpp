@@ -196,6 +196,12 @@ void Gfx::CheckForSwapChainChanges()
                surface_changed, surface_resized, fullscreen_changed, m_swap_chain->GetWidth(),
                m_swap_chain->GetHeight());
 
+  // ResizeBuffers requires every reference to the old backbuffer to be released. Clear both the
+  // D3D state cache and AbstractGfx's raw pointer before recreating the swap chain.
+  D3D::stateman->UnsetFramebuffer();
+  m_current_framebuffer = nullptr;
+  WaitForGPUIdle();
+
   if (surface_changed)
   {
     m_swap_chain->ChangeSurface(g_presenter->GetNewSurfaceHandle());

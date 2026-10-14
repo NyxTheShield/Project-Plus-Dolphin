@@ -2611,6 +2611,7 @@ static double ElapsedMs(std::chrono::steady_clock::time_point start)
 
 static void AddSnapshotPhases(SnapshotPhaseTimings* total, const SnapshotPhaseTimings& sample)
 {
+  total->execution_barrier_ms += sample.execution_barrier_ms;
   total->state_ms += sample.state_ms;
   total->dirty_pages_ms += sample.dirty_pages_ms;
   total->dirty_bitmap_scan_ms += sample.dirty_bitmap_scan_ms;
@@ -2886,18 +2887,21 @@ static void MaybeLogPerformance(Core::System& system)
   }
 
   const double save_known_ms =
-      g_manager.perf_save_phases.state_ms + g_manager.perf_save_phases.dirty_pages_ms +
-      g_manager.perf_save_phases.l1_ms + g_manager.perf_save_phases.journal_ms;
+      g_manager.perf_save_phases.execution_barrier_ms + g_manager.perf_save_phases.state_ms +
+      g_manager.perf_save_phases.dirty_pages_ms + g_manager.perf_save_phases.l1_ms +
+      g_manager.perf_save_phases.journal_ms;
   const double load_known_ms =
+      g_manager.perf_load_phases.execution_barrier_ms +
       g_manager.perf_load_phases.dirty_pages_ms + g_manager.perf_load_phases.jit_ms +
       g_manager.perf_load_phases.l1_ms + g_manager.perf_load_phases.state_ms +
       g_manager.perf_load_phases.journal_ms;
   NOTICE_LOG_FMT(
       CORE,
-      "GekkoNet snapshot phases: save state {:.3f} dirty {:.3f} l1 {:.3f} journal {:.3f} "
-      "other {:.3f} ms, state {:.1f} KiB; load dirty {:.3f} jit {:.3f} l1 {:.3f} state "
-      "{:.3f} journal {:.3f} other {:.3f} ms, changed {:.1f} pages/{:.1f} cache lines, "
-      "invalidated {:.1f} JIT blocks",
+      "GekkoNet snapshot phases: save barrier {:.3f} state {:.3f} dirty {:.3f} l1 {:.3f} "
+      "journal {:.3f} other {:.3f} ms, state {:.1f} KiB; load barrier {:.3f} dirty {:.3f} "
+      "jit {:.3f} l1 {:.3f} state {:.3f} journal {:.3f} other {:.3f} ms, changed {:.1f} "
+      "pages/{:.1f} cache lines, invalidated {:.1f} JIT blocks",
+      average(g_manager.perf_save_phases.execution_barrier_ms, g_manager.perf_save_count),
       average(g_manager.perf_save_phases.state_ms, g_manager.perf_save_count),
       average(g_manager.perf_save_phases.dirty_pages_ms, g_manager.perf_save_count),
       average(g_manager.perf_save_phases.l1_ms, g_manager.perf_save_count),
@@ -2906,6 +2910,7 @@ static void MaybeLogPerformance(Core::System& system)
       average(static_cast<double>(g_manager.perf_save_phases.state_bytes),
               g_manager.perf_save_count) /
           1024.0,
+      average(g_manager.perf_load_phases.execution_barrier_ms, g_manager.perf_load_count),
       average(g_manager.perf_load_phases.dirty_pages_ms, g_manager.perf_load_count),
       average(g_manager.perf_load_phases.jit_ms, g_manager.perf_load_count),
       average(g_manager.perf_load_phases.l1_ms, g_manager.perf_load_count),

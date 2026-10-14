@@ -2218,6 +2218,9 @@ bool NetPlayClient::StartGame(const std::string& path)
     // emulated SI port. Do not inherit a stale or user-edited Dolphin lobby mapping: GekkoNet's
     // player streams are indexed by these seats and are exposed directly through GetRollbackPad().
     boot_net_settings.pad_map.fill(0);
+    // Managed Brawlback sessions use Dolphin's deterministic dual-core CPU/GPU execution model.
+    // This is boot-local and does not alter the user's persistent Dolphin configuration.
+    boot_net_settings.cpu_thread = true;
     for (int seat = 1; seat <= m_managed_config->player_count; ++seat)
       boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
   }
