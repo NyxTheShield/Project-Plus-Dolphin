@@ -282,6 +282,11 @@ void JitInterface::InvalidateICacheLine(u32 address)
     m_jit->GetBlockCache()->InvalidateICacheLine(address);
 }
 
+bool JitInterface::HasCompiledCodeInPhysicalRange(u32 address, u32 size) const
+{
+  return m_jit && m_jit->GetBlockCache()->HasCompiledCodeInPhysicalRange(address, size);
+}
+
 void JitInterface::InvalidateICacheLines(u32 address, u32 count)
 {
   // This corresponds to a PPC code loop that:

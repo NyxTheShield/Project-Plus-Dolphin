@@ -273,6 +273,23 @@ void JitBaseBlockCache::InvalidateICacheLine(u32 address)
     InvalidateICacheInternal(translated.address, cache_line_address, 32, false);
 }
 
+bool JitBaseBlockCache::HasCompiledCodeInPhysicalRange(u32 address, u32 length) const
+{
+  if (length == 0)
+    return false;
+
+  const u32 first_line = address / 32;
+  const u32 last_line = static_cast<u32>(
+      std::min<u64>((static_cast<u64>(address) + length - 1) / 32,
+                    ValidBlockBitSet::VALID_BLOCK_MASK_SIZE - 1));
+  for (u32 line = first_line; line <= last_line; ++line)
+  {
+    if (valid_block.Test(line))
+      return true;
+  }
+  return false;
+}
+
 void JitBaseBlockCache::InvalidateICache(u32 initial_address, u32 initial_length, bool forced)
 {
   u32 address = initial_address;

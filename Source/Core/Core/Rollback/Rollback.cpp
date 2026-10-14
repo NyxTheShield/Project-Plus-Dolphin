@@ -831,6 +831,11 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
       continue;
     const bool fake_vmem = physical >= DirtyPages::GC_FAKE_VMEM_PHYSICAL &&
                            physical < DirtyPages::GC_FAKE_VMEM_PHYSICAL + memory.GetFakeVMemSize();
+    // Almost every restored cache line is ordinary data. Avoid an MMU translation and block-cache
+    // lookup unless Dolphin's physical code bitmap says compiled guest code overlaps the line.
+    // FakeVMEM uses a synthetic dirty-bitmap address, so retain its translated invalidation path.
+    if (!fake_vmem && !jit.HasCompiledCodeInPhysicalRange(physical, range.length))
+      continue;
     const u32 effective = fake_vmem ? physical | 0x60000000u : physical | MEM1_VIRTUAL;
     jit.InvalidateICache(effective, range.length, true);
   }

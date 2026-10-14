@@ -184,6 +184,8 @@ public:
 
   void InvalidateICache(u32 address, u32 length, bool forced);
   void InvalidateICacheLine(u32 address);
+  // Returns whether any compiled guest code overlaps this physical-address range.
+  bool HasCompiledCodeInPhysicalRange(u32 address, u32 length) const;
   void ErasePhysicalRange(u32 address, u32 length);
   void EraseSingleBlock(const JitBlock& block);
 
