@@ -233,7 +233,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
 
   canonicalize(RSCRATCH);
   AND(32, R(RSCRATCH), Imm32(0x1FFFFFFFu));
-  SHR(32, R(RSCRATCH), Imm8(12));
+  SHR(32, R(RSCRATCH), Imm8(Rollback::DIRTY_PAGE_SHIFT));
 
   // Keep Wii and guarded pre-session blocks byte-for-byte in their original order. In
   // particular, issue the first bitmap mark before calculating a possible second page so its
@@ -250,7 +250,7 @@ void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 siz
     ADD(32, R(RSCRATCH_EXTRA), Imm32(size - 1));
     canonicalize(RSCRATCH_EXTRA);
     AND(32, R(RSCRATCH_EXTRA), Imm32(0x1FFFFFFFu));
-    SHR(32, R(RSCRATCH_EXTRA), Imm8(12));
+    SHR(32, R(RSCRATCH_EXTRA), Imm8(Rollback::DIRTY_PAGE_SHIFT));
   }
 
   if (optimized_gc_path)
