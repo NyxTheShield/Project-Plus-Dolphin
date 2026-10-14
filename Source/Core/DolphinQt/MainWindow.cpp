@@ -275,6 +275,7 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
 
   if (!brawlback_ticket_path.empty())
   {
+    NOTICE_LOG_FMT(NETPLAY, "Managed launch requested: ticket='{}'", brawlback_ticket_path);
     m_managed_session.emplace();
     m_managed_session->ticket_path = brawlback_ticket_path;
     QTimer::singleShot(0, this, &MainWindow::StartManagedNetPlay);
@@ -1788,19 +1789,40 @@ void MainWindow::NetPlayInit()
 void MainWindow::ReportManagedStatus(const std::string& state, const std::string& reason)
 {
   if (!m_managed_session || m_managed_session->status_path.empty())
+  {
+    ERROR_LOG_FMT(NETPLAY,
+                  "Managed launch could not report status '{}' because no status path is set",
+                  state);
     return;
+  }
 
   picojson::object status;
   status["matchId"] = picojson::value(m_managed_session->match_id);
   status["state"] = picojson::value(state);
   status["reason"] = picojson::value(reason);
-  File::WriteStringToFile(m_managed_session->status_path, picojson::value(status).serialize());
+  if (!File::WriteStringToFile(m_managed_session->status_path,
+                               picojson::value(status).serialize()))
+  {
+    ERROR_LOG_FMT(NETPLAY, "Managed launch could not write status '{}' to '{}'", state,
+                  m_managed_session->status_path);
+  }
+  else
+  {
+    NOTICE_LOG_FMT(NETPLAY, "Managed launch status: {}{}", state,
+                   reason.empty() ? "" : fmt::format(" ({})", reason));
+  }
 }
 
 void MainWindow::FailManagedSession(const std::string& reason)
 {
-  if (!m_managed_session || m_managed_session->failure_reported)
+  if (!m_managed_session)
+  {
+    ERROR_LOG_FMT(NETPLAY, "Managed launch failed without active session: {}", reason);
     return;
+  }
+  if (m_managed_session->failure_reported)
+    return;
+  ERROR_LOG_FMT(NETPLAY, "Managed launch failed: {}", reason);
   m_managed_session->failure_reported = true;
   ReportManagedStatus("failed", reason);
   QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
@@ -1842,8 +1864,15 @@ void MainWindow::StartManagedNetPlay()
   picojson::value root;
   std::string parse_error;
   const std::string ticket_path = m_managed_session->ticket_path;
-  if (!JsonFromFile(ticket_path, &root, &parse_error) || !root.is<picojson::object>())
+  NOTICE_LOG_FMT(NETPLAY, "Managed launch: reading ticket '{}' (exists={})", ticket_path,
+                 File::Exists(ticket_path));
+  const bool ticket_read = JsonFromFile(ticket_path, &root, &parse_error);
+  if (!ticket_read || !root.is<picojson::object>())
   {
+    ERROR_LOG_FMT(NETPLAY,
+                  "Managed launch: ticket rejected (read={}, object={}, parse_error='{}')",
+                  ticket_read, root.is<picojson::object>(),
+                  parse_error.empty() ? "none" : parse_error);
     QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
     m_managed_session.reset();
     return;
@@ -1871,6 +1900,14 @@ void MainWindow::StartManagedNetPlay()
   const auto replay_path = read_string("replay_path");
   const auto replay_output_path = read_string("replay_output_path");
   const auto replay_input_path = read_string("replay_input_path");
+
+  NOTICE_LOG_FMT(
+      NETPLAY,
+      "Managed launch: ticket parsed (mode='{}', game='{}', match_id={}, player_id={}, "
+      "rendezvous_addr={}, rendezvous_token={}, status_path={}, fields={})",
+      mode.value_or("match"), game.value_or("<missing>"), match_id.has_value(),
+      player_id.has_value(), rendezvous_address.has_value(), rendezvous_token.has_value(),
+      status_path.has_value(), ticket.size());
 
   if (mode == "netplay_replay")
   {
@@ -2031,6 +2068,14 @@ void MainWindow::StartManagedNetPlay()
       !status_path || seat_it == ticket.end() || !seat_it->second.is<double>() ||
       players_it == ticket.end() || !players_it->second.is<picojson::array>())
   {
+    ERROR_LOG_FMT(
+        NETPLAY,
+        "Managed launch: incomplete matchmaking ticket (match_id={}, player_id={}, game={}, "
+        "rendezvous_addr={}, rendezvous_token={}, status_path={}, seat={}, players={})",
+        match_id.has_value(), player_id.has_value(), game.has_value(),
+        rendezvous_address.has_value(), rendezvous_token.has_value(), status_path.has_value(),
+        seat_it != ticket.end() && seat_it->second.is<double>(),
+        players_it != ticket.end() && players_it->second.is<picojson::array>());
     FailManagedSession("The matchmaking ticket is incomplete");
     m_managed_session.reset();
     return;
@@ -2258,6 +2303,12 @@ void MainWindow::StartManagedNetPlay()
   {
     const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
     const std::string& brawl_game_id = brawl_iso.GetGameID();
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed launch: Project+ Brawl ISO path='{}', exists={}, valid={}, "
+                   "game_id='{}', revision={}",
+                   m_managed_session->brawl_iso_path,
+                   File::Exists(m_managed_session->brawl_iso_path), brawl_iso.IsValid(),
+                   brawl_game_id, brawl_iso.GetRevision());
     if (!brawl_iso.IsValid() || (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
                                  brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
     {
@@ -2268,6 +2319,11 @@ void MainWindow::StartManagedNetPlay()
     Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Project+");
     game_path = File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "Project+ Netplay Launcher.dol";
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed launch: Project+ launcher path='{}', exists={}; SD path='{}', "
+                   "exists={}",
+                   game_path, File::Exists(game_path), m_managed_session->project_plus_sd_path,
+                   File::Exists(m_managed_session->project_plus_sd_path));
     if (m_managed_session->project_plus_sd_path.empty() ||
         !File::Exists(m_managed_session->project_plus_sd_path))
     {
@@ -2281,6 +2337,12 @@ void MainWindow::StartManagedNetPlay()
   {
     const UICommon::GameFile brawl_iso(m_managed_session->brawl_iso_path);
     const std::string& brawl_game_id = brawl_iso.GetGameID();
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed launch: Brawl ISO path='{}', exists={}, valid={}, game_id='{}', "
+                   "revision={}",
+                   m_managed_session->brawl_iso_path,
+                   File::Exists(m_managed_session->brawl_iso_path), brawl_iso.IsValid(),
+                   brawl_game_id, brawl_iso.GetRevision());
     if (!brawl_iso.IsValid() || (brawl_game_id != "RSBE01" && brawl_game_id != "RSBP01" &&
                                  brawl_game_id != "RSBJ01" && brawl_game_id != "RSBK01"))
     {
@@ -2295,6 +2357,12 @@ void MainWindow::StartManagedNetPlay()
   else if (m_managed_session->game.rfind("dolphin:", 0) == 0)
   {
     const UICommon::GameFile custom_game(m_managed_session->game_path);
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed launch: custom game path='{}', exists={}, valid={}, game_id='{}', "
+                   "revision={} (expected game_id='{}', revision={})",
+                   m_managed_session->game_path, File::Exists(m_managed_session->game_path),
+                   custom_game.IsValid(), custom_game.GetGameID(), custom_game.GetRevision(),
+                   m_managed_session->game_id, m_managed_session->game_revision);
     if (!custom_game.IsValid() || custom_game.GetGameID() != m_managed_session->game_id ||
         custom_game.GetRevision() != m_managed_session->game_revision)
     {
@@ -2314,7 +2382,15 @@ void MainWindow::StartManagedNetPlay()
   }
 
   const UICommon::GameFile selected_game(game_path);
-  if (!selected_game.IsValid() || !m_netplay_dialog->SetManagedGamePath(game_path))
+  const bool selected_game_valid = selected_game.IsValid();
+  const bool selected_game_registered =
+      selected_game_valid && m_netplay_dialog->SetManagedGamePath(game_path);
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Managed launch: selected game path='{}', exists={}, valid={}, game_id='{}', "
+                 "revision={}, registered={}",
+                 game_path, File::Exists(game_path), selected_game_valid, selected_game.GetGameID(),
+                 selected_game.GetRevision(), selected_game_registered);
+  if (!selected_game_valid || !selected_game_registered)
   {
     const QString detail =
         m_managed_session->game == "brawl" ?
@@ -2332,6 +2408,11 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
   File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
 
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Managed launch: validation complete (game='{}', seat={}, players={}, "
+                 "sd_enabled={})",
+                 m_managed_session->game, m_managed_session->seat,
+                 m_managed_session->player_count, sd_card_path.has_value());
   ReportManagedStatus("connecting");
 
   if (m_managed_session->seat == 1)
@@ -2357,6 +2438,9 @@ void MainWindow::StartManagedNetPlay()
     return;
   }
 
+  NOTICE_LOG_FMT(NETPLAY, "Managed launch: NetPlay client joined (seat={})",
+                 m_managed_session->seat);
+
   if (m_managed_session->seat == 1)
     QTimer::singleShot(100, this, &MainWindow::PollManagedNetPlayReady);
 }
@@ -2371,16 +2455,34 @@ void MainWindow::PollManagedNetPlayReady()
   const auto client = Settings::Instance().GetNetPlayClient();
   const auto server = Settings::Instance().GetNetPlayServer();
   if (!client || !server)
+  {
+    ERROR_LOG_FMT(NETPLAY, "Managed launch: readiness polling lost {}{}", client ? "" : "client",
+                  !client && !server ? " and server" : !server ? "server" : "");
     return;
+  }
 
-  if (static_cast<int>(client->GetPlayers().size()) == m_managed_session->player_count &&
-      client->DoAllPlayersHaveGame())
+  ++m_managed_session->ready_poll_count;
+  const size_t connected_players = client->GetPlayers().size();
+  const bool all_players_have_game = client->DoAllPlayersHaveGame();
+  if (m_managed_session->ready_poll_count == 1 ||
+      m_managed_session->ready_poll_count % 50 == 0)
+  {
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed launch: waiting for lobby readiness (connected={}/{}, "
+                   "all_have_game={})",
+                   connected_players, m_managed_session->player_count, all_players_have_game);
+  }
+
+  if (static_cast<int>(connected_players) == m_managed_session->player_count &&
+      all_players_have_game)
   {
     if (!m_managed_session->test_solo && !m_managed_session->latency_sampling_started)
     {
       // NetPlay publishes its first RTT sample once per second. Do not derive the session delay
       // from the initial zero-valued player records.
       m_managed_session->latency_sampling_started = true;
+      NOTICE_LOG_FMT(NETPLAY,
+                     "Managed launch: lobby ready; waiting for the first latency sample");
       QTimer::singleShot(1250, this, &MainWindow::PollManagedNetPlayReady);
       return;
     }
@@ -2411,6 +2513,7 @@ void MainWindow::PollManagedNetPlayReady()
                  m_managed_session->input_delay_override ? " (local stress override)" : "");
 
     m_managed_session->start_requested = true;
+    NOTICE_LOG_FMT(NETPLAY, "Managed launch: requesting synchronized game start");
     if (!server->RequestStartGame())
     {
       FailManagedSession("The synchronized game start failed");

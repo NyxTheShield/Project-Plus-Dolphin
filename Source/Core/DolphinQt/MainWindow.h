@@ -317,6 +317,7 @@ private:
     bool coarse_fifo_timing = false;
     bool late_vi_guard = true;
     bool latency_sampling_started = false;
+    u32 ready_poll_count = 0;
     bool start_requested = false;
     bool started_reported = false;
     bool failure_reported = false;
