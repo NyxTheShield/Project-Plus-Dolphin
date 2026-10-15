@@ -10,14 +10,15 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <thread>
 
 #include "Common/Buffer.h"
 #include "Common/Logging/Log.h"
-#include "Common/WorkQueueThread.h"
 #include "Core/HW/DSP.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/Rollback/DirtyBitmap.h"
+#include "Core/Rollback/Job.h"
 #include "Core/Rollback/UndoLog.h"
 #include "Core/System.h"
 
@@ -30,6 +31,8 @@ constexpr std::size_t JIT_CACHE_LINE = 32;
 constexpr u32 MEM2_PHYSICAL = 0x10000000u;
 // Spare page buffers kept ready at each snapshot.
 constexpr std::size_t RESERVE_PAGES = 2048;
+constexpr std::size_t SAVE_WORK_CHUNKS = 4;
+constexpr std::size_t SAVE_HELPER_THREADS = SAVE_WORK_CHUNKS - 1;
 
 struct DirtyCandidate
 {
@@ -37,23 +40,6 @@ struct DirtyCandidate
   u8* live;
   u8* mirror;
 };
-
-struct CompareJob
-{
-  const std::vector<DirtyCandidate>* candidates;
-  std::vector<u8>* changed;
-  std::size_t begin;
-  std::size_t end;
-};
-
-void CompareCandidates(CompareJob job)
-{
-  for (std::size_t i = job.begin; i < job.end; ++i)
-  {
-    const DirtyCandidate& candidate = (*job.candidates)[i];
-    (*job.changed)[i] = std::memcmp(candidate.live, candidate.mirror, PAGE) != 0;
-  }
-}
 
 // The JIT's inline bitmap stores exist only in the x86-64 backend. Other hosts keep full copies.
 #if defined(_M_X86_64) || defined(__x86_64__)
@@ -82,13 +68,31 @@ struct Tracker
   bool profile_commit = false;
   CommitTimings last_commit_timings;
   bool parallel_compare = false;
-  std::unique_ptr<Common::WorkQueueThreadSP<CompareJob>> compare_worker;
+  job::JobSysCtx save_job_context;
+  job::JobTaskThread* save_dispatch_thread = nullptr;
+  std::vector<std::thread> save_worker_threads;
   std::vector<DirtyCandidate> dirty_candidates;
   std::vector<u8> changed_candidates;
+  std::vector<u8*> undo_buffers;
   Counters counters;
   // Ids stay unique across arms, so a stale id never names another ring's snapshot.
   u64 next_id = 1;
 };
+
+void EnsureSaveWorkers(Tracker& t)
+{
+  if (t.save_dispatch_thread)
+    return;
+
+  t.save_job_context.activate();
+  t.save_dispatch_thread = t.save_job_context.initialize_worker(0, nullptr);
+  for (std::size_t i = 1; i <= SAVE_HELPER_THREADS; ++i)
+  {
+    job::JobTaskThread* const worker =
+        t.save_job_context.initialize_worker(static_cast<s64>(i) * 0x9e3779b97f4a7c15LL, nullptr);
+    t.save_worker_threads.emplace_back([worker] { worker->wait_for_termination(); });
+  }
+}
 
 // Never destroyed: a static destructor may still use it at exit.
 Tracker& T()
@@ -198,16 +202,31 @@ void CommitDirtyPages(Tracker& t, s64 frame)
     const auto compare_start = profile ? std::chrono::steady_clock::now() :
                                          std::chrono::steady_clock::time_point{};
     t.changed_candidates.resize(t.dirty_candidates.size());
-    const std::size_t middle = t.dirty_candidates.size() / 2;
-    if (middle != t.dirty_candidates.size())
+    const std::size_t total = t.dirty_candidates.size();
+    if (total != 0)
     {
-      t.compare_worker->Push(
-          CompareJob{&t.dirty_candidates, &t.changed_candidates, middle,
-                     t.dirty_candidates.size()});
+      job::Job* const root = job::KickRootJob(
+          t.save_dispatch_thread, [&t, total](job::JobTaskThread& worker, job::Job& parent) {
+            const std::size_t chunk = (total + SAVE_WORK_CHUNKS - 1) / SAVE_WORK_CHUNKS;
+            std::vector<job::Job*> jobs;
+            jobs.reserve(SAVE_WORK_CHUNKS);
+            for (std::size_t begin = 0; begin < total; begin += chunk)
+            {
+              const std::size_t end = std::min(total, begin + chunk);
+              jobs.push_back(worker.create_job_as_child(
+                  parent, [&t, begin, end](job::JobTaskThread&, job::Job&) {
+                    for (std::size_t i = begin; i < end; ++i)
+                    {
+                      const DirtyCandidate& candidate = t.dirty_candidates[i];
+                      t.changed_candidates[i] =
+                          std::memcmp(candidate.live, candidate.mirror, PAGE) != 0;
+                    }
+                  }));
+            }
+            worker.do_work_and_kick_jobs(jobs.data(), static_cast<u16>(jobs.size()));
+          });
+      job::DrainJobsUntilComplete(t.save_dispatch_thread, root);
     }
-    CompareCandidates(CompareJob{&t.dirty_candidates, &t.changed_candidates, 0, middle});
-    if (middle != t.dirty_candidates.size())
-      t.compare_worker->WaitForCompletion();
     if (profile)
     {
       t.last_commit_timings.compare_ms =
@@ -218,14 +237,18 @@ void CommitDirtyPages(Tracker& t, s64 frame)
 
     const auto record_start = profile ? std::chrono::steady_clock::now() :
                                         std::chrono::steady_clock::time_point{};
+    t.undo_buffers.assign(total, nullptr);
     for (std::size_t i = 0; i < t.dirty_candidates.size(); ++i)
     {
       if (!t.changed_candidates[i])
         continue;
       ++t.last_commit_timings.changed_pages;
       const DirtyCandidate& candidate = t.dirty_candidates[i];
-      if (t.log->Record(candidate.global_page, candidate.mirror))
+      if (u8* const undo = t.log->PrepareRecord(candidate.global_page))
+      {
+        t.undo_buffers[i] = undo;
         ++t.counters.pages_recorded;
+      }
     }
     if (profile)
     {
@@ -236,13 +259,32 @@ void CommitDirtyPages(Tracker& t, s64 frame)
 
     const auto mirror_start = profile ? std::chrono::steady_clock::now() :
                                         std::chrono::steady_clock::time_point{};
-    for (std::size_t i = 0; i < t.dirty_candidates.size(); ++i)
+    if (total != 0)
     {
-      if (t.changed_candidates[i])
-      {
-        const DirtyCandidate& candidate = t.dirty_candidates[i];
-        std::memcpy(candidate.mirror, candidate.live, PAGE);
-      }
+      job::Job* const root = job::KickRootJob(
+          t.save_dispatch_thread, [&t, total](job::JobTaskThread& worker, job::Job& parent) {
+            const std::size_t chunk = (total + SAVE_WORK_CHUNKS - 1) / SAVE_WORK_CHUNKS;
+            std::vector<job::Job*> jobs;
+            jobs.reserve(SAVE_WORK_CHUNKS);
+            for (std::size_t begin = 0; begin < total; begin += chunk)
+            {
+              const std::size_t end = std::min(total, begin + chunk);
+              jobs.push_back(worker.create_job_as_child(
+                  parent, [&t, begin, end](job::JobTaskThread&, job::Job&) {
+                    for (std::size_t i = begin; i < end; ++i)
+                    {
+                      if (!t.changed_candidates[i])
+                        continue;
+                      const DirtyCandidate& candidate = t.dirty_candidates[i];
+                      if (u8* const undo = t.undo_buffers[i])
+                        std::memcpy(undo, candidate.mirror, PAGE);
+                      std::memcpy(candidate.mirror, candidate.live, PAGE);
+                    }
+                  }));
+            }
+            worker.do_work_and_kick_jobs(jobs.data(), static_cast<u16>(jobs.size()));
+          });
+      job::DrainJobsUntilComplete(t.save_dispatch_thread, root);
     }
     if (profile)
     {
@@ -634,14 +676,14 @@ void SetParallelCompareEnabled(bool enabled)
   {
     t.dirty_candidates.reserve(t.page_count != 0 ? t.page_count : RESERVE_PAGES);
     t.changed_candidates.reserve(t.page_count != 0 ? t.page_count : RESERVE_PAGES);
-    t.compare_worker = std::make_unique<Common::WorkQueueThreadSP<CompareJob>>(
-        "Rollback page compare", CompareCandidates);
+    t.undo_buffers.reserve(t.page_count != 0 ? t.page_count : RESERVE_PAGES);
+    EnsureSaveWorkers(t);
   }
   else
   {
-    t.compare_worker.reset();
     t.dirty_candidates.clear();
     t.changed_candidates.clear();
+    t.undo_buffers.clear();
   }
 }
 }  // namespace Rollback::DirtyPages

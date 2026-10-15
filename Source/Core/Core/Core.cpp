@@ -53,8 +53,6 @@
 #include "Core/HW/DSP.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/GBAPad.h"
-#include "Core/Rollback/GekkoRollback.h"
-#include "Core/Rollback/Rollback.h"
 #include "Core/HW/GCKeyboard.h"
 #include "Core/HW/GCPad.h"
 #include "Core/HW/HW.h"
@@ -71,6 +69,8 @@
 #include "Core/PowerPC/GDBStub.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/Rollback/GekkoRollback.h"
+#include "Core/Rollback/Rollback.h"
 #include "Core/State.h"
 #include "Core/System.h"
 #include "Core/WiiRoot.h"
@@ -264,32 +264,65 @@ static void ResetRumble()
 // Called from GUI thread
 void Stop(Core::System& system)  // - Hammertime!
 {
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: Core::Stop entered "
+                 "(caller_is_cpu_thread={}, state={}, dual_core={}, gekko={})",
+                 IsCPUThread(), static_cast<int>(s_state.load()), system.IsDualCoreMode(),
+                 Rollback::IsGekkoSessionActive());
   {
     std::lock_guard lock(s_core_mutex);
 
     const State state = s_state.load();
     if (state == State::Stopping || state == State::Uninitialized)
+    {
+      NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Core::Stop ignored duplicate request (state={})",
+                     static_cast<int>(state));
       return;
+    }
+  }
 
+  // StopGekkoSession disarms dirty-page tracking and clears JIT blocks.  It must run while the
+  // core still reports Running so CPUThreadGuard can pause the CPU before touching live JIT code.
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: stopping Gekko session before Stopping state");
+  Rollback::StopGekkoSession();
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Gekko session stopped");
+
+  {
+    std::lock_guard lock(s_core_mutex);
+    const State state = s_state.load();
+    if (state == State::Stopping || state == State::Uninitialized)
+    {
+      NOTICE_LOG_FMT(CORE,
+                     "Shutdown lifecycle: Core::Stop lost stop race after Gekko teardown "
+                     "(state={})",
+                     static_cast<int>(state));
+      return;
+    }
     s_state.store(State::Stopping);
   }
 
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: state changed to Stopping");
   NotifyStateChanged(State::Stopping);
 
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: closing achievements game context");
   AchievementManager::GetInstance().CloseGame();
 
   // Dump left over jobs
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: dispatching pending host jobs");
   HostDispatchJobs(system);
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: pending host jobs dispatched");
 
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: pausing FIFO emulation state");
   system.GetFifo().EmulatorState(false);
-
-  Rollback::StopGekkoSession();
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: FIFO emulation state paused");
 
   INFO_LOG_FMT(CONSOLE, "Stop [Main Thread]\t\t---- Shutting down ----");
 
   // Stop the CPU
   INFO_LOG_FMT(CONSOLE, "{}", StopMessage(true, "Stop CPU"));
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: requesting CPU stop");
   system.GetCPU().Stop();
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: CPU stop requested");
 }
 
 void DeclareAsCPUThread()
@@ -459,10 +492,12 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
   };
 
   const auto deinit_video = [] {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: video backend shutdown started");
     // Clear on screen messages that haven't expired
     OSD::ClearMessages();
 
     g_video_backend->Shutdown();
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: video backend shutdown completed");
   };
 
   if (system.IsDualCoreMode())
@@ -480,6 +515,7 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
         return;
 
       system.GetFifo().RunGpuLoop();
+      NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: GPU loop exited");
       INFO_LOG_FMT(CONSOLE, "{}", StopMessage(false, "Video Loop Ended"));
 
       deinit_video();
@@ -489,9 +525,12 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
     {
       // Return a scope guard that signals the GPU thread to stop then joins it.
       return std::make_unique<GuardType>([&, gpu_thread = std::move(gpu_thread)]() mutable {
+        NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: requesting GPU loop exit");
         INFO_LOG_FMT(CONSOLE, "{}", StopMessage(true, "Wait for Video Loop to exit ..."));
         system.GetFifo().ExitGpuLoop();
+        NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: joining GPU thread");
         gpu_thread.join();
+        NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: GPU thread joined");
         INFO_LOG_FMT(CONSOLE, "{}", StopMessage(true, "GPU thread stopped."));
       });
     }
@@ -515,6 +554,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 {
   NotifyStateChanged(State::Starting);
   Common::ScopeGuard flag_guard{[] {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: final emulation-thread cleanup reached");
     {
       std::lock_guard lock(s_core_mutex);
       s_state.store(State::Uninitialized);
@@ -522,6 +562,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 
     NotifyStateChanged(State::Uninitialized);
 
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: state changed to Uninitialized");
     INFO_LOG_FMT(CONSOLE, "Stop\t\t---- Shutdown complete ----");
   }};
 
@@ -562,8 +603,10 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
   HW::Init(system,
            NetPlay::IsNetPlayRunning() ? &(boot_session_data.GetNetplaySettings()->sram) : nullptr);
   Common::ScopeGuard hw_guard{[&system] {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: hardware shutdown started");
     INFO_LOG_FMT(CONSOLE, "{}", StopMessage(false, "Shutting down HW"));
     HW::Shutdown(system);
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: hardware shutdown completed");
     INFO_LOG_FMT(CONSOLE, "{}", StopMessage(false, "HW shutdown"));
 
     // The config must be restored only after the whole HW has shut down,
@@ -625,8 +668,11 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
   // This is done here after Boot and not in BootManager to ensure that we operate
   // with the correct title context since save copying requires title directories to exist.
   Common::ScopeGuard wiifs_guard{[&boot_session_data] {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Wii filesystem cleanup started");
     Core::CleanUpWiiFileSystemContents(boot_session_data);
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Wii filesystem contents cleaned");
     boot_session_data.InvokeWiiSyncCleanup();
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Wii sync cleanup completed");
   }};
   if (system.IsWii())
     Core::InitializeWiiFileSystemContents(savegame_redirect, boot_session_data);
@@ -653,6 +699,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 
   // Become the CPU thread.
   cpu_thread_func(system, savestate_path, delete_savestate);
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: CPU execution loop returned to EmuThread");
 }
 
 // Set or get the running state
@@ -900,11 +947,19 @@ void Shutdown(Core::System& system)
   // shut down.
   // For more info read "DirectX Graphics Infrastructure (DXGI): Best Practices"
   // on MSDN.
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Core::Shutdown entered (joinable={})",
+                 s_emu_thread.joinable());
   if (s_emu_thread.joinable())
+  {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: UI thread joining emulation thread");
     s_emu_thread.join();
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: UI thread joined emulation thread");
+  }
 
   // Make sure there's nothing left over in case we're about to exit.
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: dispatching final host jobs");
   HostDispatchJobs(system);
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: Core::Shutdown completed");
 }
 
 Common::EventHook AddOnStateChangedCallback(StateChangedCallbackFunc callback)

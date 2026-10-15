@@ -27,6 +27,10 @@ std::optional<IPCReply> STMImmediateDevice::IOCtl(const IOCtlRequest& request)
   case IOCTL_STM_IDLE:
   case IOCTL_STM_SHUTDOWN:
     NOTICE_LOG_FMT(IOS_STM, "IOCTL_STM_IDLE or IOCTL_STM_SHUTDOWN received, shutting down");
+    NOTICE_LOG_FMT(CORE,
+                   "Shutdown lifecycle: guest issued STM shutdown IOCTL; queueing Core::Stop "
+                   "(request={:#x})",
+                   request.request);
     Core::QueueHostJob(&Core::Stop, false);
     break;
 
@@ -120,8 +124,15 @@ void STMEventHookDevice::TriggerEvent(const u32 event) const
 {
   // If the device isn't open, ignore the button press.
   if (!m_is_active || !s_event_hook_request)
+  {
+    NOTICE_LOG_FMT(CORE,
+                   "Shutdown lifecycle: STM event was dropped "
+                   "(event={}, device_active={}, request_pending={})",
+                   event, m_is_active, s_event_hook_request != nullptr);
     return;
+  }
 
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: delivering STM event {} to guest", event);
   auto& system = GetSystem();
   auto& memory = system.GetMemory();
   memory.Write_U32(event, s_event_hook_request->buffer_out);

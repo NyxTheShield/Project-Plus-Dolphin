@@ -66,16 +66,24 @@ bool UndoLog::LoggedInNewest(std::size_t page) const
 
 bool UndoLog::Record(std::size_t page, const u8* contents)
 {
-  if (m_logs.empty() || LoggedInNewest(page))
+  u8* const data = PrepareRecord(page);
+  if (!data)
     return false;
-  u8* const data = TakeBuffer();
   std::memcpy(data, contents, m_page_size);
+  return true;
+}
+
+u8* UndoLog::PrepareRecord(std::size_t page)
+{
+  if (m_logs.empty() || LoggedInNewest(page))
+    return nullptr;
+  u8* const data = TakeBuffer();
   Log& newest = m_logs.back();
   newest.entries.push_back(Entry{static_cast<u32>(page), data});
   m_recorded_in[page] = newest.id;
   m_recorded_data[page] = data;
   ++m_pages_held;
-  return true;
+  return data;
 }
 
 std::vector<u32> UndoLog::NewestPages() const

@@ -66,12 +66,12 @@
 #include "Core/HW/GCKeyboard.h"
 #include "Core/HW/GCPad.h"
 #include "Core/HW/ProcessorInterface.h"
-#include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SI/SI.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/Wiimote.h"
 #include "Core/HotkeyManager.h"
-#include "Core/IOS/USB/Bluetooth/BTEmu.h"
 #include "Core/IOS/FS/FileSystem.h"
+#include "Core/IOS/USB/Bluetooth/BTEmu.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
@@ -453,7 +453,6 @@ void MainWindow::InitCoreCallbacks()
     {
       QTimer::singleShot(0, this, &MainWindow::TryStartManagedNetplayReplay);
     }
-
   });
   installEventFilter(this);
   m_render_widget->installEventFilter(this);
@@ -837,8 +836,8 @@ void MainWindow::TryCompleteFullscreenBoot()
     INFO_LOG_FMT(VIDEO,
                  "Fullscreen boot: window settled at {}x{} (observed surface {}x{}, dpr={:.3f}); "
                  "initializing backend {}",
-                 current_width, current_height, m_fullscreen_boot_width,
-                 m_fullscreen_boot_height, dpr, Config::Get(Config::MAIN_GFX_BACKEND));
+                 current_width, current_height, m_fullscreen_boot_width, m_fullscreen_boot_height,
+                 dpr, Config::Get(Config::MAIN_GFX_BACKEND));
 
     auto parameters = std::move(m_pending_fullscreen_boot);
     m_fullscreen_boot_state_observed = false;
@@ -1041,6 +1040,10 @@ void MainWindow::TogglePause()
 
 void MainWindow::OnStopComplete()
 {
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: Qt observed Core::State::Uninitialized "
+                 "(stop_requested={}, exit_requested={}, managed={})",
+                 m_stop_requested, m_exit_requested, m_managed_session.has_value());
   m_stop_requested = false;
   HideRenderWidget(!m_exit_requested, m_exit_requested);
 #ifdef USE_DISCORD_PRESENCE
@@ -1072,9 +1075,28 @@ void MainWindow::OnStopComplete()
 
 bool MainWindow::RequestStop()
 {
+  NOTICE_LOG_FMT(
+      CORE,
+      "Shutdown lifecycle: MainWindow::RequestStop entered "
+      "(core_state={}, stop_requested={}, netplay={}, gekko={}, managed={}, fullscreen={})",
+      static_cast<int>(Core::GetState(m_system)), m_stop_requested, NetPlay::IsNetPlayRunning(),
+      Rollback::IsGekkoSessionActive(), m_managed_session.has_value(),
+      m_render_widget->isFullScreen());
   if (Core::IsUninitialized(m_system))
   {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: core already uninitialized; queueing Qt completion");
     Core::QueueHostJob([this](Core::System&) { OnStopComplete(); }, true);
+    return true;
+  }
+
+  // A single close action can produce close requests for both the render widget and the main
+  // window.  Do not reinterpret that duplicate as an immediate force-stop while the guest is
+  // still flushing its Wii save data.  The first request installs a bounded fallback below.
+  if (m_stop_requested)
+  {
+    NOTICE_LOG_FMT(CORE,
+                   "Shutdown lifecycle: duplicate RequestStop ignored while graceful shutdown is "
+                   "pending");
     return true;
   }
 
@@ -1164,12 +1186,30 @@ bool MainWindow::RequestStop()
     }
   }
 
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: stopping replay/movie recording");
   OnStopRecording();
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: replay/movie recording stopped");
   // TODO: Add Debugger shutdown
 
-  if (!m_stop_requested && UICommon::TriggerSTMPowerEvent())
+  const bool may_request_graceful_shutdown = !m_stop_requested;
+  const bool stm_power_event_sent =
+      may_request_graceful_shutdown && UICommon::TriggerSTMPowerEvent();
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: graceful Wii shutdown decision "
+                 "(eligible={}, stm_event_sent={})",
+                 may_request_graceful_shutdown, stm_power_event_sent);
+  if (stm_power_event_sent)
   {
     m_stop_requested = true;
+
+    QTimer::singleShot(10000, this, [this] {
+      if (!m_stop_requested || Core::IsUninitialized(m_system))
+        return;
+
+      WARN_LOG_FMT(CORE, "Shutdown lifecycle: guest STM shutdown did not finish within 10 seconds; "
+                         "using safe forced-stop fallback");
+      ForceStop();
+    });
 
     // Unpause because gracefully shutting down needs the game to actually request a shutdown.
     // TODO: Do not unpause in debug mode to allow debugging until the complete shutdown.
@@ -1178,11 +1218,17 @@ bool MainWindow::RequestStop()
 
     // Tell NetPlay about the power event
     if (NetPlay::IsNetPlayRunning())
+    {
+      NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: broadcasting NetPlay power-button event");
       NetPlay::SendPowerButtonEvent();
+    }
 
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: waiting for guest STM shutdown request");
     return true;
   }
 
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: graceful path unavailable/already pending; forcing stop");
   ForceStop();
 #ifdef Q_OS_WIN
   // Allow windows to idle or turn off display again
@@ -1193,6 +1239,11 @@ bool MainWindow::RequestStop()
 
 void MainWindow::ForceStop()
 {
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: MainWindow::ForceStop calling Core::Stop "
+                 "(core_state={}, netplay={}, gekko={})",
+                 static_cast<int>(Core::GetState(m_system)), NetPlay::IsNetPlayRunning(),
+                 Rollback::IsGekkoSessionActive());
   Core::Stop(m_system);
 }
 
@@ -1361,9 +1412,8 @@ void MainWindow::BootGame(std::unique_ptr<BootParameters>&& parameters)
   const qreal dpr = m_render_widget->devicePixelRatioF();
   INFO_LOG_FMT(VIDEO,
                "Boot surface: fullscreen={}, widget={}x{}, physical={}x{}, dpr={:.3f}, backend={}",
-               m_render_widget->isFullScreen(), m_render_widget->width(),
-               m_render_widget->height(), qRound(m_render_widget->width() * dpr),
-               qRound(m_render_widget->height() * dpr), dpr,
+               m_render_widget->isFullScreen(), m_render_widget->width(), m_render_widget->height(),
+               qRound(m_render_widget->width() * dpr), qRound(m_render_widget->height() * dpr), dpr,
                Config::Get(Config::MAIN_GFX_BACKEND));
 
   // Boot up, show an error if it fails to load the game.
@@ -1379,7 +1429,6 @@ void MainWindow::BootGame(std::unique_ptr<BootParameters>&& parameters)
   if (!NetPlay::IsNetPlayRunning())
     Discord::UpdateDiscordPresence();
 #endif
-
 }
 
 void MainWindow::SetFullScreenResolution(bool fullscreen)
@@ -1800,8 +1849,7 @@ void MainWindow::ReportManagedStatus(const std::string& state, const std::string
   status["matchId"] = picojson::value(m_managed_session->match_id);
   status["state"] = picojson::value(state);
   status["reason"] = picojson::value(reason);
-  if (!File::WriteStringToFile(m_managed_session->status_path,
-                               picojson::value(status).serialize()))
+  if (!File::WriteStringToFile(m_managed_session->status_path, picojson::value(status).serialize()))
   {
     ERROR_LOG_FMT(NETPLAY, "Managed launch could not write status '{}' to '{}'", state,
                   m_managed_session->status_path);
@@ -1869,8 +1917,7 @@ void MainWindow::StartManagedNetPlay()
   const bool ticket_read = JsonFromFile(ticket_path, &root, &parse_error);
   if (!ticket_read || !root.is<picojson::object>())
   {
-    ERROR_LOG_FMT(NETPLAY,
-                  "Managed launch: ticket rejected (read={}, object={}, parse_error='{}')",
+    ERROR_LOG_FMT(NETPLAY, "Managed launch: ticket rejected (read={}, object={}, parse_error='{}')",
                   ticket_read, root.is<picojson::object>(),
                   parse_error.empty() ? "none" : parse_error);
     QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
@@ -1901,13 +1948,12 @@ void MainWindow::StartManagedNetPlay()
   const auto replay_output_path = read_string("replay_output_path");
   const auto replay_input_path = read_string("replay_input_path");
 
-  NOTICE_LOG_FMT(
-      NETPLAY,
-      "Managed launch: ticket parsed (mode='{}', game='{}', match_id={}, player_id={}, "
-      "rendezvous_addr={}, rendezvous_token={}, status_path={}, fields={})",
-      mode.value_or("match"), game.value_or("<missing>"), match_id.has_value(),
-      player_id.has_value(), rendezvous_address.has_value(), rendezvous_token.has_value(),
-      status_path.has_value(), ticket.size());
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Managed launch: ticket parsed (mode='{}', game='{}', match_id={}, player_id={}, "
+                 "rendezvous_addr={}, rendezvous_token={}, status_path={}, fields={})",
+                 mode.value_or("match"), game.value_or("<missing>"), match_id.has_value(),
+                 player_id.has_value(), rendezvous_address.has_value(),
+                 rendezvous_token.has_value(), status_path.has_value(), ticket.size());
 
   if (mode == "netplay_replay")
   {
@@ -2154,9 +2200,9 @@ void MainWindow::StartManagedNetPlay()
                                                full_scan_keep_tracking_it->second.is<bool>() &&
                                                full_scan_keep_tracking_it->second.get<bool>();
   const auto parallel_dirty_compare_it = ticket.find("parallel_dirty_compare");
-  m_managed_session->parallel_dirty_compare =
-      parallel_dirty_compare_it != ticket.end() && parallel_dirty_compare_it->second.is<bool>() &&
-      parallel_dirty_compare_it->second.get<bool>();
+  m_managed_session->parallel_dirty_compare = parallel_dirty_compare_it != ticket.end() &&
+                                              parallel_dirty_compare_it->second.is<bool>() &&
+                                              parallel_dirty_compare_it->second.get<bool>();
   const auto tracked_bitmap_clear_it = ticket.find("tracked_bitmap_clear");
   m_managed_session->tracked_bitmap_clear = tracked_bitmap_clear_it == ticket.end() ||
                                             !tracked_bitmap_clear_it->second.is<bool>() ||
@@ -2411,8 +2457,8 @@ void MainWindow::StartManagedNetPlay()
   NOTICE_LOG_FMT(NETPLAY,
                  "Managed launch: validation complete (game='{}', seat={}, players={}, "
                  "sd_enabled={})",
-                 m_managed_session->game, m_managed_session->seat,
-                 m_managed_session->player_count, sd_card_path.has_value());
+                 m_managed_session->game, m_managed_session->seat, m_managed_session->player_count,
+                 sd_card_path.has_value());
   ReportManagedStatus("connecting");
 
   if (m_managed_session->seat == 1)
@@ -2457,15 +2503,16 @@ void MainWindow::PollManagedNetPlayReady()
   if (!client || !server)
   {
     ERROR_LOG_FMT(NETPLAY, "Managed launch: readiness polling lost {}{}", client ? "" : "client",
-                  !client && !server ? " and server" : !server ? "server" : "");
+                  !client && !server ? " and server" :
+                  !server            ? "server" :
+                                       "");
     return;
   }
 
   ++m_managed_session->ready_poll_count;
   const size_t connected_players = client->GetPlayers().size();
   const bool all_players_have_game = client->DoAllPlayersHaveGame();
-  if (m_managed_session->ready_poll_count == 1 ||
-      m_managed_session->ready_poll_count % 50 == 0)
+  if (m_managed_session->ready_poll_count == 1 || m_managed_session->ready_poll_count % 50 == 0)
   {
     NOTICE_LOG_FMT(NETPLAY,
                    "Managed launch: waiting for lobby readiness (connected={}/{}, "
@@ -2481,8 +2528,7 @@ void MainWindow::PollManagedNetPlayReady()
       // NetPlay publishes its first RTT sample once per second. Do not derive the session delay
       // from the initial zero-valued player records.
       m_managed_session->latency_sampling_started = true;
-      NOTICE_LOG_FMT(NETPLAY,
-                     "Managed launch: lobby ready; waiting for the first latency sample");
+      NOTICE_LOG_FMT(NETPLAY, "Managed launch: lobby ready; waiting for the first latency sample");
       QTimer::singleShot(1250, this, &MainWindow::PollManagedNetPlayReady);
       return;
     }
@@ -2594,8 +2640,7 @@ bool MainWindow::NetPlayJoin()
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
     rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;
-    rollback_options.disable_project_plus_music =
-        m_managed_session->disable_project_plus_music;
+    rollback_options.disable_project_plus_music = m_managed_session->disable_project_plus_music;
     rollback_options.native_stress = m_managed_session->native_stress;
     rollback_options.stress_interval = m_managed_session->stress_interval;
     rollback_options.compare_confirmed_ram = m_managed_session->compare_confirmed_ram;
@@ -2936,6 +2981,12 @@ void MainWindow::OnStartRecording()
 
 void MainWindow::OnStopRecording()
 {
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Shutdown lifecycle: OnStopRecording entered "
+                 "(managed_npr_recording={}, npr_playback={}, dtm_recording={}, dtm_active={})",
+                 m_managed_session && m_managed_session->netplay_replay_recording_started,
+                 Rollback::IsNetplayReplayPlaying(), m_system.GetMovie().IsRecordingInput(),
+                 m_system.GetMovie().IsMovieActive());
   if (m_managed_session && m_managed_session->netplay_replay_recording_started)
   {
     bool saved = false;
@@ -2957,6 +3008,7 @@ void MainWindow::OnStopRecording()
     Rollback::StopNetplayReplay();
     m_managed_session->netplay_replay_recording_started = false;
     emit RecordingStatusChanged(false);
+    NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: managed NPR recording stopped (saved={})", saved);
     return;
   }
 
@@ -2969,6 +3021,7 @@ void MainWindow::OnStopRecording()
   if (movie.IsMovieActive())
     movie.EndPlayInput(false);
   emit RecordingStatusChanged(false);
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: OnStopRecording completed");
 }
 
 void MainWindow::OnExportRecording()

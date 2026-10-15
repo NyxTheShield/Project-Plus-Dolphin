@@ -1025,8 +1025,10 @@ bool SnapshotRing::LoadSlot(Core::System& system, s64 frame, bool redisplay)
       continue;
     const bool fake_vmem = physical >= DirtyPages::GC_FAKE_VMEM_PHYSICAL &&
                            physical < DirtyPages::GC_FAKE_VMEM_PHYSICAL + memory.GetFakeVMemSize();
-    const u32 effective = fake_vmem ? physical | 0x60000000u : physical | MEM1_VIRTUAL;
-    jit.InvalidateICache(effective, range.length, true);
+    if (fake_vmem)
+      jit.InvalidateICache(physical | 0x60000000u, range.length, true);
+    else
+      jit.EraseBlocksForRestoredRange(physical, range.length);
   }
   ForgetLearnedJitAddresses(system, m_changed_blocks);
   m_last_load_timings.jit_ms = MillisecondsSince(jit_start);

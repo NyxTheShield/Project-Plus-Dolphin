@@ -49,3 +49,4 @@ CMakeLists.txt.user
 # Ignore CMake user presets
 CMakeUserPresets.json
 Build-P1-P2-Release.ps1
+benchmarks

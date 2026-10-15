@@ -53,6 +53,10 @@ public:
   // Records `contents` (PageSize() bytes) as `page`'s pre-image in the newest log, unless already
   // there or there is no snapshot. Returns whether it recorded.
   bool Record(std::size_t page, const u8* contents);
+  // Reserves and publishes a pre-image entry without copying its contents. The caller must fill
+  // the returned PageSize() byte buffer before exposing or using the log. This lets DirtyPages
+  // allocate log metadata on its owner thread, then copy disjoint pages in parallel.
+  u8* PrepareRecord(std::size_t page);
   // Pages in the newest log, in first-write order.
   std::vector<u32> NewestPages() const;
 

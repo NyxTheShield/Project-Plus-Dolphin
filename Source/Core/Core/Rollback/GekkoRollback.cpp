@@ -1601,9 +1601,9 @@ void LogSparseStateCheckpoint(int frame)
       "L1={:016x} state={:016x} sections Movie={:016x},Video={:016x},CoreTiming={:016x},"
       "HW={:016x},PowerPC={:016x},Wiimote={:016x},Gecko={:016x}",
       frame, Rollback::IsResimulating(), g_manager.last_advance_input_hash, digest.mem1,
-      digest.mem2, digest.l1, digest.state, digest.state_sections[0],
-      digest.state_sections[1], digest.state_sections[2], digest.state_sections[3],
-      digest.state_sections[4], digest.state_sections[5], digest.state_sections[6]);
+      digest.mem2, digest.l1, digest.state, digest.state_sections[0], digest.state_sections[1],
+      digest.state_sections[2], digest.state_sections[3], digest.state_sections[4],
+      digest.state_sections[5], digest.state_sections[6]);
 }
 
 void CompareSettledRamDigests()
@@ -2666,7 +2666,21 @@ bool StartNetplayReplaySession()
 
 void StopGekkoSession()
 {
+  // DirtyPages::Disarm clears active-session JIT blocks.  Stop requests normally originate on the
+  // UI or NetPlay thread, so pause the emulated CPU before taking the manager lock and tearing the
+  // tracker down.  Clearing the block cache while the CPU is executing it can make the host execute
+  // the cache's breakpoint fill bytes (STATUS_BREAKPOINT on Windows).
+  Core::CPUThreadGuard cpu_guard(Core::System::GetInstance());
+  const auto stop_started = std::chrono::steady_clock::now();
+  const auto elapsed_ms = [&] {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                     stop_started)
+        .count();
+  };
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: StopGekkoSession waiting for manager mutex");
   std::lock_guard lk(g_manager.mutex);
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: StopGekkoSession acquired manager mutex ({:.3f} ms)",
+                 elapsed_ms());
   const bool had_session = g_manager.active.load(std::memory_order_relaxed) || g_manager.session ||
                            g_manager.simulated_peer_session || g_manager.native_adapter_active;
 
@@ -2679,18 +2693,30 @@ void StopGekkoSession()
 
   if (g_manager.session)
   {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: destroying primary Gekko session ({:.3f} ms)",
+                   elapsed_ms());
     gekko_destroy(&g_manager.session);
     g_manager.session = nullptr;
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: primary Gekko session destroyed ({:.3f} ms)",
+                   elapsed_ms());
   }
   if (g_manager.simulated_peer_session)
   {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: destroying simulated Gekko peer ({:.3f} ms)",
+                   elapsed_ms());
     gekko_destroy(&g_manager.simulated_peer_session);
     g_manager.simulated_peer_session = nullptr;
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: simulated Gekko peer destroyed ({:.3f} ms)",
+                   elapsed_ms());
   }
   if (g_manager.native_adapter_active)
   {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: stopping rollback datagrams ({:.3f} ms)",
+                   elapsed_ms());
     Common::ENet::StopRollbackDatagrams();
     g_manager.native_adapter_active = false;
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: rollback datagrams stopped ({:.3f} ms)",
+                   elapsed_ms());
   }
   ResetSimulatedLink();
   g_manager.pending_events.clear();
@@ -2702,7 +2728,13 @@ void StopGekkoSession()
   g_manager.deferred_visible_follows_rollback = false;
   g_manager.throttle_reference_before_load.reset();
   if (g_manager.ring)
+  {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: resetting rollback snapshot ring ({:.3f} ms)",
+                   elapsed_ms());
     g_manager.ring->Reset(Core::System::GetInstance());
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: rollback snapshot ring reset ({:.3f} ms)",
+                   elapsed_ms());
+  }
   g_manager.ring.reset();
   g_manager.track_host_memory_writes.store(false, std::memory_order_release);
   Rollback::SetResimulating(false);
@@ -2711,7 +2743,8 @@ void StopGekkoSession()
   DirtyPages::SetParallelCompareEnabled(false);
   Rollback::SetCoarseFifoTiming(false);
   if (had_session)
-    NOTICE_LOG_FMT(CORE, "GekkoNet: Session stopped");
+    NOTICE_LOG_FMT(CORE, "GekkoNet: Session stopped ({:.3f} ms shutdown)", elapsed_ms());
+  NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: StopGekkoSession completed ({:.3f} ms)", elapsed_ms());
 }
 
 static void ApplyDebugCStickPattern(GCPadStatus* status, u64 frame)
@@ -3405,8 +3438,8 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.native_stress ? g_manager.stress_interval : STRESS_INPUT_PERIOD_FRAMES,
       g_manager.native_stress ? g_manager.stress_rollback_frames :
       g_manager.stress_test   ? s_stress_packet_delay_frames -
-                                    static_cast<u64>(g_manager.configured_local_delay) - 1 :
-                                0,
+                                  static_cast<u64>(g_manager.configured_local_delay) - 1 :
+                              0,
       g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark);
 
   NOTICE_LOG_FMT(

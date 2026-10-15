@@ -1149,14 +1149,20 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
 void NetPlayClient::OnStopGame(sf::Packet& packet)
 {
   INFO_LOG_FMT(NETPLAY, "Game stopped");
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: received NetPlay StopGame packet");
 
   StopGame();
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayClient::StopGame returned");
   m_dialog->OnMsgStopGame();
 }
 
 void NetPlayClient::OnPowerButton()
 {
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Shutdown lifecycle: received NetPlay power-button packet; releasing input waits");
   InvokeStop();
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Shutdown lifecycle: NetPlay input waits released; queueing guest STM event on UI");
   m_dialog->OnMsgPowerButton();
 }
 
@@ -2720,6 +2726,7 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
 
 void NetPlayClient::InvokeStop()
 {
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayClient::InvokeStop clearing running state");
   m_is_running.Clear();
 
   // stop waiting for input
@@ -2732,13 +2739,19 @@ void NetPlayClient::InvokeStop()
 // called from ---GUI--- thread and ---NETPLAY--- thread (client side)
 bool NetPlayClient::StopGame()
 {
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayClient::StopGame entered");
   InvokeStop();
 
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayClient stopping Gekko session");
   Rollback::StopGekkoSession();
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayClient stopped Gekko session");
 
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: disabling NetPlay emulation hooks");
   NetPlay_Disable();
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlay emulation hooks disabled");
 
   // stop game
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: requesting Qt ForceStop through NetPlay dialog");
   m_dialog->StopGame();
 
   return true;
@@ -2768,6 +2781,7 @@ void NetPlayClient::RequestStopGame()
 
 void NetPlayClient::SendPowerButtonEvent()
 {
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: sending NetPlay power-button packet");
   sf::Packet packet;
   packet << MessageID::PowerButton;
   SendAsync(std::move(packet));

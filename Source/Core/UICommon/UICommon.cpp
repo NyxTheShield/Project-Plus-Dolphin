@@ -20,6 +20,7 @@
 #include "Common/CommonPaths.h"
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/Logging/Log.h"
 #include "Common/Logging/LogManager.h"
 #include "Common/MathUtil.h"
 #include "Common/MsgHandler.h"
@@ -485,15 +486,33 @@ void SetUserDirectory(std::string custom_path)
 
 bool TriggerSTMPowerEvent()
 {
-  const auto ios = Core::System::GetInstance().GetIOS();
+  Core::System& system = Core::System::GetInstance();
+  const bool caller_was_cpu_thread = Core::IsCPUThread();
+  const Core::CPUThreadGuard cpu_guard(system);
+  const auto ios = system.GetIOS();
   if (!ios)
+  {
+    NOTICE_LOG_FMT(CORE, "Shutdown lifecycle: STM power event unavailable (IOS is absent)");
     return false;
+  }
 
   const auto stm = ios->GetDeviceByName("/dev/stm/eventhook");
   if (!stm || !std::static_pointer_cast<IOS::HLE::STMEventHookDevice>(stm)->HasHookInstalled())
+  {
+    NOTICE_LOG_FMT(
+        CORE,
+        "Shutdown lifecycle: STM power event unavailable "
+        "(device_present={}, hook_installed={})",
+        stm != nullptr,
+        stm && std::static_pointer_cast<IOS::HLE::STMEventHookDevice>(stm)->HasHookInstalled());
     return false;
+  }
 
   Core::DisplayMessage("Shutting down", 30000);
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: scheduling STM power event "
+                 "(caller_was_cpu_thread={}, guarded_as_cpu_thread={}, deterministic={})",
+                 caller_was_cpu_thread, Core::IsCPUThread(), Core::WantsDeterminism());
   ios->GetSystem().GetProcessorInterface().PowerButton_Tap();
 
   return true;

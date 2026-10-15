@@ -871,9 +871,13 @@ void NetPlayDialog::BootGame(const std::string& filename,
 void NetPlayDialog::StopGame()
 {
   if (m_got_stop_request)
+  {
+    NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayDialog ignored duplicate StopGame request");
     return;
+  }
 
   m_got_stop_request = true;
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: NetPlayDialog emitting forced Stop signal");
   emit Stop();
 }
 
@@ -1013,8 +1017,17 @@ void NetPlayDialog::OnMsgStopGame()
 void NetPlayDialog::OnMsgPowerButton()
 {
   if (!Core::IsRunning(Core::System::GetInstance()))
+  {
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Shutdown lifecycle: NetPlay power-button UI request ignored; core not running");
     return;
-  QueueOnObject(this, [] { UICommon::TriggerSTMPowerEvent(); });
+  }
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: queueing NetPlay STM power event on Qt thread");
+  QueueOnObject(this, [] {
+    const bool sent = UICommon::TriggerSTMPowerEvent();
+    NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: queued NetPlay STM power event completed (sent={})",
+                   sent);
+  });
 }
 
 void NetPlayDialog::OnPlayerConnect(const std::string& player)

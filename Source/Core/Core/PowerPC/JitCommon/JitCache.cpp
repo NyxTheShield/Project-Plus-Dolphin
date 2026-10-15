@@ -302,6 +302,22 @@ void JitBaseBlockCache::InvalidateICache(u32 initial_address, u32 initial_length
   }
 }
 
+void JitBaseBlockCache::EraseBlocksForRestoredRange(u32 physical_address, u32 length)
+{
+  bool has_compiled_code = false;
+  const u32 first_line = physical_address / 32;
+  const u32 end_line = (physical_address + length + 31) / 32;
+  for (u32 line = first_line; line < end_line; ++line)
+  {
+    if (!valid_block.Test(line))
+      continue;
+    valid_block.Clear(line);
+    has_compiled_code = true;
+  }
+  if (has_compiled_code)
+    ErasePhysicalRange(physical_address, length);
+}
+
 void JitBaseBlockCache::InvalidateICacheInternal(u32 physical_address, u32 address, u32 length,
                                                  bool forced)
 {
