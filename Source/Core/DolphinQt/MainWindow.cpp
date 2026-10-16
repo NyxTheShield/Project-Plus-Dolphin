@@ -2201,7 +2201,7 @@ void MainWindow::StartManagedNetPlay()
   if (frame_boundary_it != ticket.end() && frame_boundary_it->second.is<double>())
   {
     const double boundary = frame_boundary_it->second.get<double>();
-    if (boundary >= 0.0 && boundary <= 3.0)
+    if (boundary >= 0.0 && boundary <= 5.0)
       m_managed_session->frame_boundary = static_cast<u32>(boundary);
   }
   const auto gecko_codes_path_it = ticket.find("gecko_codes_path");

@@ -189,6 +189,10 @@ constexpr std::string_view FrameBoundaryName(FrameBoundary boundary)
     return "vi_end_field";
   case FrameBoundary::VINewField:
     return "vi_new_field";
+  case FrameBoundary::VIPreNewField:
+    return "vi_pre_new_field";
+  case FrameBoundary::VIPreSIPoll:
+    return "vi_pre_si_poll";
   }
   return "unknown";
 }
@@ -1991,7 +1995,7 @@ bool ReadNetplayReplay(const std::string& path, ParsedNetplayReplay* replay)
   if (!file || !file.ReadArray(&header, 1) || header.magic != NETPLAY_REPLAY_MAGIC ||
       header.version != NETPLAY_REPLAY_VERSION || header.players < 1 ||
       header.players > MAX_PORTS ||
-      header.frame_boundary > static_cast<u32>(FrameBoundary::VINewField) ||
+      header.frame_boundary > static_cast<u32>(FrameBoundary::VIPreSIPoll) ||
       header.bytes_per_frame != header.players * sizeof(WirePad) || header.frame_count > 10'000'000)
   {
     return false;
@@ -4572,13 +4576,15 @@ bool IsVIBoundaryPending()
 }
 
 void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
-                            bool next_is_new_field)
+                            bool next_is_new_field, bool next_is_si_poll)
 {
   const bool active = g_manager.active.load(std::memory_order_acquire);
   const FrameBoundary selected_boundary = g_manager.frame_boundary;
   const bool selected = (selected_boundary == FrameBoundary::VIBeginField && next_is_begin_field) ||
                         (selected_boundary == FrameBoundary::VIEndField && next_is_end_field) ||
-                        (selected_boundary == FrameBoundary::VINewField && next_is_new_field);
+                        (selected_boundary == FrameBoundary::VINewField && next_is_new_field) ||
+                        (selected_boundary == FrameBoundary::VIPreNewField && next_is_new_field) ||
+                        (selected_boundary == FrameBoundary::VIPreSIPoll && next_is_si_poll);
   if (active && selected && g_manager.late_vi_guard)
   {
     g_manager.precise_vi_tail.store(false, std::memory_order_release);

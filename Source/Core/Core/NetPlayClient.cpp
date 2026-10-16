@@ -2215,7 +2215,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   {
     rollback_options.frame_boundary = static_cast<Rollback::FrameBoundary>(
         std::min<u32>(m_net_settings.rollback_frame_boundary,
-                      static_cast<u32>(Rollback::FrameBoundary::VINewField)));
+                      static_cast<u32>(Rollback::FrameBoundary::VIPreSIPoll)));
   }
   const bool simulate_remote_p2 =
       m_local_player->IsHost() && m_players.size() == 1 &&

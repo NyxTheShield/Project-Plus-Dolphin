@@ -27,6 +27,8 @@ enum class FrameBoundary : u8
   VIBeginField = 1,
   VIEndField = 2,
   VINewField = 3,
+  VIPreNewField = 4,
+  VIPreSIPoll = 5,
 };
 
 // Per-session diagnostics and experimental switches. These are supplied by the launch ticket for
@@ -84,7 +86,7 @@ void RunPendingVIBoundary(Core::System& system);
 // half-line before the selected VI boundary in the interpreter so it is reached at an
 // instruction-precise point independent of each client's JIT cache and block layout.
 void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
-                            bool next_is_new_field);
+                            bool next_is_new_field, bool next_is_si_poll);
 bool ConsumePreciseVIGuardRequest();
 void ArmPreciseVITailFromGuard();
 bool IsPreciseVITailArmed();
