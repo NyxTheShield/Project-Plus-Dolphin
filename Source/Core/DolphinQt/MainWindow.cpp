@@ -2422,7 +2422,16 @@ void MainWindow::StartManagedNetPlay()
     }
     Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Brawl");
-    game_path = m_managed_session->brawl_iso_path;
+    game_path =
+        File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "vBrawl Netplay Launcher.dol";
+    if (m_managed_session->sd_card_path.empty() ||
+        !File::Exists(m_managed_session->sd_card_path))
+    {
+      FailManagedSession("The bundled vBrawl SD card is missing");
+      m_managed_session.reset();
+      return;
+    }
+    sd_card_path = m_managed_session->sd_card_path;
   }
   else if (m_managed_session->game.rfind("dolphin:", 0) == 0)
   {
@@ -2474,7 +2483,7 @@ void MainWindow::StartManagedNetPlay()
   {
     const QString detail =
         m_managed_session->game == "brawl" ?
-            tr("The selected Brawl ISO could not be opened.") :
+            tr("vBrawl Netplay Launcher.dol was not found in this Dolphin user folder.") :
         m_managed_session->game == "project-plus" ?
             tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.") :
             tr("The selected custom game could not be opened.");
