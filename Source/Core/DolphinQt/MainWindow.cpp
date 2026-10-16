@@ -1940,6 +1940,7 @@ void MainWindow::StartManagedNetPlay()
   const auto rendezvous_token = read_string("rendezvous_token");
   const auto brawl_iso_path = read_string("brawl_iso_path");
   const auto project_plus_sd_path = read_string("project_plus_sd_path");
+  const auto custom_sd_card_path = read_string("sd_card_path");
   const auto custom_game_path = read_string("game_path");
   const auto custom_game_id = read_string("game_id");
   const auto status_path = read_string("status_path");
@@ -1999,6 +2000,16 @@ void MainWindow::StartManagedNetPlay()
     else if (game->rfind("dolphin:", 0) == 0 && custom_game_path && File::Exists(*custom_game_path))
     {
       launch_path = *custom_game_path;
+      if (custom_sd_card_path && !custom_sd_card_path->empty())
+      {
+        if (!File::Exists(*custom_sd_card_path))
+        {
+          Rollback::StopNetplayReplay();
+          FailManagedSession("The configured custom-game SD card is missing");
+          return;
+        }
+        sd_card_path = *custom_sd_card_path;
+      }
     }
     else
     {
@@ -2134,6 +2145,7 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->rendezvous_token = *rendezvous_token;
   m_managed_session->brawl_iso_path = brawl_iso_path.value_or("");
   m_managed_session->project_plus_sd_path = project_plus_sd_path.value_or("");
+  m_managed_session->sd_card_path = custom_sd_card_path.value_or("");
   m_managed_session->game_path = custom_game_path.value_or("");
   m_managed_session->game_id = custom_game_id.value_or("");
   if (game_revision_it != ticket.end() && game_revision_it->second.is<double>())
@@ -2419,6 +2431,16 @@ void MainWindow::StartManagedNetPlay()
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME,
                        custom_game.GetName(UICommon::GameFile::Variant::LongAndPossiblyCustom));
     game_path = m_managed_session->game_path;
+    if (!m_managed_session->sd_card_path.empty())
+    {
+      if (!File::Exists(m_managed_session->sd_card_path))
+      {
+        FailManagedSession("The configured custom-game SD card is missing");
+        m_managed_session.reset();
+        return;
+      }
+      sd_card_path = m_managed_session->sd_card_path;
+    }
   }
   else
   {

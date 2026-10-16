@@ -281,6 +281,7 @@ private:
     std::string game;
     std::string brawl_iso_path;
     std::string project_plus_sd_path;
+    std::string sd_card_path;
     std::string game_path;
     std::string game_id;
     u16 game_revision = 0;
