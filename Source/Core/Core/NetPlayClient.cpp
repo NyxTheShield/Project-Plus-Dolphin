@@ -1113,8 +1113,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     // rollback traffic uses GekkoNet's native UDP adapter and never re-enters NetPlay/ENet.
     u8 rollback_endpoint_count = 0;
     packet >> rollback_endpoint_count;
-    m_rollback_player_endpoints.clear();
-    m_rollback_player_endpoints.resize(1);
+    std::vector<std::string> announced_rollback_endpoints(1);
     for (u8 i = 0; i < rollback_endpoint_count; ++i)
     {
       PlayerId pid = 0;
@@ -1135,10 +1134,17 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
         }
       }
 
-      if (m_rollback_player_endpoints.size() <= pid)
-        m_rollback_player_endpoints.resize(static_cast<size_t>(pid) + 1);
-      m_rollback_player_endpoints[pid] = fmt::format("{}:{}", address, rollback_port);
+      if (announced_rollback_endpoints.size() <= pid)
+        announced_rollback_endpoints.resize(static_cast<size_t>(pid) + 1);
+      announced_rollback_endpoints[pid] = fmt::format("{}:{}", address, rollback_port);
     }
+
+    // Rendezvous routes are selected per recipient. In a full mesh, peers behind one NAT may
+    // require LAN addresses (or loopback on one machine), while the coordinator uses a different
+    // route to those same seats. Preserve this client's verified manifest instead of replacing it
+    // with the coordinator's routes at game start.
+    m_rollback_player_endpoints = m_managed_config ? m_managed_rollback_endpoints :
+                                                     std::move(announced_rollback_endpoints);
 
     m_net_settings.is_hosting = m_local_player->IsHost();
   }

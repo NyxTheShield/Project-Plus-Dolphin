@@ -40,6 +40,8 @@
 #include "Core/DolphinAnalytics.h"
 #include "Core/System.h"
 
+#include "DiscIO/Enums.h"
+
 #include "DolphinQt/Host.h"
 #include "DolphinQt/MainWindow.h"
 #include "DolphinQt/QtUtils/AnalyticsPrompt.h"
@@ -119,6 +121,9 @@ static bool ExportBrawlbackGameList(const std::string& output_path,
     value["revision"] = picojson::value(static_cast<double>(game->GetRevision()));
     value["discNumber"] = picojson::value(static_cast<double>(game->GetDiscNumber()));
     value["platform"] = picojson::value(static_cast<double>(game->GetPlatform()));
+    value["region"] = picojson::value(static_cast<double>(game->GetRegion()));
+    value["country"] = picojson::value(static_cast<double>(game->GetCountry()));
+    value["regionName"] = picojson::value(DiscIO::GetName(game->GetRegion(), false));
     value["bannerDataUrl"] = picojson::value(EncodeBannerDataUrl(game->GetBannerImage()));
     games.emplace_back(std::move(value));
   });
