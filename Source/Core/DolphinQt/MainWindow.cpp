@@ -69,6 +69,7 @@
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/Wiimote.h"
+#include "Core/HW/WiiSave.h"
 #include "Core/HotkeyManager.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/IOS/USB/Bluetooth/BTEmu.h"
@@ -2203,6 +2204,16 @@ void MainWindow::StartManagedNetPlay()
     if (boundary >= 0.0 && boundary <= 3.0)
       m_managed_session->frame_boundary = static_cast<u32>(boundary);
   }
+  const auto gecko_codes_path_it = ticket.find("gecko_codes_path");
+  if (gecko_codes_path_it != ticket.end() && gecko_codes_path_it->second.is<std::string>())
+    m_managed_session->gecko_codes_path = gecko_codes_path_it->second.get<std::string>();
+  const auto wii_save_data_bin_path_it = ticket.find("wii_save_data_bin_path");
+  if (wii_save_data_bin_path_it != ticket.end() &&
+      wii_save_data_bin_path_it->second.is<std::string>())
+  {
+    m_managed_session->wii_save_data_bin_path =
+        wii_save_data_bin_path_it->second.get<std::string>();
+  }
   const auto full_scan_it = ticket.find("full_scan_benchmark");
   m_managed_session->full_scan_benchmark = full_scan_it != ticket.end() &&
                                            full_scan_it->second.is<bool>() &&
@@ -2212,9 +2223,10 @@ void MainWindow::StartManagedNetPlay()
                                                full_scan_keep_tracking_it->second.is<bool>() &&
                                                full_scan_keep_tracking_it->second.get<bool>();
   const auto parallel_dirty_compare_it = ticket.find("parallel_dirty_compare");
-  m_managed_session->parallel_dirty_compare = parallel_dirty_compare_it != ticket.end() &&
-                                              parallel_dirty_compare_it->second.is<bool>() &&
-                                              parallel_dirty_compare_it->second.get<bool>();
+  m_managed_session->parallel_dirty_compare =
+      parallel_dirty_compare_it == ticket.end() ||
+      !parallel_dirty_compare_it->second.is<bool>() ||
+      parallel_dirty_compare_it->second.get<bool>();
   const auto tracked_bitmap_clear_it = ticket.find("tracked_bitmap_clear");
   m_managed_session->tracked_bitmap_clear = tracked_bitmap_clear_it == ticket.end() ||
                                             !tracked_bitmap_clear_it->second.is<bool>() ||
@@ -2474,13 +2486,26 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_WII_SD_CARD, sd_card_path.has_value());
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
+  const bool has_managed_gecko_codes = !m_managed_session->gecko_codes_path.empty();
+  Config::SetCurrent(Config::NETPLAY_SYNC_CODES, has_managed_gecko_codes);
+  if (has_managed_gecko_codes)
+    Config::SetCurrent(Config::MAIN_ENABLE_CHEATS, true);
   File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
+
+  if (!m_managed_session->wii_save_data_bin_path.empty() &&
+      WiiSave::ImportForNetplay(m_managed_session->wii_save_data_bin_path,
+                                selected_game.GetTitleID()) != WiiSave::CopyResult::Success)
+  {
+    FailManagedSession("The configured Wii data.bin save is invalid or belongs to another game");
+    m_managed_session.reset();
+    return;
+  }
 
   NOTICE_LOG_FMT(NETPLAY,
                  "Managed launch: validation complete (game='{}', seat={}, players={}, "
-                 "sd_enabled={})",
+                 "sd_enabled={}, managed_gecko_codes={})",
                  m_managed_session->game, m_managed_session->seat, m_managed_session->player_count,
-                 sd_card_path.has_value());
+                 sd_card_path.has_value(), !m_managed_session->gecko_codes_path.empty());
   ReportManagedStatus("connecting");
 
   if (m_managed_session->seat == 1)
@@ -2495,6 +2520,7 @@ void MainWindow::StartManagedNetPlay()
       return;
     }
     server->SetManagedPlayers(m_managed_session->match_id, m_managed_session->player_ids);
+    server->SetManagedGeckoCodesPath(m_managed_session->gecko_codes_path);
     server->ChangeGame(selected_game.GetSyncIdentifier(),
                        m_game_list->GetNetPlayName(selected_game));
   }

@@ -565,6 +565,37 @@ CopyResult Import(const std::string& data_bin_path, const std::function<bool()>&
   return Copy(data_bin.get(), nand.get());
 }
 
+CopyResult ImportForNetplay(const std::string& data_bin_path, u64 expected_title_id)
+{
+  IOS::HLE::Kernel ios;
+  const auto data_bin = MakeDataBinStorage(&ios.GetIOSC(), data_bin_path, "rb");
+  const std::optional<Header> header = data_bin->ReadHeader();
+  if (!header || header->tid != expected_title_id)
+  {
+    ERROR_LOG_FMT(CORE,
+                  "WiiSave::ImportForNetplay: invalid save or title mismatch "
+                  "(expected={:016x}, actual={:016x})",
+                  expected_title_id, header ? header->tid : 0);
+    return CopyResult::CorruptedSource;
+  }
+
+  // NandStorage discovers the save owner's UID/GID from the title data directory. A managed
+  // launch may use a brand-new isolated NAND, so prepare that directory before constructing the
+  // destination, just as WiiRoot's NetPlay save-copy path does.
+  const std::string title_path = Common::GetTitleDataPath(header->tid);
+  const FS::Modes modes{FS::Mode::ReadWrite, FS::Mode::ReadWrite, FS::Mode::ReadWrite};
+  if (ios.GetFS()->CreateFullPath(IOS::PID_KERNEL, IOS::PID_KERNEL, title_path + '/', 0, modes) !=
+      FS::ResultCode::Success)
+  {
+    ERROR_LOG_FMT(CORE, "WiiSave::ImportForNetplay: failed to create destination path {}",
+                  title_path);
+    return CopyResult::Error;
+  }
+
+  const auto nand = MakeNandStorage(ios.GetFS().get(), header->tid);
+  return Copy(data_bin.get(), nand.get());
+}
+
 static CopyResult Export(u64 tid, std::string_view export_path, IOS::HLE::Kernel* ios)
 {
   const std::string path = fmt::format("{}/private/wii/title/{}{}{}{}/data.bin", export_path,

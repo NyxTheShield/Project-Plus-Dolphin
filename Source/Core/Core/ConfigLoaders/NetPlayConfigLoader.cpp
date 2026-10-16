@@ -208,9 +208,10 @@ public:
 #endif
 
     // Check To Override Client's Cheat Codes
-    if (m_settings.sync_codes && !m_settings.is_hosting)
+    if (m_settings.sync_codes)
     {
-      // Raise flag to use host's codes
+      // Every peer, including the host, must boot from the exact synchronized code payload.
+      // Reloading the host's normal GameINI here can otherwise replace managed session codes.
       layer->Set(Config::SESSION_CODE_SYNC_OVERRIDE, true);
     }
   }

@@ -300,10 +300,12 @@ private:
     bool native_stress = false;
     u32 stress_interval = 1;
     std::optional<u32> rollback_window_override;
-    u32 frame_boundary = 1;
+    u32 frame_boundary = 2;
+    std::string gecko_codes_path;
+    std::string wii_save_data_bin_path;
     bool full_scan_benchmark = false;
     bool full_scan_keep_tracking = false;
-    bool parallel_dirty_compare = false;
+    bool parallel_dirty_compare = true;
     bool tracked_bitmap_clear = true;
     std::optional<u32> input_delay_override;
     u32 input_delay_reduction = 2;

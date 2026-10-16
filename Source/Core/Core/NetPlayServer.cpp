@@ -1804,17 +1804,24 @@ bool NetPlayServer::RequestStartGame()
     }
   }
 
-  // Check To Send Codes to Clients
-  if (m_settings.sync_codes && m_players.size() > 1)
+  // Load the synchronized code payload even in a host-alone session. Managed game configs must
+  // not silently lose their codes just because there is no remote peer to acknowledge them.
+  if (m_settings.sync_codes)
   {
-    start_now = false;
-    m_start_pending = true;
+    const bool has_remote_players = m_players.size() > 1;
+    if (has_remote_players)
+    {
+      start_now = false;
+      m_start_pending = true;
+    }
     if (!SyncCodes())
     {
       PanicAlertFmtT("Error synchronizing cheat codes!");
       m_start_pending = false;
       return false;
     }
+    if (!has_remote_players)
+      m_codes_synced = true;
   }
 
   if (start_now)
@@ -2391,11 +2398,20 @@ bool NetPlayServer::SyncCodes()
   const std::string_view game_id = game->GetGameID();
   const auto revision = game->GetRevision();
   Common::IniFile globalIni;
-  for (const std::string& filename : ConfigLoaders::GetGameIniFilenames(game_id, revision))
-    globalIni.Load(File::GetSysDirectory() + GAMESETTINGS_DIR DIR_SEP + filename, true);
   Common::IniFile localIni;
-  for (const std::string& filename : ConfigLoaders::GetGameIniFilenames(game_id, revision))
-    localIni.Load(File::GetUserPath(D_GAMESETTINGS_IDX) + filename, true);
+  if (m_managed_gecko_codes_path.empty())
+  {
+    for (const std::string& filename : ConfigLoaders::GetGameIniFilenames(game_id, revision))
+      globalIni.Load(File::GetSysDirectory() + GAMESETTINGS_DIR DIR_SEP + filename, true);
+    for (const std::string& filename : ConfigLoaders::GetGameIniFilenames(game_id, revision))
+      localIni.Load(File::GetUserPath(D_GAMESETTINGS_IDX) + filename, true);
+  }
+  else if (!localIni.Load(m_managed_gecko_codes_path))
+  {
+    ERROR_LOG_FMT(NETPLAY, "Could not load managed Gecko code file: {}",
+                  m_managed_gecko_codes_path);
+    return false;
+  }
 
   // Initialize Number of Synced Players
   m_codes_synced_players = 0;
@@ -2411,12 +2427,21 @@ bool NetPlayServer::SyncCodes()
   {
     std::vector<Gecko::GeckoCode> codes = Gecko::LoadCodes(globalIni, localIni);
 
+    if (!m_managed_gecko_codes_path.empty())
+    {
+      for (Gecko::GeckoCode& code : codes)
+        code.enabled = true;
+    }
+
 #ifdef USE_RETRO_ACHIEVEMENTS
     AchievementManager::GetInstance().FilterApprovedGeckoCodes(codes, game_id, revision);
 #endif  // USE_RETRO_ACHIEVEMENTS
 
     // Create a Gecko Code Vector with just the active codes
     std::vector<Gecko::GeckoCode> active_codes = Gecko::SetAndReturnActiveCodes(codes);
+    // PatchEngine reloads codes while booting. Keep the host on the same immutable synchronized
+    // payload sent to clients instead of letting it fall back to its normal GameINI.
+    Gecko::UpdateSyncedCodes(active_codes);
 
     // Determine Codelist Size
     u16 codelines = 0;
@@ -2432,6 +2457,11 @@ bool NetPlayServer::SyncCodes()
 
     // Output codelines to send
     INFO_LOG_FMT(NETPLAY, "Sending {} Gecko codelines", codelines);
+    if (!m_managed_gecko_codes_path.empty())
+    {
+      NOTICE_LOG_FMT(NETPLAY, "Managed Gecko sync: {} code(s), {} codeline(s), path='{}'",
+                     active_codes.size(), codelines, m_managed_gecko_codes_path);
+    }
 
     // Send initial packet. Notify of the sync operation and total number of lines being sent.
     {
@@ -2464,12 +2494,15 @@ bool NetPlayServer::SyncCodes()
 
   // Sync AR Codes
   {
-    std::vector<ActionReplay::ARCode> codes = ActionReplay::LoadCodes(globalIni, localIni);
+    std::vector<ActionReplay::ARCode> codes;
+    if (m_managed_gecko_codes_path.empty())
+      codes = ActionReplay::LoadCodes(globalIni, localIni);
 #ifdef USE_RETRO_ACHIEVEMENTS
     AchievementManager::GetInstance().FilterApprovedARCodes(codes, game_id, revision);
 #endif  // USE_RETRO_ACHIEVEMENTS
     // Create an AR Code Vector with just the active codes
     std::vector<ActionReplay::ARCode> active_codes = ActionReplay::ApplyAndReturnCodes(codes);
+    ActionReplay::UpdateSyncedCodes(active_codes);
 
     // Determine Codelist Size
     u16 codelines = 0;
@@ -2616,6 +2649,12 @@ void NetPlayServer::SetManagedPlayers(std::string match_id, std::vector<std::str
   std::lock_guard lkp(m_crit.players);
   m_managed_match_id = std::move(match_id);
   m_managed_player_ids = std::move(player_ids);
+}
+
+void NetPlayServer::SetManagedGeckoCodesPath(std::string path)
+{
+  std::lock_guard lkp(m_crit.players);
+  m_managed_gecko_codes_path = std::move(path);
 }
 
 PlayerId NetPlayServer::GiveFirstAvailableIDTo(ENetPeer* player)
