@@ -138,7 +138,10 @@ FixupBranch EmuCodeBlock::CheckIfSafeAddress(const OpArg& reg_value, X64Reg reg_
   if (registers_in_use[RSCRATCH])
     POP(RSCRATCH);
 
-  return J_CC(CC_Z, m_far_code.Enabled() ? Jump::Near : Jump::Short);
+  // Rollback dirty-page instrumentation is emitted in the fast store path before this branch is
+  // resolved. That path can exceed the signed 8-bit displacement used by Jump::Short, depending
+  // on the guest instruction and register-preservation requirements.
+  return J_CC(CC_Z, Jump::Near);
 }
 
 void EmuCodeBlock::EmitJITDirtyBitmapUpdate(X64Reg reg_addr, s32 offset, u32 size,

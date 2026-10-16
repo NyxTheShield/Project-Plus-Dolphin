@@ -649,6 +649,12 @@ struct GekkoManager
   u64 perf_replay_exec_count = 0;
   double perf_replay_exec_ms = 0.0;
   double perf_replay_exec_max_ms = 0.0;
+  u64 perf_resim_enter_sync_count = 0;
+  double perf_resim_enter_sync_ms = 0.0;
+  double perf_resim_enter_sync_max_ms = 0.0;
+  u64 perf_resim_exit_sync_count = 0;
+  double perf_resim_exit_sync_ms = 0.0;
+  double perf_resim_exit_sync_max_ms = 0.0;
   u64 perf_replay_jit_blocks = 0;
   u64 perf_replay_jit_nanoseconds = 0;
   ResimEventStats perf_replay_events{};
@@ -2448,6 +2454,12 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.perf_replay_exec_count = 0;
   g_manager.perf_replay_exec_ms = 0.0;
   g_manager.perf_replay_exec_max_ms = 0.0;
+  g_manager.perf_resim_enter_sync_count = 0;
+  g_manager.perf_resim_enter_sync_ms = 0.0;
+  g_manager.perf_resim_enter_sync_max_ms = 0.0;
+  g_manager.perf_resim_exit_sync_count = 0;
+  g_manager.perf_resim_exit_sync_ms = 0.0;
+  g_manager.perf_resim_exit_sync_max_ms = 0.0;
   g_manager.perf_replay_jit_blocks = 0;
   g_manager.perf_replay_jit_nanoseconds = 0;
   g_manager.perf_replay_events = {};
@@ -3468,6 +3480,76 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.perf_real_gaps_over_25_ms, g_manager.perf_real_gaps_over_33_ms,
       g_manager.perf_real_gaps_over_50_ms, gekko_frames_ahead(g_manager.session));
 
+  NOTICE_LOG_FMT(
+      CORE,
+      "GekkoNet resim transitions: enter SyncGPU {:.3f}/{:.3f} ms ({}); exit SyncGPU "
+      "{:.3f}/{:.3f} ms ({})",
+      average(g_manager.perf_resim_enter_sync_ms, g_manager.perf_resim_enter_sync_count),
+      g_manager.perf_resim_enter_sync_max_ms, g_manager.perf_resim_enter_sync_count,
+      average(g_manager.perf_resim_exit_sync_ms, g_manager.perf_resim_exit_sync_count),
+      g_manager.perf_resim_exit_sync_max_ms, g_manager.perf_resim_exit_sync_count);
+
+  if (IsDetailedResimProfilingEnabled())
+  {
+    const auto event_ms = [&](ResimEventCategory category) {
+      return average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<
+                         std::size_t>(category)]) /
+                         1'000'000.0,
+                     g_manager.perf_replay_exec_count);
+    };
+    const u64 categorized_event_ns = std::accumulate(
+        g_manager.perf_replay_events.nanoseconds.begin(),
+        g_manager.perf_replay_events.nanoseconds.end(), u64{0});
+    const double unaccounted_ms =
+        average(std::max(0.0, g_manager.perf_replay_exec_ms -
+                                  static_cast<double>(categorized_event_ns) / 1'000'000.0),
+                g_manager.perf_replay_exec_count);
+    NOTICE_LOG_FMT(
+        CORE,
+        "GekkoNet replay subsystem times: cpu_jit {:.3f}, fifo {:.3f}, vi {:.3f}, "
+        "scheduler {:.3f}, boundary_setup {:.3f}, dsp_audio {:.3f}, ios_ipc {:.3f}, "
+        "devices {:.3f}, events_other {:.3f}, unaccounted {:.3f} ms/frame",
+        event_ms(ResimEventCategory::GuestCpu), event_ms(ResimEventCategory::Fifo),
+        event_ms(ResimEventCategory::VideoInterface), event_ms(ResimEventCategory::CoreTiming),
+        event_ms(ResimEventCategory::FrameSetup), event_ms(ResimEventCategory::DspAudio),
+        event_ms(ResimEventCategory::IosIpc), event_ms(ResimEventCategory::Devices),
+        event_ms(ResimEventCategory::Other), unaccounted_ms);
+
+    const auto region_calls = [&](bool write, ResimJitMemoryRegion region) {
+      const auto& calls = write ? jit_memory.write_region_calls : jit_memory.read_region_calls;
+      return average(static_cast<double>(calls[static_cast<std::size_t>(region)]),
+                     g_manager.perf_replay_exec_count);
+    };
+    const auto region_ms = [&](bool write, ResimJitMemoryRegion region) {
+      const auto& nanoseconds =
+          write ? jit_memory.write_region_nanoseconds : jit_memory.read_region_nanoseconds;
+      return average(static_cast<double>(nanoseconds[static_cast<std::size_t>(region)]) /
+                         1'000'000.0,
+                     g_manager.perf_replay_exec_count);
+    };
+    NOTICE_LOG_FMT(
+        CORE,
+        "GekkoNet replay slow-memory regions: writes calls/ms RAM {:.1f}/{:.3f}, gather "
+        "{:.1f}/{:.3f}, MMIO {:.1f}/{:.3f}, other {:.1f}/{:.3f}; reads calls/ms RAM "
+        "{:.1f}/{:.3f}, gather {:.1f}/{:.3f}, MMIO {:.1f}/{:.3f}, other {:.1f}/{:.3f} per frame",
+        region_calls(true, ResimJitMemoryRegion::Ram),
+        region_ms(true, ResimJitMemoryRegion::Ram),
+        region_calls(true, ResimJitMemoryRegion::GatherPipe),
+        region_ms(true, ResimJitMemoryRegion::GatherPipe),
+        region_calls(true, ResimJitMemoryRegion::Mmio),
+        region_ms(true, ResimJitMemoryRegion::Mmio),
+        region_calls(true, ResimJitMemoryRegion::Other),
+        region_ms(true, ResimJitMemoryRegion::Other),
+        region_calls(false, ResimJitMemoryRegion::Ram),
+        region_ms(false, ResimJitMemoryRegion::Ram),
+        region_calls(false, ResimJitMemoryRegion::GatherPipe),
+        region_ms(false, ResimJitMemoryRegion::GatherPipe),
+        region_calls(false, ResimJitMemoryRegion::Mmio),
+        region_ms(false, ResimJitMemoryRegion::Mmio),
+        region_calls(false, ResimJitMemoryRegion::Other),
+        region_ms(false, ResimJitMemoryRegion::Other));
+  }
+
   NOTICE_LOG_FMT(CORE,
                  "GekkoNet presentation cadence: gaps >20/>25/>33.3/>50 ms = {}/{}/{}/{} of {} "
                  "real frames",
@@ -3642,6 +3724,12 @@ static void MaybeLogPerformance(Core::System& system)
   g_manager.perf_replay_exec_count = 0;
   g_manager.perf_replay_exec_ms = 0.0;
   g_manager.perf_replay_exec_max_ms = 0.0;
+  g_manager.perf_resim_enter_sync_count = 0;
+  g_manager.perf_resim_enter_sync_ms = 0.0;
+  g_manager.perf_resim_enter_sync_max_ms = 0.0;
+  g_manager.perf_resim_exit_sync_count = 0;
+  g_manager.perf_resim_exit_sync_ms = 0.0;
+  g_manager.perf_resim_exit_sync_max_ms = 0.0;
   g_manager.perf_replay_jit_blocks = 0;
   g_manager.perf_replay_jit_nanoseconds = 0;
   g_manager.perf_replay_events = {};
@@ -3672,9 +3760,21 @@ static void MaybeLogPerformance(Core::System& system)
   g_manager.perf_restore_mismatches = 0;
 }
 
-static void FinishRollbackBurst(Core::System& system, std::chrono::steady_clock::time_point now)
+static void FinishRollbackBurst(Core::System& system)
 {
+  const bool leaving_resimulation = Rollback::IsResimulating();
+  const auto exit_sync_start = std::chrono::steady_clock::now();
   Rollback::SetResimulating(false);
+  const auto exit_sync_end = std::chrono::steady_clock::now();
+  if (leaving_resimulation)
+  {
+    const double exit_sync_ms =
+        std::chrono::duration<double, std::milli>(exit_sync_end - exit_sync_start).count();
+    ++g_manager.perf_resim_exit_sync_count;
+    g_manager.perf_resim_exit_sync_ms += exit_sync_ms;
+    g_manager.perf_resim_exit_sync_max_ms =
+        std::max(g_manager.perf_resim_exit_sync_max_ms, exit_sync_ms);
+  }
   if (g_manager.throttle_reference_before_load)
   {
     system.GetCoreTiming().SetThrottleReference(*g_manager.throttle_reference_before_load);
@@ -3684,7 +3784,9 @@ static void FinishRollbackBurst(Core::System& system, std::chrono::steady_clock:
   if (!g_manager.rollback_burst_start)
     return;
 
-  const auto burst_duration = now - *g_manager.rollback_burst_start;
+  // Include the transition back to visible rendering in the complete burst cost. The transition
+  // drains the dual-core FIFO and was previously absent from both burst and execution timings.
+  const auto burst_duration = exit_sync_end - *g_manager.rollback_burst_start;
   const double elapsed = std::chrono::duration<double, std::milli>(burst_duration).count();
   ++g_manager.perf_rollback_burst_count;
   g_manager.perf_rollback_burst_ms += elapsed;
@@ -3742,7 +3844,7 @@ static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
     {
       const bool follows_rollback = g_manager.rollback_burst_start.has_value();
       if (follows_rollback)
-        FinishRollbackBurst(system, std::chrono::steady_clock::now());
+        FinishRollbackBurst(system);
       g_manager.deferred_visible_follows_rollback |= follows_rollback;
       return PrepareFrameResult::VisibleFrameDeferred;
     }
@@ -3862,13 +3964,23 @@ static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
       const auto advance_now = std::chrono::steady_clock::now();
       if (resimulating)
       {
+        const bool entering_resimulation = !Rollback::IsResimulating();
+        const auto enter_sync_start = std::chrono::steady_clock::now();
         Rollback::SetResimulating(true);
+        if (entering_resimulation)
+        {
+          const double enter_sync_ms = ElapsedMs(enter_sync_start);
+          ++g_manager.perf_resim_enter_sync_count;
+          g_manager.perf_resim_enter_sync_ms += enter_sync_ms;
+          g_manager.perf_resim_enter_sync_max_ms =
+              std::max(g_manager.perf_resim_enter_sync_max_ms, enter_sync_ms);
+        }
       }
       else
       {
         const bool follows_rollback = g_manager.deferred_visible_follows_rollback ||
                                       g_manager.rollback_burst_start.has_value();
-        FinishRollbackBurst(system, advance_now);
+        FinishRollbackBurst(system);
         Rollback::RecordFramePacingBoundary(event.frame, follows_rollback);
         g_manager.deferred_visible_follows_rollback = false;
       }
@@ -3898,14 +4010,10 @@ static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
           g_manager.perf_window_start = std::chrono::steady_clock::now();
         ++g_manager.perf_real_frames;
       }
-      g_manager.frame_execution_start = advance_now;
       g_manager.frame_execution_resim = resimulating;
       g_manager.frame_execution_gekko_frame = event.frame;
       if (IsDetailedResimProfilingEnabled())
-      {
-        g_manager.frame_execution_jit_start = GetResimJitCompileStats();
         g_manager.frame_execution_event_start = GetResimEventStats();
-      }
       const auto frame_setup_start =
           resimulating ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       // Publish the inputs selected by GekkoNet before returning to guest execution. Waiting for
@@ -3966,6 +4074,13 @@ static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
                          static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                               std::chrono::steady_clock::now() - frame_setup_start)
                                               .count()));
+      }
+      // Start execution timing after the resimulation transition and input/boundary setup. This
+      // measures the guest frame itself instead of charging the first replay frame for SyncGPU.
+      g_manager.frame_execution_start = std::chrono::steady_clock::now();
+      if (IsDetailedResimProfilingEnabled())
+      {
+        g_manager.frame_execution_jit_start = GetResimJitCompileStats();
       }
       return PrepareFrameResult::FrameReady;
     }

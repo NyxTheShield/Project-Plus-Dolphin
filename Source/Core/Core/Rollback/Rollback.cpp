@@ -610,17 +610,22 @@ std::vector<ResimGuestHotspot> TakeResimGuestHotspots(std::size_t limit)
   return hotspots;
 }
 
-void RecordResimJitMemoryHelper(bool write, u64 nanoseconds)
+void RecordResimJitMemoryHelper(bool write, ResimJitMemoryRegion region, u64 nanoseconds)
 {
+  const std::size_t region_index = static_cast<std::size_t>(region);
   if (write)
   {
     ++s_resim_jit_memory_stats.write_calls;
     s_resim_jit_memory_stats.write_nanoseconds += nanoseconds;
+    ++s_resim_jit_memory_stats.write_region_calls[region_index];
+    s_resim_jit_memory_stats.write_region_nanoseconds[region_index] += nanoseconds;
   }
   else
   {
     ++s_resim_jit_memory_stats.read_calls;
     s_resim_jit_memory_stats.read_nanoseconds += nanoseconds;
+    ++s_resim_jit_memory_stats.read_region_calls[region_index];
+    s_resim_jit_memory_stats.read_region_nanoseconds[region_index] += nanoseconds;
   }
 }
 

@@ -70,12 +70,27 @@ struct ResimGuestHotspot
   u64 slices = 0;
 };
 
+enum class ResimJitMemoryRegion : u8
+{
+  Ram,
+  GatherPipe,
+  Mmio,
+  Other,
+  Count,
+};
+
 struct ResimJitMemoryStats
 {
   u64 read_calls = 0;
   u64 read_nanoseconds = 0;
   u64 write_calls = 0;
   u64 write_nanoseconds = 0;
+  std::array<u64, static_cast<std::size_t>(ResimJitMemoryRegion::Count)> read_region_calls{};
+  std::array<u64, static_cast<std::size_t>(ResimJitMemoryRegion::Count)>
+      read_region_nanoseconds{};
+  std::array<u64, static_cast<std::size_t>(ResimJitMemoryRegion::Count)> write_region_calls{};
+  std::array<u64, static_cast<std::size_t>(ResimJitMemoryRegion::Count)>
+      write_region_nanoseconds{};
 };
 
 enum class ResimEventCategory : u8
@@ -145,7 +160,7 @@ void RecordResimJitCompile(u64 nanoseconds);
 ResimJitCompileStats GetResimJitCompileStats();
 void RecordResimGuestSlice(u32 pc, u64 nanoseconds, u64 cycles);
 std::vector<ResimGuestHotspot> TakeResimGuestHotspots(std::size_t limit);
-void RecordResimJitMemoryHelper(bool write, u64 nanoseconds);
+void RecordResimJitMemoryHelper(bool write, ResimJitMemoryRegion region, u64 nanoseconds);
 ResimJitMemoryStats TakeResimJitMemoryStats();
 void RecordResimEvent(ResimEventCategory category, u64 nanoseconds);
 ResimEventStats GetResimEventStats();
