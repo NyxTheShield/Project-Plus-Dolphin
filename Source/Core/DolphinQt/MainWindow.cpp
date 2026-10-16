@@ -2487,7 +2487,7 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
   const bool has_managed_gecko_codes = !m_managed_session->gecko_codes_path.empty();
-  Config::SetCurrent(Config::NETPLAY_SYNC_CODES, has_managed_gecko_codes);
+  Config::SetCurrent(Config::NETPLAY_SYNC_CODES, true);
   if (has_managed_gecko_codes)
     Config::SetCurrent(Config::MAIN_ENABLE_CHEATS, true);
   File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
