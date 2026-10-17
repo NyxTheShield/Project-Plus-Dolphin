@@ -1021,12 +1021,8 @@ void NetPlayDialog::OnMsgPowerButton()
                    "Shutdown lifecycle: NetPlay power-button UI request ignored; core not running");
     return;
   }
-  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: queueing NetPlay STM power event on Qt thread");
-  QueueOnObject(this, [] {
-    const bool sent = UICommon::TriggerSTMPowerEvent();
-    NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: queued NetPlay STM power event completed (sent={})",
-                   sent);
-  });
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: forwarding NetPlay power event to main window");
+  emit PowerButtonReceived();
 }
 
 void NetPlayDialog::OnPlayerConnect(const std::string& player)

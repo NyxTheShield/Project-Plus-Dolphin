@@ -108,6 +108,7 @@ private:
 
   // May ask for confirmation. Returns whether or not it actually stopped.
   bool RequestStop();
+  void ForceManagedProcessExit(bool notify_peers);
   void ForceStop();
   void Reset();
   void FrameAdvance();

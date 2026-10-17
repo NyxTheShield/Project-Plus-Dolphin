@@ -173,12 +173,13 @@ void HotkeyScheduler::Run()
       HotkeyManagerEmu::GetStatus(true);
 
       // Emulator hotkeys can alter state or pacing independently on each peer. During NetPlay,
-      // only the chat toggle is safe and useful; session lifecycle and presentation settings are
-      // controlled by the NetPlay UI and managed launcher.
+      // retain chat, fullscreen, and the explicit session-stop shortcut only.
       if (NetPlay::IsNetPlayRunning())
       {
         if (IsHotkey(HK_ACTIVATE_CHAT))
           emit ActivateChat();
+        if (IsHotkey(HK_STOP))
+          emit StopHotkey();
         if (IsHotkey(HK_FULLSCREEN))
         {
           emit FullScreenHotkey();

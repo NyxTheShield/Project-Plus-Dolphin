@@ -651,7 +651,12 @@ void MainWindow::ConnectHotkeys()
           &MainWindow::OnRequestGolfControl);
   connect(m_hotkey_scheduler, &HotkeyScheduler::RefreshGameListHotkey, this,
           &MainWindow::RefreshGameList);
-  connect(m_hotkey_scheduler, &HotkeyScheduler::StopHotkey, this, &MainWindow::RequestStop);
+  connect(m_hotkey_scheduler, &HotkeyScheduler::StopHotkey, this, [this] {
+    if (m_managed_session)
+      ForceManagedProcessExit(true);
+    else
+      RequestStop();
+  });
   connect(m_hotkey_scheduler, &HotkeyScheduler::ResetHotkey, this, &MainWindow::Reset);
   connect(m_hotkey_scheduler, &HotkeyScheduler::ScreenShotHotkey, this, &MainWindow::ScreenShot);
   connect(m_hotkey_scheduler, &HotkeyScheduler::FullScreenHotkey, this, &MainWindow::FullScreen);
@@ -1248,6 +1253,24 @@ void MainWindow::ForceStop()
   Core::Stop(m_system);
 }
 
+void MainWindow::ForceManagedProcessExit(bool notify_peers)
+{
+  if (m_exit_requested)
+    return;
+
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: forcing managed process exit (notify_peers={})",
+                 notify_peers);
+  m_exit_requested = true;
+  m_stop_requested = true;
+
+  if (notify_peers && NetPlay::IsNetPlayRunning())
+    NetPlay::SendPowerButtonEvent();
+
+  OnStopRecording();
+  ForceStop();
+}
+
 void MainWindow::Reset()
 {
   auto& movie = m_system.GetMovie();
@@ -1819,6 +1842,17 @@ void MainWindow::NetPlayInit()
 #endif
 
   connect(m_netplay_dialog, &NetPlayDialog::Stop, this, &MainWindow::ForceStop);
+  connect(m_netplay_dialog, &NetPlayDialog::PowerButtonReceived, this, [this] {
+    if (m_managed_session)
+    {
+      ForceManagedProcessExit(false);
+      return;
+    }
+
+    const bool sent = UICommon::TriggerSTMPowerEvent();
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Shutdown lifecycle: queued NetPlay STM power event completed (sent={})", sent);
+  });
   connect(m_netplay_dialog, &NetPlayDialog::ConnectionFailed, this,
           [this](const QString& message) { FailManagedSession(message.toStdString()); });
   connect(m_netplay_dialog, &NetPlayDialog::rejected, this, &MainWindow::NetPlayQuit);
@@ -2859,6 +2893,25 @@ bool MainWindow::eventFilter(QObject* object, QEvent* event)
 {
   if (event->type() == QEvent::Close)
   {
+    // A managed Brawlback process belongs to one match. Closing either its main window or render
+    // window means exiting that process, not asking the emulated Wii to shut down gracefully.
+    // In particular, do not leave fullscreen here: an exclusive-fullscreen surface transition can
+    // wait on the GPU thread while the graceful STM path waits on the CPU thread.
+    if (m_managed_session && !Core::IsUninitialized(m_system))
+    {
+      static_cast<QCloseEvent*>(event)->ignore();
+
+      if (!m_exit_requested)
+      {
+        NOTICE_LOG_FMT(CORE,
+                       "Shutdown lifecycle: managed window close requested; bypassing fullscreen "
+                       "and guest STM shutdown and forcing process exit");
+        ForceManagedProcessExit(true);
+      }
+
+      return true;
+    }
+
     if (RequestStop() && object == this)
       m_exit_requested = true;
 
