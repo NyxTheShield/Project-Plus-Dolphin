@@ -59,6 +59,7 @@ struct ManagedNetPlayConfig
   bool coordinator = false;
   u32 input_delay_reduction = 2;
   bool auto_input_delay = true;
+  std::vector<Rollback::ControllerType> controller_types;
   Rollback::GekkoSessionOptions rollback_options;
 };
 

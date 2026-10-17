@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -54,6 +55,7 @@
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/HW/VideoInterface.h"
+#include "Core/HW/WiimoteEmu/DesiredWiimoteState.h"
 #include "Core/IOS/FS/HostBackend/FS.h"
 #include "Core/IOS/IOS.h"
 #include "Core/IOS/Uids.h"
@@ -77,6 +79,14 @@ namespace
 // All physical controller buttons plus the adapter's synchronized calibration event.
 constexpr u16 PAD_WIRE_BUTTONS = 0x1F7F | PAD_GET_ORIGIN;
 constexpr int MAX_PORTS = 4;
+struct WireInput
+{
+  u8 controller_type = static_cast<u8>(ControllerType::GameCube);
+  WirePad pad{};
+  u8 wiimote_length = 0;
+  std::array<u8, 30> wiimote_data{};
+};
+static_assert(sizeof(WireInput) == 40);
 // Gekko exposes up to 10 rollback frames in the lobby. Keep two additional snapshots so the
 // current and confirmed boundary states cannot alias the oldest rollback state in the ring.
 constexpr int RING_SNAPSHOT_SLOTS = 12;
@@ -89,6 +99,26 @@ constexpr u64 P2_INPUT_SPAM_START_FRAME = 500;
 // delay only Inputs packets; delaying InputAck/session-health traffic can stall the remote peer.
 constexpr u8 GEKKO_INPUT_PACKET_TYPE = 1;
 constexpr std::string_view SIMULATED_P1_ADDRESS = "in-process-p1";
+
+std::mutex s_presentation_change_mutex;
+std::function<void()> s_pending_presentation_change;
+
+void RunPendingPresentationChange()
+{
+  std::function<void()> change;
+  {
+    std::lock_guard lock(s_presentation_change_mutex);
+    change = std::move(s_pending_presentation_change);
+    s_pending_presentation_change = {};
+  }
+
+  if (!change)
+    return;
+
+  NOTICE_LOG_FMT(VIDEO, "Running local presentation change at rollback frame boundary");
+  change();
+  NOTICE_LOG_FMT(VIDEO, "Local presentation change completed at rollback frame boundary");
+}
 constexpr std::string_view SIMULATED_P2_ADDRESS = "in-process-p2";
 constexpr u32 BRAWL_FRAME_HOOK_ADDR = 0x80017504;
 constexpr u32 BRAWL_EXPECTED_OPCODE = 0x90170100;  // stw r0, 0x100(r23)
@@ -256,7 +286,7 @@ struct DelayedNativePacket
 struct SampledLocalInput
 {
   s64 frame = 0;
-  WirePad input{};
+  WireInput input{};
   u64 sample_time_ns = 0;
 };
 
@@ -524,6 +554,7 @@ struct GekkoManager
   int remote_handle = -1;
   bool native_adapter_active = false;
   bool local_uses_gc_adapter = false;
+  std::array<ControllerType, MAX_PORTS> controller_types{};
   bool debug_p2_cstick = false;
   bool simulate_remote_p2 = false;
   bool stress_test = false;
@@ -567,6 +598,8 @@ struct GekkoManager
   u64 perf_input_latency_dropped = 0;
   u64 perf_input_latency_unmatched_presents = 0;
   std::array<GCPadStatus, MAX_PORTS> latched_pads{};
+  std::array<WiimoteEmu::SerializedWiimoteState, MAX_PORTS> latched_wiimotes{};
+  WiimoteEmu::SerializedWiimoteState pending_local_wiimote{};
   std::atomic<bool> active{false};
   std::atomic<bool> stop_requested{false};
 
@@ -633,10 +666,10 @@ struct GekkoManager
   double perf_pump_max_ms = 0.0;
   SnapshotPhaseTimings perf_save_phases{};
   SnapshotPhaseTimings perf_load_phases{};
-  std::optional<WirePad> last_local_wire;
+  std::optional<WireInput> last_local_wire;
   u64 perf_local_input_changes = 0;
-  std::array<u64, sizeof(WirePad)> perf_local_byte_changes{};
-  std::optional<WirePad> last_applied_local_wire;
+  std::array<u64, sizeof(WireInput)> perf_local_byte_changes{};
+  std::optional<WireInput> last_applied_local_wire;
   u64 perf_delay_checks = 0;
   u64 perf_delay_matches = 0;
   u64 perf_delay_mismatches = 0;
@@ -1866,6 +1899,32 @@ GCPadStatus DecodePad(const WirePad& pad)
   return status;
 }
 
+static WireInput EncodeGameCubeInput(const WirePad& pad)
+{
+  WireInput input{};
+  input.controller_type = static_cast<u8>(ControllerType::GameCube);
+  input.pad = pad;
+  return input;
+}
+
+static WireInput EncodeWiimoteInput(const WiimoteEmu::SerializedWiimoteState& state)
+{
+  WireInput input{};
+  input.controller_type = static_cast<u8>(ControllerType::Wiimote);
+  input.wiimote_length =
+      std::min<u8>(state.length, static_cast<u8>(input.wiimote_data.size()));
+  std::copy_n(state.data.begin(), input.wiimote_length, input.wiimote_data.begin());
+  return input;
+}
+
+static WiimoteEmu::SerializedWiimoteState DecodeWiimoteInput(const WireInput& input)
+{
+  WiimoteEmu::SerializedWiimoteState state{};
+  state.length = std::min<u8>(input.wiimote_length, static_cast<u8>(state.data.size()));
+  std::copy_n(input.wiimote_data.begin(), state.length, state.data.begin());
+  return state;
+}
+
 std::optional<GCPadStatus> GetRollbackPad(int port)
 {
   if (!g_manager.active.load(std::memory_order_relaxed))
@@ -1874,9 +1933,33 @@ std::optional<GCPadStatus> GetRollbackPad(int port)
   if (port >= 0 && port < MAX_PORTS)
   {
     std::lock_guard lk(g_manager.mutex);
+    if (g_manager.controller_types[port] != ControllerType::GameCube)
+      return std::nullopt;
     return g_manager.latched_pads[port];
   }
   return std::nullopt;
+}
+
+void CaptureLocalWiimoteState(const WiimoteEmu::SerializedWiimoteState& state)
+{
+  if (!g_manager.active.load(std::memory_order_relaxed))
+    return;
+  std::lock_guard lk(g_manager.mutex);
+  if (g_manager.local_player >= 1 && g_manager.local_player <= MAX_PORTS &&
+      g_manager.controller_types[g_manager.local_player - 1] == ControllerType::Wiimote)
+  {
+    g_manager.pending_local_wiimote = state;
+  }
+}
+
+std::optional<WiimoteEmu::SerializedWiimoteState> GetRollbackWiimoteState(int port)
+{
+  if (!g_manager.active.load(std::memory_order_relaxed) || port < 0 || port >= MAX_PORTS)
+    return std::nullopt;
+  std::lock_guard lk(g_manager.mutex);
+  if (g_manager.controller_types[port] != ControllerType::Wiimote)
+    return std::nullopt;
+  return g_manager.latched_wiimotes[port];
 }
 
 bool BeginNetplayReplayRecording(const std::string& game_key)
@@ -1885,6 +1968,13 @@ bool BeginNetplayReplayRecording(const std::string& game_key)
   if (!g_manager.active.load(std::memory_order_relaxed) || !g_manager.session ||
       g_manager.players < 1 || g_manager.players > MAX_PORTS)
   {
+    return false;
+  }
+  if (std::any_of(g_manager.controller_types.begin(),
+                  g_manager.controller_types.begin() + g_manager.players,
+                  [](ControllerType type) { return type == ControllerType::Wiimote; }))
+  {
+    WARN_LOG_FMT(CORE, "Netplay Replay: Wii Remote recording is not supported by NPR v2");
     return false;
   }
 
@@ -2158,6 +2248,22 @@ bool IsGekkoFrameBoundary(FrameBoundary boundary)
   return g_manager.active.load(std::memory_order_acquire) && g_manager.frame_boundary == boundary;
 }
 
+bool QueueLocalPresentationChange(std::function<void()> change)
+{
+  if (!change || !g_manager.active.load(std::memory_order_acquire))
+    return false;
+
+  std::lock_guard lock(s_presentation_change_mutex);
+  if (!g_manager.active.load(std::memory_order_acquire))
+    return false;
+
+  // A second window-state notification before the next frame supersedes the first one. Only the
+  // final requested presentation state matters, and executing both would recreate the surface
+  // twice at consecutive boundaries.
+  s_pending_presentation_change = std::move(change);
+  return true;
+}
+
 void SetGekkoLocalDelay(int local_delay)
 {
   const int clamped_delay = std::clamp(local_delay, 0, 60);
@@ -2198,6 +2304,13 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   {
     ERROR_LOG_FMT(CORE, "GekkoNet: Invalid session parameters (players={}, local={})", players,
                   local_player);
+    return false;
+  }
+  if (!options.controller_types.empty() &&
+      options.controller_types.size() != static_cast<std::size_t>(players))
+  {
+    ERROR_LOG_FMT(CORE, "GekkoNet: Controller roster has {} entries for {} players",
+                  options.controller_types.size(), players);
     return false;
   }
   if (replay_playback && (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed) ||
@@ -2253,7 +2366,18 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       WirePad wire{};
       std::memcpy(&wire, inputs.data() + input_offset, sizeof(wire));
       replay_local_inputs.emplace_back(logical_frame, wire);
-      replay_expected_inputs.emplace_back(logical_frame, inputs);
+      std::vector<u8> expanded_inputs(static_cast<std::size_t>(players) * sizeof(WireInput));
+      for (int port = 0; port < players; ++port)
+      {
+        WirePad recorded_pad{};
+        std::memcpy(&recorded_pad,
+                    inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
+                    sizeof(recorded_pad));
+        const WireInput expanded = EncodeGameCubeInput(recorded_pad);
+        std::memcpy(expanded_inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput),
+                    &expanded, sizeof(expanded));
+      }
+      replay_expected_inputs.emplace_back(logical_frame, std::move(expanded_inputs));
       ++source_frame;
       ++logical_frame;
     }
@@ -2278,7 +2402,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   config.max_spectators = 0;
   config.input_prediction_window = static_cast<unsigned char>(clamped_prediction);
   config.spectator_delay = 0;
-  config.input_size = static_cast<unsigned int>(sizeof(WirePad));
+  config.input_size = static_cast<unsigned int>(sizeof(WireInput));
   config.state_size = 0;  // State is maintained internally in Dolphin's SnapshotRing
   // GekkoNet's limited-saving mode rebuilds confirmed snapshots by loading and replaying frames.
   // That is counterproductive for whole-emulator states, whose loads and replay frames are much
@@ -2339,6 +2463,12 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
 
   g_manager.players = players;
   g_manager.local_player = local_player;
+  g_manager.controller_types.fill(ControllerType::GameCube);
+  if (!replay_playback)
+  {
+    std::copy(options.controller_types.begin(), options.controller_types.end(),
+              g_manager.controller_types.begin());
+  }
   // Capture the first local device before NetPlay's boot layer remaps local SI devices to their
   // in-game seats. This remains port 0 on every client regardless of its network player number.
   g_manager.local_uses_gc_adapter =
@@ -2390,6 +2520,9 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   // GetRollbackPad is active throughout boot, before Gekko emits the first Advance event. Never
   // expose pads left latched at the end of the previous session to the next game's SI startup.
   g_manager.latched_pads.fill(GCPadStatus{});
+  const auto neutral_wiimote = WiimoteEmu::SerializeDesiredState({});
+  g_manager.latched_wiimotes.fill(neutral_wiimote);
+  g_manager.pending_local_wiimote = neutral_wiimote;
   g_manager.local_handle = -1;
   g_manager.simulated_peer_p2_handle = -1;
   g_manager.remote_handle = -1;
@@ -2702,6 +2835,10 @@ void StopGekkoSession()
 
   g_manager.stop_requested.store(true, std::memory_order_relaxed);
   g_manager.active.store(false, std::memory_order_release);
+  {
+    std::lock_guard presentation_lock(s_presentation_change_mutex);
+    s_pending_presentation_change = {};
+  }
   g_manager.netplay_replay_session = false;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
   g_manager.precise_vi_tail.store(false, std::memory_order_relaxed);
@@ -2812,7 +2949,7 @@ static bool SubmitLocalInput()
   if (g_manager.netplay_replay_session)
     return SubmitNetplayReplayInputs();
 
-  WirePad wire{};
+  WireInput wire{};
   const u64 sample_time_ns = static_cast<u64>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
           .count());
@@ -2834,7 +2971,11 @@ static bool SubmitLocalInput()
                     recorded_frame);
       return false;
     }
-    wire = recorded_wire;
+    wire = EncodeGameCubeInput(recorded_wire);
+  }
+  else if (g_manager.controller_types[g_manager.local_player - 1] == ControllerType::Wiimote)
+  {
+    wire = EncodeWiimoteInput(g_manager.pending_local_wiimote);
   }
   else
   {
@@ -2856,10 +2997,11 @@ static bool SubmitLocalInput()
       ApplyStressCStickPattern(&local_status,
                                g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
     }
-    wire = EncodePad(local_status);
+    wire = EncodeGameCubeInput(EncodePad(local_status));
   }
 
-  const bool sampled_start = WirePadHasStart(wire);
+  const bool sampled_start =
+      wire.controller_type == static_cast<u8>(ControllerType::GameCube) && WirePadHasStart(wire.pad);
   if (sampled_start != g_manager.last_sampled_start)
   {
     if (g_manager.compare_confirmed_ram)
@@ -2874,9 +3016,11 @@ static bool SubmitLocalInput()
   if (g_manager.last_local_wire)
   {
     bool changed = false;
-    for (std::size_t i = 0; i < sizeof(WirePad); ++i)
+    const auto* wire_bytes = reinterpret_cast<const u8*>(&wire);
+    const auto* previous_bytes = reinterpret_cast<const u8*>(&*g_manager.last_local_wire);
+    for (std::size_t i = 0; i < sizeof(WireInput); ++i)
     {
-      if (wire.data[i] != g_manager.last_local_wire->data[i])
+      if (wire_bytes[i] != previous_bytes[i])
       {
         changed = true;
         ++g_manager.perf_local_byte_changes[i];
@@ -2906,7 +3050,7 @@ static bool SubmitLocalInput()
       else
         ApplyDebugCStickPattern(&simulated_p2, spam_frame);
     }
-    WirePad simulated_wire = EncodePad(simulated_p2);
+    WireInput simulated_wire = EncodeGameCubeInput(EncodePad(simulated_p2));
     gekko_add_local_input(g_manager.simulated_peer_session, g_manager.simulated_peer_p2_handle,
                           &simulated_wire);
   }
@@ -2964,9 +3108,12 @@ static void LatchInputs(const unsigned char* raw_inputs)
     const int handle = g_manager.player_handles[p];
     if (handle >= 0 && handle < g_manager.players)
     {
-      WirePad wire{};
-      std::memcpy(&wire, raw_inputs + (handle * sizeof(WirePad)), sizeof(WirePad));
-      g_manager.latched_pads[p] = DecodePad(wire);
+      WireInput wire{};
+      std::memcpy(&wire, raw_inputs + (handle * sizeof(WireInput)), sizeof(WireInput));
+      if (g_manager.controller_types[p] == ControllerType::Wiimote)
+        g_manager.latched_wiimotes[p] = DecodeWiimoteInput(wire);
+      else
+        g_manager.latched_pads[p] = DecodePad(wire.pad);
     }
   }
 }
@@ -3054,9 +3201,9 @@ static void RecordNetplayReplayFrame(Core::System& system, s32 frame)
   g_manager.netplay_replay_frames[frame] = std::move(inputs);
 }
 
-static bool InputsEqual(const WirePad& lhs, const WirePad& rhs)
+static bool InputsEqual(const WireInput& lhs, const WireInput& rhs)
 {
-  return std::memcmp(&lhs, &rhs, sizeof(WirePad)) == 0;
+  return std::memcmp(&lhs, &rhs, sizeof(WireInput)) == 0;
 }
 
 static std::optional<u64> MeasureLocalInputDelay(int advance_frame,
@@ -3068,15 +3215,15 @@ static std::optional<u64> MeasureLocalInputDelay(int advance_frame,
   std::optional<u64> applied_sample_time_ns;
 
   const std::size_t input_offset =
-      static_cast<std::size_t>(g_manager.local_handle) * sizeof(WirePad);
-  if (inputs.size() < input_offset + sizeof(WirePad))
+      static_cast<std::size_t>(g_manager.local_handle) * sizeof(WireInput);
+  if (inputs.size() < input_offset + sizeof(WireInput))
   {
     ++g_manager.perf_delay_missing;
     return std::nullopt;
   }
 
-  WirePad applied{};
-  std::memcpy(&applied, inputs.data() + input_offset, sizeof(WirePad));
+  WireInput applied{};
+  std::memcpy(&applied, inputs.data() + input_offset, sizeof(WireInput));
 
   const s64 expected_sample_frame =
       static_cast<s64>(advance_frame) - g_manager.configured_local_delay;
@@ -3948,12 +4095,13 @@ static PrepareFrameResult PrepareQueuedFrame(Core::System& system,
           const int handle = g_manager.player_handles[p];
           if (handle < 0)
             continue;
-          const std::size_t offset = static_cast<std::size_t>(handle) * sizeof(WirePad);
-          if (event.inputs.size() < offset + sizeof(WirePad))
+          const std::size_t offset = static_cast<std::size_t>(handle) * sizeof(WireInput);
+          if (event.inputs.size() < offset + sizeof(WireInput))
             continue;
-          WirePad wire{};
+          WireInput wire{};
           std::memcpy(&wire, event.inputs.data() + offset, sizeof(wire));
-          if (WirePadHasStart(wire))
+          if (wire.controller_type == static_cast<u8>(ControllerType::GameCube) &&
+              WirePadHasStart(wire.pad))
             start_players += fmt::format("{}P{}", start_players.empty() ? "" : ",", p + 1);
         }
         si0_before = system.GetSerialInterface().GetInputRegisters(0);
@@ -4139,6 +4287,11 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
     ppc_state.pc = BRAWL_FRAME_HOOK_ADDR;
     ppc_state.npc = BRAWL_FRAME_HOOK_ADDR;
   }
+
+  // Presentation changes are local host operations. Run them only at a complete emulated-frame
+  // boundary and before taking the rollback manager lock. The callback uses Dolphin's existing
+  // CPU-thread GPU quiescence path, so FIFO cannot consume guest RAM while the backend changes.
+  RunPendingPresentationChange();
 
   PatchEngine::ApplyNetplayMusicPatchAtRollbackBoundary(guard,
                                                         g_manager.disable_project_plus_music);
@@ -4535,9 +4688,10 @@ static bool SubmitNetplayReplayInputs()
   }
   for (int port = 0; port < g_manager.netplay_replay_players; ++port)
   {
-    WirePad wire{};
-    std::memcpy(&wire, inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
-                sizeof(wire));
+    WirePad recorded_pad{};
+    std::memcpy(&recorded_pad, inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
+                sizeof(recorded_pad));
+    WireInput wire = EncodeGameCubeInput(recorded_pad);
     const int handle = g_manager.player_handles[port];
     if (handle < 0)
     {

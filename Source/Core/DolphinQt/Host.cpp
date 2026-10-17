@@ -182,10 +182,10 @@ void Host::SetRenderFullscreen(bool fullscreen)
     const auto change = [fullscreen] {
       RunWithGPUThreadInactive([fullscreen] { g_gfx->SetFullscreen(fullscreen); });
     };
-    if (Rollback::IsGekkoSessionActive() && NetPlay::netplay_client)
+    if (Rollback::IsGekkoSessionActive())
     {
-      if (!NetPlay::netplay_client->RunSynchronizedPresentationChange(change))
-        ERROR_LOG_FMT(NETPLAY, "Exclusive-fullscreen transition was not synchronized");
+      if (!Rollback::QueueLocalPresentationChange(change))
+        ERROR_LOG_FMT(VIDEO, "Could not queue exclusive-fullscreen transition at frame boundary");
       return;
     }
     change();

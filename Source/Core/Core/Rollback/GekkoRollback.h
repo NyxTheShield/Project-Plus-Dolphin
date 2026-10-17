@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,11 @@ class CPUThreadGuard;
 class System;
 }  // namespace Core
 
+namespace WiimoteEmu
+{
+struct SerializedWiimoteState;
+}
+
 namespace Rollback
 {
 enum class FrameBoundary : u8
@@ -29,6 +35,12 @@ enum class FrameBoundary : u8
   VINewField = 3,
   VIPreNewField = 4,
   VIPreSIPoll = 5,
+};
+
+enum class ControllerType : u8
+{
+  GameCube = 0,
+  Wiimote = 1,
 };
 
 // Per-session diagnostics and experimental switches. These are supplied by the launch ticket for
@@ -55,6 +67,7 @@ struct GekkoSessionOptions
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
   bool parallel_dirty_compare = true;
+  std::vector<ControllerType> controller_types;
   // Optional NPR source for this process's own local player. The recorded seat matching
   // local_player is submitted through the normal networked Gekko actor.
   std::string replay_input_path;
@@ -72,6 +85,8 @@ GCPadStatus DecodePad(const WirePad& pad);
 
 // Rollback input query from SI controller polling
 std::optional<GCPadStatus> GetRollbackPad(int port);
+void CaptureLocalWiimoteState(const WiimoteEmu::SerializedWiimoteState& state);
+std::optional<WiimoteEmu::SerializedWiimoteState> GetRollbackWiimoteState(int port);
 
 // Boundary callback called by the Brawl HLE hook at 0x80017504.
 void OnFrameBoundary(const Core::CPUThreadGuard& guard);
@@ -102,6 +117,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
 void StopGekkoSession();
 bool IsGekkoSessionActive();
 bool IsGekkoFrameBoundary(FrameBoundary boundary);
+// Queues a local presentation-only change for the next stable rollback boundary. The callback runs
+// on the CPU thread, allowing Dolphin's normal GPU-thread quiescence path to stop FIFO safely.
+bool QueueLocalPresentationChange(std::function<void()> change);
 void SetGekkoLocalDelay(int local_delay);
 // Deep-logging probe: pairs the next host presentation with the local input frame selected by
 // GekkoNet. The timestamp uses steady_clock nanoseconds and never enters emulated state.

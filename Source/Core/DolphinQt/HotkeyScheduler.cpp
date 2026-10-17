@@ -26,6 +26,7 @@
 #include "Core/FreeLookManager.h"
 #include "Core/HotkeyManager.h"
 #include "Core/IOS/IOS.h"
+#include "Core/NetPlayProto.h"
 #include "Core/State.h"
 #include "Core/System.h"
 #include "Core/WiiUtils.h"
@@ -170,6 +171,21 @@ void HotkeyScheduler::Run()
       ControlReference::SetInputGate(true);
 
       HotkeyManagerEmu::GetStatus(true);
+
+      // Emulator hotkeys can alter state or pacing independently on each peer. During NetPlay,
+      // only the chat toggle is safe and useful; session lifecycle and presentation settings are
+      // controlled by the NetPlay UI and managed launcher.
+      if (NetPlay::IsNetPlayRunning())
+      {
+        if (IsHotkey(HK_ACTIVATE_CHAT))
+          emit ActivateChat();
+        if (IsHotkey(HK_FULLSCREEN))
+        {
+          emit FullScreenHotkey();
+          Common::SleepCurrentThread(100);
+        }
+        continue;
+      }
 
       // Open
       if (IsHotkey(HK_OPEN))

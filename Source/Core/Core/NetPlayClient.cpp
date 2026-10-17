@@ -2240,17 +2240,23 @@ bool NetPlayClient::StartGame(const std::string& path)
     // emulated SI port. Do not inherit a stale or user-edited Dolphin lobby mapping: GekkoNet's
     // player streams are indexed by these seats and are exposed directly through GetRollbackPad().
     boot_net_settings.pad_map.fill(0);
+    boot_net_settings.wiimote_map.fill(0);
     // Managed Brawlback sessions use Dolphin's deterministic dual-core CPU/GPU execution model.
     // This is boot-local and does not alter the user's persistent Dolphin configuration.
     boot_net_settings.cpu_thread = true;
     for (int seat = 1; seat <= m_managed_config->player_count; ++seat)
-      boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
+    {
+      const auto controller = m_managed_config->controller_types[seat - 1];
+      if (controller == Rollback::ControllerType::Wiimote)
+        boot_net_settings.wiimote_map[seat - 1] = static_cast<PlayerId>(seat);
+      else
+        boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
+    }
   }
-  // GekkoNet synchronizes GC pads only. Any lobby Wii Remote mapping makes NetPlayConfigLoader
-  // force WiimoteSource::Emulated, which routes every Bluetooth poll through Dolphin's legacy
-  // lockstep WiimoteUpdate(). That blocks the CPU thread until the remote's Wiimote packet arrives
-  // (outside GekkoNet's prediction) and pops extra buffered states during rollback replays.
-  boot_net_settings.wiimote_map.fill(0);
+  else
+  {
+    boot_net_settings.wiimote_map.fill(0);
+  }
   if (simulate_remote_p2)
   {
     // The fake actor still needs an emulated controller on SI port 2. Keep this boot-only so the
@@ -2564,6 +2570,23 @@ u64 NetPlayClient::GetInitialRTCValue() const
 // called from ---CPU--- thread
 bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entries)
 {
+  if (Rollback::IsGekkoSessionActive())
+  {
+    for (const WiimoteDataBatchEntry& entry : entries)
+    {
+      const bool is_local_wiimote =
+          m_managed_config && entry.wiimote >= 0 &&
+          static_cast<std::size_t>(entry.wiimote) < m_managed_config->controller_types.size() &&
+          entry.wiimote == m_managed_config->seat - 1 &&
+          m_managed_config->controller_types[entry.wiimote] == Rollback::ControllerType::Wiimote;
+      if (is_local_wiimote)
+        Rollback::CaptureLocalWiimoteState(*entry.state);
+      if (const auto state = Rollback::GetRollbackWiimoteState(entry.wiimote))
+        *entry.state = *state;
+    }
+    return true;
+  }
+
   for (const WiimoteDataBatchEntry& entry : entries)
   {
     const int local_wiimote = InGameWiimoteToLocalWiimote(entry.wiimote);

@@ -2118,6 +2118,7 @@ void MainWindow::StartManagedNetPlay()
   const auto seat_it = ticket.find("seat");
   const auto players_it = ticket.find("players");
   const auto game_revision_it = ticket.find("game_revision");
+  const auto game_platform_it = ticket.find("game_platform");
   if (match_id)
     m_managed_session->match_id = *match_id;
   if (status_path)
@@ -2151,6 +2152,8 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->game_id = custom_game_id.value_or("");
   if (game_revision_it != ticket.end() && game_revision_it->second.is<double>())
     m_managed_session->game_revision = static_cast<u16>(game_revision_it->second.get<double>());
+  if (game_platform_it != ticket.end() && game_platform_it->second.is<double>())
+    m_managed_session->game_platform = static_cast<u8>(game_platform_it->second.get<double>());
   m_managed_session->status_path = *status_path;
   m_managed_session->replay_output_path = replay_output_path.value_or("");
   m_managed_session->replay_input_path = replay_input_path.value_or("");
@@ -2159,6 +2162,9 @@ void MainWindow::StartManagedNetPlay()
       static_cast<int>(players_it->second.get<picojson::array>().size());
   m_managed_session->player_ids.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
   m_managed_session->player_names.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
+  m_managed_session->controller_types.resize(
+      static_cast<size_t>(m_managed_session->player_count) + 1,
+      static_cast<u8>(Rollback::ControllerType::GameCube));
   const auto test_solo_it = ticket.find("test_solo");
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
@@ -2301,6 +2307,7 @@ void MainWindow::StartManagedNetPlay()
     const auto id = player.find("player_id");
     const auto name = player.find("display_name");
     const auto roster_seat = player.find("seat");
+    const auto controller_type = player.find("controller_type");
     if (id == player.end() || !id->second.is<std::string>() || roster_seat == player.end() ||
         !roster_seat->second.is<double>())
     {
@@ -2312,6 +2319,21 @@ void MainWindow::StartManagedNetPlay()
       m_managed_session->player_ids[parsed_seat] = id->second.get<std::string>();
       if (name != player.end() && name->second.is<std::string>())
         m_managed_session->player_names[parsed_seat] = name->second.get<std::string>();
+      if (controller_type != player.end() && controller_type->second.is<std::string>())
+      {
+        const std::string& value = controller_type->second.get<std::string>();
+        if (value == "wiimote")
+        {
+          m_managed_session->controller_types[parsed_seat] =
+              static_cast<u8>(Rollback::ControllerType::Wiimote);
+        }
+        else if (value != "gamecube")
+        {
+          FailManagedSession("The matchmaking ticket contains an invalid controller type");
+          m_managed_session.reset();
+          return;
+        }
+      }
     }
     if (id != player.end() && id->second.is<std::string>() &&
         id->second.get<std::string>() == *player_id && name != player.end() &&
@@ -2701,7 +2723,16 @@ bool MainWindow::NetPlayJoin()
     managed_config->coordinator = m_managed_session->seat == 1;
     managed_config->input_delay_reduction = m_managed_session->input_delay_reduction;
     managed_config->auto_input_delay = !m_managed_session->input_delay_override.has_value();
+    managed_config->controller_types.reserve(m_managed_session->player_count);
+    for (int seat = 1; seat <= m_managed_session->player_count; ++seat)
+    {
+      managed_config->controller_types.push_back(m_managed_session->game_platform == 0 ?
+                                                     Rollback::ControllerType::GameCube :
+                                                     static_cast<Rollback::ControllerType>(
+                                                         m_managed_session->controller_types[seat]));
+    }
     auto& rollback_options = managed_config->rollback_options;
+    rollback_options.controller_types = managed_config->controller_types;
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
     rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;
