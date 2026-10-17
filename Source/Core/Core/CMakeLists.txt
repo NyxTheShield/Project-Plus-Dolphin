@@ -575,6 +575,8 @@ add_library(core
   Rollback/DirtyPages.cpp
   Rollback/DirtyPages.h
   Rollback/DirtyBitmap.h
+  Rollback/BrawlControllerProfile.cpp
+  Rollback/BrawlControllerProfile.h
   Rollback/GekkoRollback.cpp
   Rollback/GekkoRollback.h
   Rollback/Rollback.cpp

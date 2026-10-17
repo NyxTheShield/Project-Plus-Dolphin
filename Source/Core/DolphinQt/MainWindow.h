@@ -295,6 +295,8 @@ private:
     std::vector<std::string> player_ids;
     std::vector<std::string> player_names;
     std::vector<u8> controller_types;
+    std::vector<std::string> controller_tags;
+    std::vector<std::string> controller_profiles;
     bool test_solo = false;
     bool stress_test = false;
     bool simulate_remote_p2 = false;

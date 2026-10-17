@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Core/Rollback/BrawlControllerProfile.h"
 #include "InputCommon/GCPadStatus.h"
 
 namespace Core
@@ -68,6 +69,7 @@ struct GekkoSessionOptions
   bool full_scan_keep_tracking = false;
   bool parallel_dirty_compare = true;
   std::vector<ControllerType> controller_types;
+  std::vector<BrawlControllerProfile> brawl_controller_profiles;
   // Optional NPR source for this process's own local player. The recorded seat matching
   // local_player is submitted through the normal networked Gekko actor.
   std::string replay_input_path;

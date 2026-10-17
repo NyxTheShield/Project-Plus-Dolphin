@@ -2199,6 +2199,8 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->controller_types.resize(
       static_cast<size_t>(m_managed_session->player_count) + 1,
       static_cast<u8>(Rollback::ControllerType::GameCube));
+  m_managed_session->controller_tags.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
+  m_managed_session->controller_profiles.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
   const auto test_solo_it = ticket.find("test_solo");
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
@@ -2342,6 +2344,8 @@ void MainWindow::StartManagedNetPlay()
     const auto name = player.find("display_name");
     const auto roster_seat = player.find("seat");
     const auto controller_type = player.find("controller_type");
+    const auto controller_tag = player.find("controller_tag");
+    const auto controller_profile = player.find("controller_profile");
     if (id == player.end() || !id->second.is<std::string>() || roster_seat == player.end() ||
         !roster_seat->second.is<double>())
     {
@@ -2368,6 +2372,21 @@ void MainWindow::StartManagedNetPlay()
           return;
         }
       }
+      const std::string tag = controller_tag != player.end() && controller_tag->second.is<std::string>() ?
+                                  controller_tag->second.get<std::string>() :
+                                  std::string{};
+      const std::string profile = controller_profile != player.end() &&
+                                          controller_profile->second.is<std::string>() ?
+                                      controller_profile->second.get<std::string>() :
+                                      std::string{};
+      if (!Rollback::ParseBrawlControllerProfile(tag, profile))
+      {
+        FailManagedSession("The matchmaking ticket contains an invalid controller profile");
+        m_managed_session.reset();
+        return;
+      }
+      m_managed_session->controller_tags[parsed_seat] = tag;
+      m_managed_session->controller_profiles[parsed_seat] = profile;
     }
     if (id != player.end() && id->second.is<std::string>() &&
         id->second.get<std::string>() == *player_id && name != player.end() &&
@@ -2767,6 +2786,13 @@ bool MainWindow::NetPlayJoin()
     }
     auto& rollback_options = managed_config->rollback_options;
     rollback_options.controller_types = managed_config->controller_types;
+    rollback_options.brawl_controller_profiles.reserve(m_managed_session->player_count);
+    for (int seat = 1; seat <= m_managed_session->player_count; ++seat)
+    {
+      rollback_options.brawl_controller_profiles.push_back(
+          *Rollback::ParseBrawlControllerProfile(m_managed_session->controller_tags[seat],
+                                                  m_managed_session->controller_profiles[seat]));
+    }
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
     rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;

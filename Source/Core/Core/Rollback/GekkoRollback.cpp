@@ -555,6 +555,7 @@ struct GekkoManager
   bool native_adapter_active = false;
   bool local_uses_gc_adapter = false;
   std::array<ControllerType, MAX_PORTS> controller_types{};
+  std::vector<BrawlControllerProfile> brawl_controller_profiles;
   bool debug_p2_cstick = false;
   bool simulate_remote_p2 = false;
   bool stress_test = false;
@@ -2313,6 +2314,13 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
                   options.controller_types.size(), players);
     return false;
   }
+  if (!options.brawl_controller_profiles.empty() &&
+      options.brawl_controller_profiles.size() != static_cast<std::size_t>(players))
+  {
+    ERROR_LOG_FMT(CORE, "GekkoNet: Controller profile roster has {} entries for {} players",
+                  options.brawl_controller_profiles.size(), players);
+    return false;
+  }
   if (replay_playback && (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed) ||
                           g_manager.netplay_replay_playback_frames.empty() ||
                           players != g_manager.netplay_replay_players))
@@ -2464,6 +2472,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.players = players;
   g_manager.local_player = local_player;
   g_manager.controller_types.fill(ControllerType::GameCube);
+  g_manager.brawl_controller_profiles = options.brawl_controller_profiles;
   if (!replay_playback)
   {
     std::copy(options.controller_types.begin(), options.controller_types.end(),
@@ -4299,6 +4308,8 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
   std::lock_guard lk(g_manager.mutex);
   if (!g_manager.session)
     return;
+
+  ApplyBrawlControllerProfiles(guard, g_manager.brawl_controller_profiles);
 
   if (g_manager.frame_execution_start)
   {
