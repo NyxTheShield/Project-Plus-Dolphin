@@ -2995,16 +2995,18 @@ static bool SubmitLocalInput()
     constexpr int LOCAL_PAD = 0;
     GCPadStatus local_status =
         g_manager.local_uses_gc_adapter ? GCAdapter::Input(LOCAL_PAD) : Pad::GetStatus(LOCAL_PAD);
-    const bool input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
-    if (g_manager.debug_p2_cstick && input_spam_active)
+    const bool legacy_input_spam_active =
+        g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
+    if (g_manager.debug_p2_cstick && legacy_input_spam_active)
     {
       ApplyDebugCStickPattern(&local_status,
                               g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
     }
-    if (g_manager.enable_random_inputs && input_spam_active)
+    // The client-facing random-input toggle is an explicit replacement for this client's own
+    // sampled pad. It must not inherit the legacy P2 stress diagnostic's 500-frame warm-up.
+    if (g_manager.enable_random_inputs)
     {
-      ApplyStressCStickPattern(&local_status,
-                               g_manager.local_input_frame - P2_INPUT_SPAM_START_FRAME);
+      ApplyStressCStickPattern(&local_status, g_manager.local_input_frame);
     }
     wire = EncodeGameCubeInput(EncodePad(local_status));
   }
@@ -4309,8 +4311,6 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
   if (!g_manager.session)
     return;
 
-  ApplyBrawlControllerProfiles(guard, g_manager.brawl_controller_profiles);
-
   if (g_manager.frame_execution_start)
   {
     const double elapsed = ElapsedMs(*g_manager.frame_execution_start);
@@ -4361,7 +4361,9 @@ static void ProcessFrameBoundary(const Core::CPUThreadGuard& guard, FrameBoundar
   // A rollback batch is replayed one emulated frame at a time. State saves left after the prior
   // advance are intentionally handled now, after that frame has completed.
   if (StartPreparedFrame(system))
+  {
     return;
+  }
 
   // Only publish confirmed hashes after the previous Gekko event batch has completely drained.
   // A network poll can confirm an input before HandleRollback has emitted and executed the

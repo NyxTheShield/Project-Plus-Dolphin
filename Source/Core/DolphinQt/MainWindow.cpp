@@ -2792,6 +2792,13 @@ bool MainWindow::NetPlayJoin()
       rollback_options.brawl_controller_profiles.push_back(
           *Rollback::ParseBrawlControllerProfile(m_managed_session->controller_tags[seat],
                                                   m_managed_session->controller_profiles[seat]));
+      if (!m_managed_session->controller_tags[seat].empty())
+      {
+        NOTICE_LOG_FMT(NETPLAY,
+                       "Managed controller profile: P{} tag='{}' payload_bytes={}", seat,
+                       m_managed_session->controller_tags[seat],
+                       m_managed_session->controller_profiles[seat].size() / 2);
+      }
     }
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;

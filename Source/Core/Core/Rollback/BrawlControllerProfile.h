@@ -30,6 +30,6 @@ struct BrawlControllerProfile
 
 std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_view tag,
                                                                   std::string_view controls_hex);
-void ApplyBrawlControllerProfiles(const Core::CPUThreadGuard& guard,
-                                  const std::vector<BrawlControllerProfile>& profiles);
+bool ApplyBrawlControllerProfilesToSave(
+    std::vector<u8>* save, const std::vector<BrawlControllerProfile>& profiles);
 }  // namespace Rollback

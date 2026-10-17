@@ -2276,6 +2276,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   // Dolphin fixed-delay minimum-buffer relationship between them.
   const int local_delay = static_cast<int>(m_local_player->buffer);
   const int prediction_window = static_cast<int>(m_minimum_buffer_size);
+  boot_session_data->SetBrawlControllerProfiles(rollback_options.brawl_controller_profiles);
   std::string rollback_game_name =
       m_managed_config ? m_managed_config->game_name : m_selected_game.game_id;
   if (rollback_game_name.empty())
