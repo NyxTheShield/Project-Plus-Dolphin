@@ -2338,14 +2338,14 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_DIRECTORY, replay_output_path.value_or(""));
 
   const bool valid_player_count =
-      m_managed_session->player_count >= 2 && m_managed_session->player_count <= 4 &&
+      m_managed_session->player_count >= 1 && m_managed_session->player_count <= 4 &&
       m_managed_session->seat >= 1 && m_managed_session->seat <= m_managed_session->player_count;
-  const bool valid_test_solo = m_managed_session->test_solo &&
-                               m_managed_session->player_count == 1 && m_managed_session->seat == 1;
+  const bool ticket_solo_matches_roster =
+      m_managed_session->test_solo == (m_managed_session->player_count == 1);
   const bool complete_roster =
       std::all_of(m_managed_session->player_ids.begin() + 1, m_managed_session->player_ids.end(),
                   [](const std::string& id) { return !id.empty(); });
-  if ((!valid_player_count && !valid_test_solo) || !complete_roster ||
+  if (!valid_player_count || !ticket_solo_matches_roster || !complete_roster ||
       m_managed_session->display_name.empty())
   {
     FailManagedSession("The matchmaking ticket contains an invalid player roster");
@@ -2353,7 +2353,7 @@ void MainWindow::StartManagedNetPlay()
     return;
   }
   if ((m_managed_session->simulate_remote_p2 || m_managed_session->native_stress) &&
-      !valid_test_solo)
+      (m_managed_session->player_count != 1 || m_managed_session->seat != 1))
   {
     FailManagedSession("Solo rollback diagnostics require a one-player test ticket");
     m_managed_session.reset();
@@ -2363,6 +2363,12 @@ void MainWindow::StartManagedNetPlay()
       (!m_managed_session->stress_test || m_managed_session->simulate_remote_p2))
   {
     FailManagedSession("The native rollback stress ticket is inconsistent");
+    m_managed_session.reset();
+    return;
+  }
+  if (m_managed_session->stress_test && !m_managed_session->rollback_window_override)
+  {
+    FailManagedSession("Rollback stress requires an explicit rollback-window override");
     m_managed_session.reset();
     return;
   }
@@ -2580,7 +2586,7 @@ void MainWindow::PollManagedNetPlayReady()
   if (static_cast<int>(connected_players) == m_managed_session->player_count &&
       all_players_have_game)
   {
-    if (!m_managed_session->test_solo && !m_managed_session->latency_sampling_started)
+    if (!m_managed_session->latency_sampling_started)
     {
       // NetPlay publishes its first RTT sample once per second. Do not derive the session delay
       // from the initial zero-valued player records.
@@ -2590,12 +2596,11 @@ void MainWindow::PollManagedNetPlayReady()
       return;
     }
 
-    unsigned int rollback_window = m_managed_session->rollback_window_override.value_or(
-        m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5);
+    unsigned int rollback_window = m_managed_session->rollback_window_override.value_or(5);
     const u32 ping = client->GetPlayersMaxPing();
     const u32 delay =
         NetPlay::GetGekkoInputDelayForPing(ping, m_managed_session->input_delay_reduction);
-    if (!m_managed_session->test_solo && !m_managed_session->stress_test)
+    if (!m_managed_session->stress_test)
     {
       // Both the selected preset and the ping are session-wide for managed matchmaking. Expand the
       // shared prediction window only when the negotiated delay does not cover this round trip.
@@ -2606,14 +2611,16 @@ void MainWindow::PollManagedNetPlayReady()
       }
     }
     server->AdjustMinimumPadBufferSize(rollback_window);
-    server->SetManagedGekkoPing(ping);
+    const u32 local_delay = m_managed_session->input_delay_override.value_or(delay);
+    client->AdjustPlayerPadBufferSize(local_delay);
+    if (!m_managed_session->input_delay_override)
+      server->SetManagedGekkoPing(ping);
 
-    INFO_LOG_FMT(NETPLAY,
-                 "Managed session latency settings: ping={} ms, host_input_delay={}, "
-                 "input_delay_mode={}, rollback_window={}{}",
-                 ping, m_managed_session->input_delay_override.value_or(delay),
-                 m_managed_session->input_delay_mode, rollback_window,
-                 m_managed_session->input_delay_override ? " (local stress override)" : "");
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed session latency settings: ping={} ms, host_input_delay={}, "
+                   "input_delay_mode={}, rollback_window={}{}",
+                   ping, local_delay, m_managed_session->input_delay_mode, rollback_window,
+                   m_managed_session->input_delay_override ? " (local override)" : "");
 
     m_managed_session->start_requested = true;
     NOTICE_LOG_FMT(NETPLAY, "Managed launch: requesting synchronized game start");
@@ -2684,6 +2691,7 @@ bool MainWindow::NetPlayJoin()
   if (is_managed)
   {
     managed_config.emplace();
+    managed_config->game_name = m_managed_session->game;
     managed_config->rendezvous_address = m_managed_session->rendezvous_address;
     managed_config->match_id = m_managed_session->match_id;
     managed_config->player_id = m_managed_session->player_id;

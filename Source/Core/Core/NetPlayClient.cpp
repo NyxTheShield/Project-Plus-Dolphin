@@ -1884,7 +1884,15 @@ void NetPlayClient::DisplayPlayersPing()
   if (!Config::Get(Config::GFX_SHOW_NETPLAY_PING))
     return;
 
-  OSD::AddTypedMessage(OSD::MessageType::NetPlayPing, fmt::format("Ping: {}", GetPlayersMaxPing()),
+  u32 input_delay = 0;
+  {
+    std::lock_guard lkp(m_crit.players);
+    if (m_local_player)
+      input_delay = m_local_player->buffer;
+  }
+
+  OSD::AddTypedMessage(OSD::MessageType::NetPlayPing,
+                       fmt::format("Ping: {} | Delay = {}", GetPlayersMaxPing(), input_delay),
                        OSD::Duration::SHORT, OSD::Color::CYAN);
 }
 
@@ -2262,7 +2270,11 @@ bool NetPlayClient::StartGame(const std::string& path)
   // Dolphin fixed-delay minimum-buffer relationship between them.
   const int local_delay = static_cast<int>(m_local_player->buffer);
   const int prediction_window = static_cast<int>(m_minimum_buffer_size);
-  if (!Rollback::StartGekkoSession("Project+", m_current_game, num_players, local_seat,
+  std::string rollback_game_name =
+      m_managed_config ? m_managed_config->game_name : m_selected_game.game_id;
+  if (rollback_game_name.empty())
+    rollback_game_name = "Dolphin NetPlay";
+  if (!Rollback::StartGekkoSession(rollback_game_name, m_current_game, num_players, local_seat,
                                    m_rollback_player_endpoints, local_delay, prediction_window,
                                    rollback_options))
   {

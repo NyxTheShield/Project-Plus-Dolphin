@@ -49,6 +49,7 @@ u32 GetGekkoInputDelayForPing(u32 ping_ms, u32 reduction = 2);
 
 struct ManagedNetPlayConfig
 {
+  std::string game_name;
   std::string rendezvous_address;
   std::string match_id;
   std::string player_id;
