@@ -55,6 +55,7 @@
 #include "Core/BootManager.h"
 #include "Core/CommonTitles.h"
 #include "Core/Config/AchievementSettings.h"
+#include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/Config/UISettings.h"
@@ -1983,6 +1984,49 @@ void MainWindow::StartManagedNetPlay()
   const auto replay_path = read_string("replay_path");
   const auto replay_output_path = read_string("replay_output_path");
   const auto replay_input_path = read_string("replay_input_path");
+
+  const auto aspect_ratio_it = ticket.find("aspect_ratio");
+  const auto video_backend = read_string("video_backend");
+  const auto internal_resolution_it = ticket.find("internal_resolution");
+  const bool has_aspect_ratio =
+      aspect_ratio_it != ticket.end() && aspect_ratio_it->second.is<double>();
+  const bool has_internal_resolution =
+      internal_resolution_it != ticket.end() && internal_resolution_it->second.is<double>();
+  const double aspect_ratio = has_aspect_ratio ? aspect_ratio_it->second.get<double>() :
+                                                 static_cast<double>(Config::Get(Config::GFX_ASPECT_RATIO));
+  const double internal_resolution =
+      has_internal_resolution ? internal_resolution_it->second.get<double>() :
+                                static_cast<double>(Config::Get(Config::GFX_EFB_SCALE));
+  const std::string selected_video_backend =
+      video_backend.value_or(Config::Get(Config::MAIN_GFX_BACKEND));
+  if ((aspect_ratio_it != ticket.end() && !has_aspect_ratio) ||
+      (internal_resolution_it != ticket.end() && !has_internal_resolution))
+  {
+    FailManagedSession("The managed graphics settings are invalid");
+    return;
+  }
+
+  if (aspect_ratio < 0.0 || aspect_ratio > 5.0 || internal_resolution < 1.0 ||
+      internal_resolution > 12.0 ||
+      (selected_video_backend != "D3D" && selected_video_backend != "D3D12" &&
+       selected_video_backend != "Vulkan" && selected_video_backend != "OGL"))
+  {
+    FailManagedSession("The managed graphics settings are invalid");
+    return;
+  }
+
+  m_managed_session->aspect_ratio = static_cast<u32>(aspect_ratio);
+  m_managed_session->video_backend = selected_video_backend;
+  m_managed_session->internal_resolution = static_cast<u32>(internal_resolution);
+  Config::SetCurrent(Config::GFX_ASPECT_RATIO,
+                     static_cast<AspectMode>(m_managed_session->aspect_ratio));
+  Config::SetCurrent(Config::MAIN_GFX_BACKEND, m_managed_session->video_backend);
+  Config::SetCurrent(Config::GFX_EFB_SCALE,
+                     static_cast<int>(m_managed_session->internal_resolution));
+  NOTICE_LOG_FMT(NETPLAY,
+                 "Managed launch graphics: backend={} internal_resolution={} aspect_ratio={}",
+                 m_managed_session->video_backend, m_managed_session->internal_resolution,
+                 m_managed_session->aspect_ratio);
 
   NOTICE_LOG_FMT(NETPLAY,
                  "Managed launch: ticket parsed (mode='{}', game='{}', match_id={}, player_id={}, "

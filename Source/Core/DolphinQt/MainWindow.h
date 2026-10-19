@@ -302,6 +302,9 @@ private:
     bool simulate_remote_p2 = false;
     bool enable_random_inputs = false;
     bool disable_project_plus_music = false;
+    u32 aspect_ratio = 5;
+    std::string video_backend = "D3D";
+    u32 internal_resolution = 1;
     bool native_stress = false;
     u32 stress_interval = 1;
     std::optional<u32> rollback_window_override;
