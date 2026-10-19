@@ -1,9 +1,10 @@
 // Copyright 2015 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#ifdef _WIN32
 #include <cstdio>
 #include <string>
+#include <string_view>
+#ifdef _WIN32
 #include <vector>
 
 #include <windows.h>
@@ -29,6 +30,7 @@
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/JsonUtil.h"
 #include "Common/MsgHandler.h"
 #include "Common/ScopeGuard.h"
 #include "Common/StringUtil.h"
@@ -37,6 +39,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/UISettings.h"
 #include "Core/Core.h"
+#include "Core/ManagedLaunch/ManagedLaunchSchema.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/System.h"
 
@@ -258,6 +261,30 @@ int main(int argc, char* argv[])
   setenv("QT_QPA_PLATFORM", "xcb", replace_qt_platform);
 #endif
 
+  // This path intentionally runs before QApplication construction so contract validation works on
+  // headless build and CI hosts without a display server or Qt platform plugin.
+  for (int index = 1; index + 1 < argc; ++index)
+  {
+    if (std::string_view{argv[index]} != "--validate-brawlback-ticket")
+      continue;
+
+    picojson::value ticket;
+    std::string error;
+    if (!JsonFromFile(argv[index + 1], &ticket, &error))
+    {
+      std::fprintf(stderr, "Managed launch ticket is not valid JSON: %s\n", error.c_str());
+      return 1;
+    }
+    const Core::ManagedLaunch::ParseResult parsed = Core::ManagedLaunch::ParseTicket(ticket);
+    if (!parsed)
+    {
+      std::fprintf(stderr, "Managed launch ticket is invalid: %s\n", parsed.error.c_str());
+      return 1;
+    }
+    std::fprintf(stdout, "%s\n", Core::ManagedLaunch::NormalizedSummary(ticket).c_str());
+    return 0;
+  }
+
   QCoreApplication::setOrganizationName(QStringLiteral("Dolphin Emulator"));
   QCoreApplication::setOrganizationDomain(QStringLiteral("dolphin-emu.org"));
   QCoreApplication::setApplicationName(QStringLiteral("dolphin-emu"));
@@ -269,6 +296,27 @@ int main(int argc, char* argv[])
   const optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   const std::vector<std::string> args = parser->args();
   const bool managed_session = options.is_set("brawlback_ticket");
+
+  if (options.is_set("validate_brawlback_ticket"))
+  {
+    picojson::value ticket;
+    std::string error;
+    const std::string path =
+        static_cast<const char*>(options.get("validate_brawlback_ticket"));
+    if (!JsonFromFile(path, &ticket, &error))
+    {
+      std::fprintf(stderr, "Managed launch ticket is not valid JSON: %s\n", error.c_str());
+      return 1;
+    }
+    const Core::ManagedLaunch::ParseResult parsed = Core::ManagedLaunch::ParseTicket(ticket);
+    if (!parsed)
+    {
+      std::fprintf(stderr, "Managed launch ticket is invalid: %s\n", parsed.error.c_str());
+      return 1;
+    }
+    std::fprintf(stdout, "%s\n", Core::ManagedLaunch::NormalizedSummary(ticket).c_str());
+    return 0;
+  }
 
 #ifdef _WIN32
   QtUtils::InstallWindowDecorationFilter(&app);

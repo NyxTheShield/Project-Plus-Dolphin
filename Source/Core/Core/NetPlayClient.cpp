@@ -324,6 +324,7 @@ bool NetPlayClient::Connect()
     packet << m_managed_config->match_id;
     packet << m_managed_config->player_id;
     packet << static_cast<u8>(m_managed_config->seat);
+    packet << m_managed_config->session_fingerprint;
   }
   Send(packet);
   enet_host_flush(m_client);

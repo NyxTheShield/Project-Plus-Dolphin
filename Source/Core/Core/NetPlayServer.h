@@ -58,7 +58,8 @@ public:
   PadMappingArray GetPadMapping() const;
   void SetPadMapping(const PadMappingArray& mappings);
   void SetManagedRollbackEndpoints(std::vector<std::string> endpoints);
-  void SetManagedPlayers(std::string match_id, std::vector<std::string> player_ids);
+  void SetManagedPlayers(std::string match_id, std::vector<std::string> player_ids,
+                         std::string session_fingerprint);
   void SetManagedGeckoCodesPath(std::string path);
 
   GBAConfigArray GetGBAConfig() const;
@@ -180,6 +181,7 @@ private:
   std::vector<std::string> m_managed_rollback_endpoints;
   std::string m_managed_match_id;
   std::vector<std::string> m_managed_player_ids;
+  std::string m_managed_session_fingerprint;
   std::string m_managed_gecko_codes_path;
   GBAConfigArray m_gba_config;
   PadMappingArray m_wiimote_map;

@@ -89,6 +89,11 @@ std::unique_ptr<optparse::OptionParser> CreateParser(ParserOptions options)
       .metavar("<file>")
       .type("string")
       .help("Start a managed Brawlback matchmaking session");
+  parser->add_option("--validate-brawlback-ticket")
+      .action("store")
+      .metavar("<file>")
+      .type("string")
+      .help("Validate a managed Brawlback launch ticket and exit");
   parser->add_option("--brawlback-game-list")
       .action("store")
       .metavar("<file>")

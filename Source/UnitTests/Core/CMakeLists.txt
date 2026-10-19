@@ -2,6 +2,8 @@ add_dolphin_test(MMIOTest MMIOTest.cpp)
 add_dolphin_test(PageFaultTest PageFaultTest.cpp)
 add_dolphin_test(CoreTimingTest CoreTimingTest.cpp)
 add_dolphin_test(PatchAllowlistTest PatchAllowlistTest.cpp)
+add_dolphin_test(ManagedLaunchSchemaTest ManagedLaunchSchemaTest.cpp)
+add_dolphin_test(BrawlControllerProfileTest BrawlControllerProfileTest.cpp)
 
 add_dolphin_test(DSPAcceleratorTest DSP/DSPAcceleratorTest.cpp)
 add_dolphin_test(DSPAssemblyTest

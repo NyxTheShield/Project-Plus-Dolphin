@@ -22,12 +22,16 @@ constexpr std::size_t BRAWL_CONTROLLER_PROFILE_SIZE = 46;
 
 struct BrawlControllerProfile
 {
-  std::string tag;
+  std::u16string tag;
   std::array<u8, BRAWL_CONTROLLER_PROFILE_SIZE> controls{};
 
   bool Enabled() const { return !tag.empty(); }
 };
 
+// Converts a UTF-8 tag to the exact UTF-16 code units produced by Brawl's name-entry keyboard.
+// Common keyboard characters are accepted in narrow form and converted to Brawl's canonical
+// fullwidth form. Unsupported glyphs, invalid UTF-8, and names longer than five characters fail.
+std::optional<std::u16string> EncodeBrawlTag(std::string_view tag);
 std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_view tag,
                                                                   std::string_view controls_hex);
 bool ApplyBrawlControllerProfilesToSave(

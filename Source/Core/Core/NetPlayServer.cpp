@@ -472,13 +472,15 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   {
     std::string match_id;
     std::string player_id;
+    std::string session_fingerprint;
     u8 requested_seat = 0;
     if (!managed)
       return ConnectionError::ManagedSessionMismatch;
-    received_packet >> match_id >> player_id >> requested_seat;
+    received_packet >> match_id >> player_id >> requested_seat >> session_fingerprint;
     if (match_id != m_managed_match_id || requested_seat == 0 ||
         requested_seat >= m_managed_player_ids.size() ||
-        m_managed_player_ids[requested_seat] != player_id)
+        m_managed_player_ids[requested_seat] != player_id ||
+        session_fingerprint != m_managed_session_fingerprint)
     {
       return ConnectionError::ManagedSessionMismatch;
     }
@@ -1692,8 +1694,8 @@ bool NetPlayServer::SetupNetSettings()
   settings.use_fma = DoAllPlayersHaveHardwareFMA();
   settings.hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
   settings.spectator_mode = Config::Get(Config::NETPLAY_SPECTATOR_MODE);
-  // The generic rollback path uses the instruction-precise VI New Field boundary on every peer.
-  settings.rollback_frame_boundary = 3;
+  // The generic rollback path uses the instruction-precise pre-SI poll boundary on every peer.
+  settings.rollback_frame_boundary = 5;
 
   // Unload GameINI to restore things to normal
   Config::RemoveLayer(Config::LayerType::GlobalGame);
@@ -2644,11 +2646,13 @@ void NetPlayServer::AssignNewUserAPad(const Client& player)
   // mapping forced emulated Wii Remotes on even when the user's input config had none.
 }
 
-void NetPlayServer::SetManagedPlayers(std::string match_id, std::vector<std::string> player_ids)
+void NetPlayServer::SetManagedPlayers(std::string match_id, std::vector<std::string> player_ids,
+                                      std::string session_fingerprint)
 {
   std::lock_guard lkp(m_crit.players);
   m_managed_match_id = std::move(match_id);
   m_managed_player_ids = std::move(player_ids);
+  m_managed_session_fingerprint = std::move(session_fingerprint);
 }
 
 void NetPlayServer::SetManagedGeckoCodesPath(std::string path)

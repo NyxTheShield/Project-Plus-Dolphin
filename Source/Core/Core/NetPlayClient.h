@@ -54,6 +54,7 @@ struct ManagedNetPlayConfig
   std::string match_id;
   std::string player_id;
   std::string rendezvous_token;
+  std::string session_fingerprint;
   int seat = 0;
   int player_count = 0;
   bool coordinator = false;

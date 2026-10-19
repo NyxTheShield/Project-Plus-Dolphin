@@ -583,6 +583,8 @@ add_library(core
   Rollback/Rollback.h
   Rollback/UndoLog.cpp
   Rollback/UndoLog.h
+  ManagedLaunch/ManagedLaunchSchema.cpp
+  ManagedLaunch/ManagedLaunchSchema.h
   SyncIdentifier.h
   SysConf.cpp
   SysConf.h

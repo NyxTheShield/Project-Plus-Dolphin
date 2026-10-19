@@ -576,7 +576,7 @@ struct GekkoManager
   bool stop_ram_compare_on_mismatch = false;
   bool ram_diagnostic_dumped = false;
   bool video_diagnostic_dumped = false;
-  FrameBoundary frame_boundary = FrameBoundary::VIEndField;
+  FrameBoundary frame_boundary = FrameBoundary::VIPreSIPoll;
   std::atomic<bool> vi_boundary_pending{false};
   std::atomic<bool> precise_vi_tail{false};
   std::atomic<bool> precise_vi_guard_requested{false};
@@ -608,7 +608,7 @@ struct GekkoManager
   std::atomic<bool> netplay_replay_playing{false};
   bool netplay_replay_session = false;
   int netplay_replay_players = 0;
-  FrameBoundary netplay_replay_boundary = FrameBoundary::VIEndField;
+  FrameBoundary netplay_replay_boundary = FrameBoundary::VIPreSIPoll;
   std::string netplay_replay_game_id;
   std::string netplay_replay_game_key;
   std::map<s32, std::vector<u8>> netplay_replay_frames;
@@ -2804,7 +2804,7 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
 bool StartNetplayReplaySession()
 {
   int players = 0;
-  FrameBoundary boundary = FrameBoundary::VIEndField;
+  FrameBoundary boundary = FrameBoundary::VIPreSIPoll;
   {
     std::lock_guard lk(g_manager.mutex);
     if (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed) ||

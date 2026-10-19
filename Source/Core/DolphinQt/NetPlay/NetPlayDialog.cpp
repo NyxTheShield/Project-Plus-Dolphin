@@ -152,9 +152,11 @@ void NetPlayDialog::CreateMainLayout()
   m_frame_boundary_combo->addItem(tr("VI Begin Field"), 1);
   m_frame_boundary_combo->addItem(tr("VI End Field"), 2);
   m_frame_boundary_combo->addItem(tr("VI New Field"), 3);
+  m_frame_boundary_combo->addItem(tr("VI Pre-New Field"), 4);
+  m_frame_boundary_combo->addItem(tr("VI Pre-SI Poll"), 5);
   m_frame_boundary_combo->setToolTip(
       tr("Select the emulated frame boundary used by GekkoNet. The host shares this selection "
-         "with every client when the session starts. VI New Field is the default."));
+         "with every client when the session starts. Pre-SI Poll is the default."));
   m_frame_boundary_label->setVisible(false);
   m_frame_boundary_combo->setVisible(false);
   m_quit_button = new QPushButton(tr("Quit"));
@@ -1265,7 +1267,7 @@ void NetPlayDialog::LoadSettings()
   m_player_buffer_size_box->setValue(player_buffer_size);
   const int frame_boundary_index =
       m_frame_boundary_combo->findData(static_cast<int>(rollback_frame_boundary));
-  const int default_frame_boundary_index = m_frame_boundary_combo->findData(2);
+  const int default_frame_boundary_index = m_frame_boundary_combo->findData(5);
   m_frame_boundary_combo->setCurrentIndex(frame_boundary_index >= 0 ? frame_boundary_index :
                                                                       default_frame_boundary_index);
 

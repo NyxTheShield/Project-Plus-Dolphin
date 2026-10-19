@@ -279,6 +279,7 @@ private:
     std::string display_name;
     std::string rendezvous_address;
     std::string rendezvous_token;
+    std::string session_fingerprint;
     std::string game;
     std::string brawl_iso_path;
     std::string project_plus_sd_path;
@@ -308,7 +309,7 @@ private:
     bool native_stress = false;
     u32 stress_interval = 1;
     std::optional<u32> rollback_window_override;
-    u32 frame_boundary = 2;
+    u32 frame_boundary = 5;
     std::string gecko_codes_path;
     std::string wii_save_data_bin_path;
     bool full_scan_benchmark = false;
@@ -332,6 +333,7 @@ private:
     bool start_requested = false;
     bool started_reported = false;
     bool failure_reported = false;
+    u64 status_sequence = 0;
   };
   std::optional<ManagedSession> m_managed_session;
 

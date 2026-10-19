@@ -74,6 +74,7 @@
 #include "Core/HotkeyManager.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/IOS/USB/Bluetooth/BTEmu.h"
+#include "Core/ManagedLaunch/ManagedLaunchSchema.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
@@ -1265,6 +1266,9 @@ void MainWindow::ForceManagedProcessExit(bool notify_peers)
   m_exit_requested = true;
   m_stop_requested = true;
 
+  if (m_managed_session && !m_managed_session->failure_reported)
+    ReportManagedStatus("stopped");
+
   if (notify_peers && NetPlay::IsNetPlayRunning())
     NetPlay::SendPowerButtonEvent();
 
@@ -1882,10 +1886,22 @@ void MainWindow::ReportManagedStatus(const std::string& state, const std::string
   }
 
   picojson::object status;
+  status["schemaVersion"] = picojson::value(1.0);
   status["matchId"] = picojson::value(m_managed_session->match_id);
+  status["sequence"] = picojson::value(static_cast<double>(++m_managed_session->status_sequence));
   status["state"] = picojson::value(state);
   status["reason"] = picojson::value(reason);
-  if (!File::WriteStringToFile(m_managed_session->status_path, picojson::value(status).serialize()))
+  status["processId"] = picojson::value(static_cast<double>(QCoreApplication::applicationPid()));
+  if (state == "failed")
+    status["errorCode"] = picojson::value("managed_session_failed");
+  const std::string temporary_path = m_managed_session->status_path + ".tmp";
+  File::Delete(temporary_path);
+  const bool wrote_temporary =
+      File::WriteStringToFile(temporary_path, picojson::value(status).serialize());
+  // Readers may briefly observe no status file on Windows, but can never observe partial JSON.
+  const bool published = wrote_temporary && File::Delete(m_managed_session->status_path) &&
+                         File::Rename(temporary_path, m_managed_session->status_path);
+  if (!published)
   {
     ERROR_LOG_FMT(NETPLAY, "Managed launch could not write status '{}' to '{}'", state,
                   m_managed_session->status_path);
@@ -1960,9 +1976,23 @@ void MainWindow::StartManagedNetPlay()
     m_managed_session.reset();
     return;
   }
+
+  Core::ManagedLaunch::ParseResult parsed_ticket = Core::ManagedLaunch::ParseTicket(root);
+  if (!parsed_ticket)
+  {
+    ERROR_LOG_FMT(NETPLAY, "Managed launch: ticket validation failed: {}", parsed_ticket.error);
+    QTimer::singleShot(0, qApp, [] { QApplication::exit(1); });
+    m_managed_session.reset();
+    return;
+  }
+
+  NOTICE_LOG_FMT(NETPLAY, "Managed launch ticket (begin):\n{}\nManaged launch ticket (end)",
+                 Core::ManagedLaunch::FormatTicketForLog(root));
+
+  // A ticket is consumed only after the complete document has parsed and passed schema validation.
   File::Delete(ticket_path);
 
-  const picojson::object& ticket = root.get<picojson::object>();
+  const picojson::object& ticket = parsed_ticket.ticket->GetFields();
   const auto read_string = [&ticket](const char* name) -> std::optional<std::string> {
     const auto it = ticket.find(name);
     if (it == ticket.end() || !it->second.is<std::string>())
@@ -1984,6 +2014,26 @@ void MainWindow::StartManagedNetPlay()
   const auto replay_path = read_string("replay_path");
   const auto replay_output_path = read_string("replay_output_path");
   const auto replay_input_path = read_string("replay_input_path");
+  const auto session_fingerprint = read_string("session_fingerprint");
+  const auto gamecube_memory_card_path = read_string("gamecube_memory_card_path");
+  const auto wii_nand_path = read_string("wii_nand_path");
+
+  const auto save_replays_it = ticket.find("save_replays");
+  const auto start_fullscreen_it = ticket.find("start_fullscreen");
+  const bool save_replays = save_replays_it != ticket.end() && save_replays_it->second.is<bool>() &&
+                            save_replays_it->second.get<bool>();
+  const bool start_fullscreen = start_fullscreen_it != ticket.end() &&
+                                start_fullscreen_it->second.is<bool>() &&
+                                start_fullscreen_it->second.get<bool>();
+  Config::SetCurrent(Config::MAIN_SAVE_NETPLAY_REPLAYS, save_replays);
+  Config::SetCurrent(Config::MAIN_FULLSCREEN, start_fullscreen);
+  if (gamecube_memory_card_path && !gamecube_memory_card_path->empty())
+    Config::SetCurrent(Config::MAIN_MEMCARD_A_PATH, *gamecube_memory_card_path);
+  if (wii_nand_path && !wii_nand_path->empty())
+  {
+    Config::SetCurrent(Config::MAIN_FS_PATH, *wii_nand_path);
+    File::SetUserPath(D_WIIROOT_IDX, *wii_nand_path);
+  }
 
   const auto aspect_ratio_it = ticket.find("aspect_ratio");
   const auto video_backend = read_string("video_backend");
@@ -2223,6 +2273,7 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->game = *game;
   m_managed_session->rendezvous_address = *rendezvous_address;
   m_managed_session->rendezvous_token = *rendezvous_token;
+  m_managed_session->session_fingerprint = session_fingerprint.value_or("");
   m_managed_session->brawl_iso_path = brawl_iso_path.value_or("");
   m_managed_session->project_plus_sd_path = project_plus_sd_path.value_or("");
   m_managed_session->sd_card_path = custom_sd_card_path.value_or("");
@@ -2653,7 +2704,8 @@ void MainWindow::StartManagedNetPlay()
       NetPlayQuit();
       return;
     }
-    server->SetManagedPlayers(m_managed_session->match_id, m_managed_session->player_ids);
+    server->SetManagedPlayers(m_managed_session->match_id, m_managed_session->player_ids,
+                              m_managed_session->session_fingerprint);
     server->SetManagedGeckoCodesPath(m_managed_session->gecko_codes_path);
     server->ChangeGame(selected_game.GetSyncIdentifier(),
                        m_game_list->GetNetPlayName(selected_game));
@@ -2668,6 +2720,7 @@ void MainWindow::StartManagedNetPlay()
 
   NOTICE_LOG_FMT(NETPLAY, "Managed launch: NetPlay client joined (seat={})",
                  m_managed_session->seat);
+  ReportManagedStatus("synchronizing");
 
   if (m_managed_session->seat == 1)
     QTimer::singleShot(100, this, &MainWindow::PollManagedNetPlayReady);
@@ -2815,6 +2868,7 @@ bool MainWindow::NetPlayJoin()
     managed_config->match_id = m_managed_session->match_id;
     managed_config->player_id = m_managed_session->player_id;
     managed_config->rendezvous_token = m_managed_session->rendezvous_token;
+    managed_config->session_fingerprint = m_managed_session->session_fingerprint;
     managed_config->seat = m_managed_session->seat;
     managed_config->player_count = m_managed_session->player_count;
     managed_config->coordinator = m_managed_session->seat == 1;
