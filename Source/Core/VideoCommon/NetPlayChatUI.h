@@ -4,16 +4,19 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 
 class NetPlayChatUI
 {
 public:
-  explicit NetPlayChatUI(std::function<void(const std::string&)> callback);
+  NetPlayChatUI(std::string local_name, std::function<void(const std::string&)> callback);
   ~NetPlayChatUI();
 
   using Color = std::array<float, 3>;
@@ -26,14 +29,23 @@ public:
   void Expand();
 
 private:
-  char m_message_buf[256] = {};
-  bool m_scroll_to_bottom = false;
-  bool m_activate = false;
-  bool m_collapse = false;
-  bool m_expand = false;
-  bool m_is_scrolled_to_bottom = true;
+  struct Message
+  {
+    std::string text;
+    Color color;
+    std::chrono::steady_clock::time_point expires_at;
+  };
 
-  std::deque<std::pair<std::string, Color>> m_messages;
+  char m_message_buf[256] = {};
+  std::string m_local_name;
+  std::atomic_bool m_open_input = false;
+  std::atomic_bool m_close_input = false;
+  std::atomic_bool m_input_active = false;
+  bool m_input_open = false;
+  bool m_focus_input = false;
+
+  std::mutex m_messages_mutex;
+  std::deque<Message> m_messages;
   std::function<void(const std::string&)> m_message_callback;
 };
 

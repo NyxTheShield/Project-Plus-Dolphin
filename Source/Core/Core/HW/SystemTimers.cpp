@@ -45,6 +45,7 @@ IPC_HLE_PERIOD: For the Wii Remote this is the call schedule:
 #include "Core/HW/SystemTimers.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "AudioCommon/Mixer.h"
 #include "Common/CommonTypes.h"
@@ -125,6 +126,17 @@ void SystemTimersManager::VICallback(Core::System& system, u64 userdata, s64 cyc
   auto& vi = system.GetVideoInterface();
   vi.Update(core_timing.GetTicks() - cycles_late);
   const s64 half_line_ticks = vi.GetTicksPerHalfLine();
+  std::optional<Rollback::FrameBoundary> pre_boundary;
+  if (vi.IsNextHalfLineNewField() &&
+      Rollback::IsGekkoFrameBoundary(Rollback::FrameBoundary::VIPreNewField))
+  {
+    pre_boundary = Rollback::FrameBoundary::VIPreNewField;
+  }
+  else if (vi.IsNextHalfLineFirstSIPollOfField() &&
+           Rollback::IsGekkoFrameBoundary(Rollback::FrameBoundary::VIPreSIPoll))
+  {
+    pre_boundary = Rollback::FrameBoundary::VIPreSIPoll;
+  }
   if (Rollback::ConsumePreciseVIGuardRequest())
   {
     // JIT blocks can overrun a timing event by the remainder of the current block. Leave a
@@ -134,8 +146,24 @@ void SystemTimersManager::VICallback(Core::System& system, u64 userdata, s64 cyc
     core_timing.ScheduleEvent(guard_delay,
                               system.GetSystemTimers().m_event_type_rollback_vi_guard);
   }
+  // Queue the pre-boundary before VI at the same emulated tick. CoreTiming preserves insertion
+  // order for equal timestamps, so it stops at a safe dispatcher point with the VI event still
+  // pending. A saved snapshot therefore resumes with the original VI/SI work exactly once.
+  if (pre_boundary)
+  {
+    core_timing.ScheduleEvent(
+        half_line_ticks - cycles_late,
+        system.GetSystemTimers().m_event_type_rollback_vi_pre_boundary,
+        static_cast<u64>(*pre_boundary));
+  }
   core_timing.ScheduleEvent(half_line_ticks - cycles_late,
                             system.GetSystemTimers().m_event_type_vi);
+}
+
+void SystemTimersManager::RollbackVIPreBoundaryCallback(Core::System& system, u64 userdata,
+                                                        s64 cycles_late)
+{
+  Rollback::SignalVIBoundary(static_cast<Rollback::FrameBoundary>(userdata));
 }
 
 void SystemTimersManager::RollbackVIGuardCallback(Core::System& system, u64 userdata,
@@ -286,6 +314,8 @@ void SystemTimersManager::Init()
 
   m_event_type_decrementer = core_timing.RegisterEvent("DecCallback", DecrementerCallback);
   m_event_type_vi = core_timing.RegisterEvent("VICallback", VICallback);
+  m_event_type_rollback_vi_pre_boundary =
+      core_timing.RegisterEvent("RollbackVIPreBoundary", RollbackVIPreBoundaryCallback);
   m_event_type_rollback_vi_guard =
       core_timing.RegisterEvent("RollbackVIGuard", RollbackVIGuardCallback);
   m_event_type_dsp = core_timing.RegisterEvent("DSPCallback", DSPCallback);

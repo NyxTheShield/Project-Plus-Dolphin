@@ -900,8 +900,7 @@ void NetPlayDialog::DisplayMessage(const QString& msg, const std::string& color,
 
   const QColor c(color.empty() ? QStringLiteral("white") : QString::fromStdString(color));
 
-  if (Config::Get(Config::GFX_SHOW_NETPLAY_MESSAGES) &&
-      Core::IsRunning(Core::System::GetInstance()))
+  if (g_netplay_chat_ui && Core::IsRunning(Core::System::GetInstance()))
   {
     g_netplay_chat_ui->AppendChat(msg.toStdString(),
                                   {static_cast<float>(c.redF()), static_cast<float>(c.greenF()),
@@ -981,8 +980,8 @@ void NetPlayDialog::OnMsgStartGame()
 {
   DisplayMessage(tr("Started game"), "green");
 
-  g_netplay_chat_ui =
-      std::make_unique<NetPlayChatUI>([this](const std::string& message) { SendMessage(message); });
+  g_netplay_chat_ui = std::make_unique<NetPlayChatUI>(
+      m_nickname, [this](const std::string& message) { SendMessage(message); });
 
   if (m_host_input_authority && Settings::Instance().GetNetPlayClient()->GetNetSettings().golf_mode)
   {
@@ -1022,12 +1021,8 @@ void NetPlayDialog::OnMsgPowerButton()
                    "Shutdown lifecycle: NetPlay power-button UI request ignored; core not running");
     return;
   }
-  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: queueing NetPlay STM power event on Qt thread");
-  QueueOnObject(this, [] {
-    const bool sent = UICommon::TriggerSTMPowerEvent();
-    NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: queued NetPlay STM power event completed (sent={})",
-                   sent);
-  });
+  NOTICE_LOG_FMT(NETPLAY, "Shutdown lifecycle: forwarding NetPlay power event to main window");
+  emit PowerButtonReceived();
 }
 
 void NetPlayDialog::OnPlayerConnect(const std::string& player)

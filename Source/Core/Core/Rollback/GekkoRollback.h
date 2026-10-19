@@ -5,12 +5,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Core/Rollback/BrawlControllerProfile.h"
 #include "InputCommon/GCPadStatus.h"
 
 namespace Core
@@ -18,6 +20,11 @@ namespace Core
 class CPUThreadGuard;
 class System;
 }  // namespace Core
+
+namespace WiimoteEmu
+{
+struct SerializedWiimoteState;
+}
 
 namespace Rollback
 {
@@ -27,6 +34,14 @@ enum class FrameBoundary : u8
   VIBeginField = 1,
   VIEndField = 2,
   VINewField = 3,
+  VIPreNewField = 4,
+  VIPreSIPoll = 5,
+};
+
+enum class ControllerType : u8
+{
+  GameCube = 0,
+  Wiimote = 1,
 };
 
 // Per-session diagnostics and experimental switches. These are supplied by the launch ticket for
@@ -53,6 +68,8 @@ struct GekkoSessionOptions
   bool full_scan_benchmark = false;
   bool full_scan_keep_tracking = false;
   bool parallel_dirty_compare = true;
+  std::vector<ControllerType> controller_types;
+  std::vector<BrawlControllerProfile> brawl_controller_profiles;
   // Optional NPR source for this process's own local player. The recorded seat matching
   // local_player is submitted through the normal networked Gekko actor.
   std::string replay_input_path;
@@ -70,6 +87,8 @@ GCPadStatus DecodePad(const WirePad& pad);
 
 // Rollback input query from SI controller polling
 std::optional<GCPadStatus> GetRollbackPad(int port);
+void CaptureLocalWiimoteState(const WiimoteEmu::SerializedWiimoteState& state);
+std::optional<WiimoteEmu::SerializedWiimoteState> GetRollbackWiimoteState(int port);
 
 // Boundary callback called by the Brawl HLE hook at 0x80017504.
 void OnFrameBoundary(const Core::CPUThreadGuard& guard);
@@ -84,7 +103,7 @@ void RunPendingVIBoundary(Core::System& system);
 // half-line before the selected VI boundary in the interpreter so it is reached at an
 // instruction-precise point independent of each client's JIT cache and block layout.
 void UpdatePreciseVITailArm(bool next_is_begin_field, bool next_is_end_field,
-                            bool next_is_new_field);
+                            bool next_is_new_field, bool next_is_si_poll);
 bool ConsumePreciseVIGuardRequest();
 void ArmPreciseVITailFromGuard();
 bool IsPreciseVITailArmed();
@@ -100,6 +119,9 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
 void StopGekkoSession();
 bool IsGekkoSessionActive();
 bool IsGekkoFrameBoundary(FrameBoundary boundary);
+// Queues a local presentation-only change for the next stable rollback boundary. The callback runs
+// on the CPU thread, allowing Dolphin's normal GPU-thread quiescence path to stop FIFO safely.
+bool QueueLocalPresentationChange(std::function<void()> change);
 void SetGekkoLocalDelay(int local_delay);
 // Deep-logging probe: pairs the next host presentation with the local input frame selected by
 // GekkoNet. The timestamp uses steady_clock nanoseconds and never enters emulated state.

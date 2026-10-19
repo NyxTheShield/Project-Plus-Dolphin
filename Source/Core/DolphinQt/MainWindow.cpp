@@ -651,7 +651,12 @@ void MainWindow::ConnectHotkeys()
           &MainWindow::OnRequestGolfControl);
   connect(m_hotkey_scheduler, &HotkeyScheduler::RefreshGameListHotkey, this,
           &MainWindow::RefreshGameList);
-  connect(m_hotkey_scheduler, &HotkeyScheduler::StopHotkey, this, &MainWindow::RequestStop);
+  connect(m_hotkey_scheduler, &HotkeyScheduler::StopHotkey, this, [this] {
+    if (m_managed_session)
+      ForceManagedProcessExit(true);
+    else
+      RequestStop();
+  });
   connect(m_hotkey_scheduler, &HotkeyScheduler::ResetHotkey, this, &MainWindow::Reset);
   connect(m_hotkey_scheduler, &HotkeyScheduler::ScreenShotHotkey, this, &MainWindow::ScreenShot);
   connect(m_hotkey_scheduler, &HotkeyScheduler::FullScreenHotkey, this, &MainWindow::FullScreen);
@@ -1248,6 +1253,24 @@ void MainWindow::ForceStop()
   Core::Stop(m_system);
 }
 
+void MainWindow::ForceManagedProcessExit(bool notify_peers)
+{
+  if (m_exit_requested)
+    return;
+
+  NOTICE_LOG_FMT(CORE,
+                 "Shutdown lifecycle: forcing managed process exit (notify_peers={})",
+                 notify_peers);
+  m_exit_requested = true;
+  m_stop_requested = true;
+
+  if (notify_peers && NetPlay::IsNetPlayRunning())
+    NetPlay::SendPowerButtonEvent();
+
+  OnStopRecording();
+  ForceStop();
+}
+
 void MainWindow::Reset()
 {
   auto& movie = m_system.GetMovie();
@@ -1819,6 +1842,17 @@ void MainWindow::NetPlayInit()
 #endif
 
   connect(m_netplay_dialog, &NetPlayDialog::Stop, this, &MainWindow::ForceStop);
+  connect(m_netplay_dialog, &NetPlayDialog::PowerButtonReceived, this, [this] {
+    if (m_managed_session)
+    {
+      ForceManagedProcessExit(false);
+      return;
+    }
+
+    const bool sent = UICommon::TriggerSTMPowerEvent();
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Shutdown lifecycle: queued NetPlay STM power event completed (sent={})", sent);
+  });
   connect(m_netplay_dialog, &NetPlayDialog::ConnectionFailed, this,
           [this](const QString& message) { FailManagedSession(message.toStdString()); });
   connect(m_netplay_dialog, &NetPlayDialog::rejected, this, &MainWindow::NetPlayQuit);
@@ -2118,6 +2152,7 @@ void MainWindow::StartManagedNetPlay()
   const auto seat_it = ticket.find("seat");
   const auto players_it = ticket.find("players");
   const auto game_revision_it = ticket.find("game_revision");
+  const auto game_platform_it = ticket.find("game_platform");
   if (match_id)
     m_managed_session->match_id = *match_id;
   if (status_path)
@@ -2151,6 +2186,8 @@ void MainWindow::StartManagedNetPlay()
   m_managed_session->game_id = custom_game_id.value_or("");
   if (game_revision_it != ticket.end() && game_revision_it->second.is<double>())
     m_managed_session->game_revision = static_cast<u16>(game_revision_it->second.get<double>());
+  if (game_platform_it != ticket.end() && game_platform_it->second.is<double>())
+    m_managed_session->game_platform = static_cast<u8>(game_platform_it->second.get<double>());
   m_managed_session->status_path = *status_path;
   m_managed_session->replay_output_path = replay_output_path.value_or("");
   m_managed_session->replay_input_path = replay_input_path.value_or("");
@@ -2159,6 +2196,11 @@ void MainWindow::StartManagedNetPlay()
       static_cast<int>(players_it->second.get<picojson::array>().size());
   m_managed_session->player_ids.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
   m_managed_session->player_names.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
+  m_managed_session->controller_types.resize(
+      static_cast<size_t>(m_managed_session->player_count) + 1,
+      static_cast<u8>(Rollback::ControllerType::GameCube));
+  m_managed_session->controller_tags.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
+  m_managed_session->controller_profiles.resize(static_cast<size_t>(m_managed_session->player_count) + 1);
   const auto test_solo_it = ticket.find("test_solo");
   m_managed_session->test_solo = test_solo_it != ticket.end() && test_solo_it->second.is<bool>() &&
                                  test_solo_it->second.get<bool>();
@@ -2201,7 +2243,7 @@ void MainWindow::StartManagedNetPlay()
   if (frame_boundary_it != ticket.end() && frame_boundary_it->second.is<double>())
   {
     const double boundary = frame_boundary_it->second.get<double>();
-    if (boundary >= 0.0 && boundary <= 3.0)
+    if (boundary >= 0.0 && boundary <= 5.0)
       m_managed_session->frame_boundary = static_cast<u32>(boundary);
   }
   const auto gecko_codes_path_it = ticket.find("gecko_codes_path");
@@ -2301,6 +2343,9 @@ void MainWindow::StartManagedNetPlay()
     const auto id = player.find("player_id");
     const auto name = player.find("display_name");
     const auto roster_seat = player.find("seat");
+    const auto controller_type = player.find("controller_type");
+    const auto controller_tag = player.find("controller_tag");
+    const auto controller_profile = player.find("controller_profile");
     if (id == player.end() || !id->second.is<std::string>() || roster_seat == player.end() ||
         !roster_seat->second.is<double>())
     {
@@ -2312,6 +2357,36 @@ void MainWindow::StartManagedNetPlay()
       m_managed_session->player_ids[parsed_seat] = id->second.get<std::string>();
       if (name != player.end() && name->second.is<std::string>())
         m_managed_session->player_names[parsed_seat] = name->second.get<std::string>();
+      if (controller_type != player.end() && controller_type->second.is<std::string>())
+      {
+        const std::string& value = controller_type->second.get<std::string>();
+        if (value == "wiimote")
+        {
+          m_managed_session->controller_types[parsed_seat] =
+              static_cast<u8>(Rollback::ControllerType::Wiimote);
+        }
+        else if (value != "gamecube")
+        {
+          FailManagedSession("The matchmaking ticket contains an invalid controller type");
+          m_managed_session.reset();
+          return;
+        }
+      }
+      const std::string tag = controller_tag != player.end() && controller_tag->second.is<std::string>() ?
+                                  controller_tag->second.get<std::string>() :
+                                  std::string{};
+      const std::string profile = controller_profile != player.end() &&
+                                          controller_profile->second.is<std::string>() ?
+                                      controller_profile->second.get<std::string>() :
+                                      std::string{};
+      if (!Rollback::ParseBrawlControllerProfile(tag, profile))
+      {
+        FailManagedSession("The matchmaking ticket contains an invalid controller profile");
+        m_managed_session.reset();
+        return;
+      }
+      m_managed_session->controller_tags[parsed_seat] = tag;
+      m_managed_session->controller_profiles[parsed_seat] = profile;
     }
     if (id != player.end() && id->second.is<std::string>() &&
         id->second.get<std::string>() == *player_id && name != player.end() &&
@@ -2338,14 +2413,14 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_DIRECTORY, replay_output_path.value_or(""));
 
   const bool valid_player_count =
-      m_managed_session->player_count >= 2 && m_managed_session->player_count <= 4 &&
+      m_managed_session->player_count >= 1 && m_managed_session->player_count <= 4 &&
       m_managed_session->seat >= 1 && m_managed_session->seat <= m_managed_session->player_count;
-  const bool valid_test_solo = m_managed_session->test_solo &&
-                               m_managed_session->player_count == 1 && m_managed_session->seat == 1;
+  const bool ticket_solo_matches_roster =
+      m_managed_session->test_solo == (m_managed_session->player_count == 1);
   const bool complete_roster =
       std::all_of(m_managed_session->player_ids.begin() + 1, m_managed_session->player_ids.end(),
                   [](const std::string& id) { return !id.empty(); });
-  if ((!valid_player_count && !valid_test_solo) || !complete_roster ||
+  if (!valid_player_count || !ticket_solo_matches_roster || !complete_roster ||
       m_managed_session->display_name.empty())
   {
     FailManagedSession("The matchmaking ticket contains an invalid player roster");
@@ -2353,7 +2428,7 @@ void MainWindow::StartManagedNetPlay()
     return;
   }
   if ((m_managed_session->simulate_remote_p2 || m_managed_session->native_stress) &&
-      !valid_test_solo)
+      (m_managed_session->player_count != 1 || m_managed_session->seat != 1))
   {
     FailManagedSession("Solo rollback diagnostics require a one-player test ticket");
     m_managed_session.reset();
@@ -2363,6 +2438,12 @@ void MainWindow::StartManagedNetPlay()
       (!m_managed_session->stress_test || m_managed_session->simulate_remote_p2))
   {
     FailManagedSession("The native rollback stress ticket is inconsistent");
+    m_managed_session.reset();
+    return;
+  }
+  if (m_managed_session->stress_test && !m_managed_session->rollback_window_override)
+  {
+    FailManagedSession("Rollback stress requires an explicit rollback-window override");
     m_managed_session.reset();
     return;
   }
@@ -2422,7 +2503,16 @@ void MainWindow::StartManagedNetPlay()
     }
     Config::SetCurrent(Config::MAIN_DEFAULT_ISO, m_managed_session->brawl_iso_path);
     Config::SetCurrent(Config::MAIN_NETPLAY_REPLAY_GAME, "Brawl");
-    game_path = m_managed_session->brawl_iso_path;
+    game_path =
+        File::GetUserPath(D_USER_IDX) + "Launcher" DIR_SEP "vBrawl Netplay Launcher.dol";
+    if (m_managed_session->sd_card_path.empty() ||
+        !File::Exists(m_managed_session->sd_card_path))
+    {
+      FailManagedSession("The bundled vBrawl SD card is missing");
+      m_managed_session.reset();
+      return;
+    }
+    sd_card_path = m_managed_session->sd_card_path;
   }
   else if (m_managed_session->game.rfind("dolphin:", 0) == 0)
   {
@@ -2474,7 +2564,7 @@ void MainWindow::StartManagedNetPlay()
   {
     const QString detail =
         m_managed_session->game == "brawl" ?
-            tr("The selected Brawl ISO could not be opened.") :
+            tr("vBrawl Netplay Launcher.dol was not found in this Dolphin user folder.") :
         m_managed_session->game == "project-plus" ?
             tr("Project+ Netplay Launcher.dol was not found in this Dolphin user folder.") :
             tr("The selected custom game could not be opened.");
@@ -2487,7 +2577,7 @@ void MainWindow::StartManagedNetPlay()
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC, false);
   Config::SetCurrent(Config::MAIN_WII_SD_CARD_IMAGE_PATH, sd_card_path.value_or(""));
   const bool has_managed_gecko_codes = !m_managed_session->gecko_codes_path.empty();
-  Config::SetCurrent(Config::NETPLAY_SYNC_CODES, has_managed_gecko_codes);
+  Config::SetCurrent(Config::NETPLAY_SYNC_CODES, true);
   if (has_managed_gecko_codes)
     Config::SetCurrent(Config::MAIN_ENABLE_CHEATS, true);
   File::SetUserPath(F_WIISDCARDIMAGE_IDX, sd_card_path.value_or(""));
@@ -2571,7 +2661,7 @@ void MainWindow::PollManagedNetPlayReady()
   if (static_cast<int>(connected_players) == m_managed_session->player_count &&
       all_players_have_game)
   {
-    if (!m_managed_session->test_solo && !m_managed_session->latency_sampling_started)
+    if (!m_managed_session->latency_sampling_started)
     {
       // NetPlay publishes its first RTT sample once per second. Do not derive the session delay
       // from the initial zero-valued player records.
@@ -2581,12 +2671,11 @@ void MainWindow::PollManagedNetPlayReady()
       return;
     }
 
-    unsigned int rollback_window = m_managed_session->rollback_window_override.value_or(
-        m_managed_session->test_solo || m_managed_session->stress_test ? 2 : 5);
+    unsigned int rollback_window = m_managed_session->rollback_window_override.value_or(5);
     const u32 ping = client->GetPlayersMaxPing();
     const u32 delay =
         NetPlay::GetGekkoInputDelayForPing(ping, m_managed_session->input_delay_reduction);
-    if (!m_managed_session->test_solo && !m_managed_session->stress_test)
+    if (!m_managed_session->stress_test)
     {
       // Both the selected preset and the ping are session-wide for managed matchmaking. Expand the
       // shared prediction window only when the negotiated delay does not cover this round trip.
@@ -2597,14 +2686,16 @@ void MainWindow::PollManagedNetPlayReady()
       }
     }
     server->AdjustMinimumPadBufferSize(rollback_window);
-    server->SetManagedGekkoPing(ping);
+    const u32 local_delay = m_managed_session->input_delay_override.value_or(delay);
+    client->AdjustPlayerPadBufferSize(local_delay);
+    if (!m_managed_session->input_delay_override)
+      server->SetManagedGekkoPing(ping);
 
-    INFO_LOG_FMT(NETPLAY,
-                 "Managed session latency settings: ping={} ms, host_input_delay={}, "
-                 "input_delay_mode={}, rollback_window={}{}",
-                 ping, m_managed_session->input_delay_override.value_or(delay),
-                 m_managed_session->input_delay_mode, rollback_window,
-                 m_managed_session->input_delay_override ? " (local stress override)" : "");
+    NOTICE_LOG_FMT(NETPLAY,
+                   "Managed session latency settings: ping={} ms, host_input_delay={}, "
+                   "input_delay_mode={}, rollback_window={}{}",
+                   ping, local_delay, m_managed_session->input_delay_mode, rollback_window,
+                   m_managed_session->input_delay_override ? " (local override)" : "");
 
     m_managed_session->start_requested = true;
     NOTICE_LOG_FMT(NETPLAY, "Managed launch: requesting synchronized game start");
@@ -2675,6 +2766,7 @@ bool MainWindow::NetPlayJoin()
   if (is_managed)
   {
     managed_config.emplace();
+    managed_config->game_name = m_managed_session->game;
     managed_config->rendezvous_address = m_managed_session->rendezvous_address;
     managed_config->match_id = m_managed_session->match_id;
     managed_config->player_id = m_managed_session->player_id;
@@ -2684,7 +2776,30 @@ bool MainWindow::NetPlayJoin()
     managed_config->coordinator = m_managed_session->seat == 1;
     managed_config->input_delay_reduction = m_managed_session->input_delay_reduction;
     managed_config->auto_input_delay = !m_managed_session->input_delay_override.has_value();
+    managed_config->controller_types.reserve(m_managed_session->player_count);
+    for (int seat = 1; seat <= m_managed_session->player_count; ++seat)
+    {
+      managed_config->controller_types.push_back(m_managed_session->game_platform == 0 ?
+                                                     Rollback::ControllerType::GameCube :
+                                                     static_cast<Rollback::ControllerType>(
+                                                         m_managed_session->controller_types[seat]));
+    }
     auto& rollback_options = managed_config->rollback_options;
+    rollback_options.controller_types = managed_config->controller_types;
+    rollback_options.brawl_controller_profiles.reserve(m_managed_session->player_count);
+    for (int seat = 1; seat <= m_managed_session->player_count; ++seat)
+    {
+      rollback_options.brawl_controller_profiles.push_back(
+          *Rollback::ParseBrawlControllerProfile(m_managed_session->controller_tags[seat],
+                                                  m_managed_session->controller_profiles[seat]));
+      if (!m_managed_session->controller_tags[seat].empty())
+      {
+        NOTICE_LOG_FMT(NETPLAY,
+                       "Managed controller profile: P{} tag='{}' payload_bytes={}", seat,
+                       m_managed_session->controller_tags[seat],
+                       m_managed_session->controller_profiles[seat].size() / 2);
+      }
+    }
     rollback_options.simulate_remote_p2 = m_managed_session->simulate_remote_p2;
     rollback_options.stress_test = m_managed_session->stress_test;
     rollback_options.enable_random_inputs = m_managed_session->enable_random_inputs;
@@ -2811,6 +2926,25 @@ bool MainWindow::eventFilter(QObject* object, QEvent* event)
 {
   if (event->type() == QEvent::Close)
   {
+    // A managed Brawlback process belongs to one match. Closing either its main window or render
+    // window means exiting that process, not asking the emulated Wii to shut down gracefully.
+    // In particular, do not leave fullscreen here: an exclusive-fullscreen surface transition can
+    // wait on the GPU thread while the graceful STM path waits on the CPU thread.
+    if (m_managed_session && !Core::IsUninitialized(m_system))
+    {
+      static_cast<QCloseEvent*>(event)->ignore();
+
+      if (!m_exit_requested)
+      {
+        NOTICE_LOG_FMT(CORE,
+                       "Shutdown lifecycle: managed window close requested; bypassing fullscreen "
+                       "and guest STM shutdown and forcing process exit");
+        ForceManagedProcessExit(true);
+      }
+
+      return true;
+    }
+
     if (RequestStop() && object == this)
       m_exit_requested = true;
 

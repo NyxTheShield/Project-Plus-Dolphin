@@ -95,6 +95,7 @@ private:
   static void IPC_HLE_UpdateCallback(Core::System& system, u64 userdata, s64 cycles_late);
   static void GPUSleepCallback(Core::System& system, u64 userdata, s64 cycles_late);
   static void VICallback(Core::System& system, u64 userdata, s64 cycles_late);
+  static void RollbackVIPreBoundaryCallback(Core::System& system, u64 userdata, s64 cycles_late);
   static void RollbackVIGuardCallback(Core::System& system, u64 userdata, s64 cycles_late);
   static void DecrementerCallback(Core::System& system, u64 userdata, s64 cycles_late);
   static void PatchEngineCallback(Core::System& system, u64 userdata, s64 cycles_late);
@@ -112,6 +113,7 @@ private:
 
   CoreTiming::EventType* m_event_type_decrementer = nullptr;
   CoreTiming::EventType* m_event_type_vi = nullptr;
+  CoreTiming::EventType* m_event_type_rollback_vi_pre_boundary = nullptr;
   CoreTiming::EventType* m_event_type_rollback_vi_guard = nullptr;
   CoreTiming::EventType* m_event_type_audio_dma = nullptr;
   CoreTiming::EventType* m_event_type_dsp = nullptr;

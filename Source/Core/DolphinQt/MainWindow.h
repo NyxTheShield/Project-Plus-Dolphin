@@ -108,6 +108,7 @@ private:
 
   // May ask for confirmation. Returns whether or not it actually stopped.
   bool RequestStop();
+  void ForceManagedProcessExit(bool notify_peers);
   void ForceStop();
   void Reset();
   void FrameAdvance();
@@ -285,6 +286,7 @@ private:
     std::string game_path;
     std::string game_id;
     u16 game_revision = 0;
+    u8 game_platform = 2;
     std::string status_path;
     std::string replay_output_path;
     std::string replay_input_path;
@@ -292,6 +294,9 @@ private:
     int player_count = 0;
     std::vector<std::string> player_ids;
     std::vector<std::string> player_names;
+    std::vector<u8> controller_types;
+    std::vector<std::string> controller_tags;
+    std::vector<std::string> controller_profiles;
     bool test_solo = false;
     bool stress_test = false;
     bool simulate_remote_p2 = false;

@@ -1113,8 +1113,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     // rollback traffic uses GekkoNet's native UDP adapter and never re-enters NetPlay/ENet.
     u8 rollback_endpoint_count = 0;
     packet >> rollback_endpoint_count;
-    m_rollback_player_endpoints.clear();
-    m_rollback_player_endpoints.resize(1);
+    std::vector<std::string> announced_rollback_endpoints(1);
     for (u8 i = 0; i < rollback_endpoint_count; ++i)
     {
       PlayerId pid = 0;
@@ -1135,10 +1134,17 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
         }
       }
 
-      if (m_rollback_player_endpoints.size() <= pid)
-        m_rollback_player_endpoints.resize(static_cast<size_t>(pid) + 1);
-      m_rollback_player_endpoints[pid] = fmt::format("{}:{}", address, rollback_port);
+      if (announced_rollback_endpoints.size() <= pid)
+        announced_rollback_endpoints.resize(static_cast<size_t>(pid) + 1);
+      announced_rollback_endpoints[pid] = fmt::format("{}:{}", address, rollback_port);
     }
+
+    // Rendezvous routes are selected per recipient. In a full mesh, peers behind one NAT may
+    // require LAN addresses (or loopback on one machine), while the coordinator uses a different
+    // route to those same seats. Preserve this client's verified manifest instead of replacing it
+    // with the coordinator's routes at game start.
+    m_rollback_player_endpoints = m_managed_config ? m_managed_rollback_endpoints :
+                                                     std::move(announced_rollback_endpoints);
 
     m_net_settings.is_hosting = m_local_player->IsHost();
   }
@@ -1878,7 +1884,15 @@ void NetPlayClient::DisplayPlayersPing()
   if (!Config::Get(Config::GFX_SHOW_NETPLAY_PING))
     return;
 
-  OSD::AddTypedMessage(OSD::MessageType::NetPlayPing, fmt::format("Ping: {}", GetPlayersMaxPing()),
+  u32 input_delay = 0;
+  {
+    std::lock_guard lkp(m_crit.players);
+    if (m_local_player)
+      input_delay = m_local_player->buffer;
+  }
+
+  OSD::AddTypedMessage(OSD::MessageType::NetPlayPing,
+                       fmt::format("Ping: {} | Delay = {}", GetPlayersMaxPing(), input_delay),
                        OSD::Duration::SHORT, OSD::Color::CYAN);
 }
 
@@ -2209,7 +2223,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   {
     rollback_options.frame_boundary = static_cast<Rollback::FrameBoundary>(
         std::min<u32>(m_net_settings.rollback_frame_boundary,
-                      static_cast<u32>(Rollback::FrameBoundary::VINewField)));
+                      static_cast<u32>(Rollback::FrameBoundary::VIPreSIPoll)));
   }
   const bool simulate_remote_p2 =
       m_local_player->IsHost() && m_players.size() == 1 &&
@@ -2226,17 +2240,23 @@ bool NetPlayClient::StartGame(const std::string& path)
     // emulated SI port. Do not inherit a stale or user-edited Dolphin lobby mapping: GekkoNet's
     // player streams are indexed by these seats and are exposed directly through GetRollbackPad().
     boot_net_settings.pad_map.fill(0);
+    boot_net_settings.wiimote_map.fill(0);
     // Managed Brawlback sessions use Dolphin's deterministic dual-core CPU/GPU execution model.
     // This is boot-local and does not alter the user's persistent Dolphin configuration.
     boot_net_settings.cpu_thread = true;
     for (int seat = 1; seat <= m_managed_config->player_count; ++seat)
-      boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
+    {
+      const auto controller = m_managed_config->controller_types[seat - 1];
+      if (controller == Rollback::ControllerType::Wiimote)
+        boot_net_settings.wiimote_map[seat - 1] = static_cast<PlayerId>(seat);
+      else
+        boot_net_settings.pad_map[seat - 1] = static_cast<PlayerId>(seat);
+    }
   }
-  // GekkoNet synchronizes GC pads only. Any lobby Wii Remote mapping makes NetPlayConfigLoader
-  // force WiimoteSource::Emulated, which routes every Bluetooth poll through Dolphin's legacy
-  // lockstep WiimoteUpdate(). That blocks the CPU thread until the remote's Wiimote packet arrives
-  // (outside GekkoNet's prediction) and pops extra buffered states during rollback replays.
-  boot_net_settings.wiimote_map.fill(0);
+  else
+  {
+    boot_net_settings.wiimote_map.fill(0);
+  }
   if (simulate_remote_p2)
   {
     // The fake actor still needs an emulated controller on SI port 2. Keep this boot-only so the
@@ -2256,7 +2276,12 @@ bool NetPlayClient::StartGame(const std::string& path)
   // Dolphin fixed-delay minimum-buffer relationship between them.
   const int local_delay = static_cast<int>(m_local_player->buffer);
   const int prediction_window = static_cast<int>(m_minimum_buffer_size);
-  if (!Rollback::StartGekkoSession("Project+", m_current_game, num_players, local_seat,
+  boot_session_data->SetBrawlControllerProfiles(rollback_options.brawl_controller_profiles);
+  std::string rollback_game_name =
+      m_managed_config ? m_managed_config->game_name : m_selected_game.game_id;
+  if (rollback_game_name.empty())
+    rollback_game_name = "Dolphin NetPlay";
+  if (!Rollback::StartGekkoSession(rollback_game_name, m_current_game, num_players, local_seat,
                                    m_rollback_player_endpoints, local_delay, prediction_window,
                                    rollback_options))
   {
@@ -2546,6 +2571,23 @@ u64 NetPlayClient::GetInitialRTCValue() const
 // called from ---CPU--- thread
 bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entries)
 {
+  if (Rollback::IsGekkoSessionActive())
+  {
+    for (const WiimoteDataBatchEntry& entry : entries)
+    {
+      const bool is_local_wiimote =
+          m_managed_config && entry.wiimote >= 0 &&
+          static_cast<std::size_t>(entry.wiimote) < m_managed_config->controller_types.size() &&
+          entry.wiimote == m_managed_config->seat - 1 &&
+          m_managed_config->controller_types[entry.wiimote] == Rollback::ControllerType::Wiimote;
+      if (is_local_wiimote)
+        Rollback::CaptureLocalWiimoteState(*entry.state);
+      if (const auto state = Rollback::GetRollbackWiimoteState(entry.wiimote))
+        *entry.state = *state;
+    }
+    return true;
+  }
+
   for (const WiimoteDataBatchEntry& entry : entries)
   {
     const int local_wiimote = InGameWiimoteToLocalWiimote(entry.wiimote);

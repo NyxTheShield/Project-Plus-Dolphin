@@ -49,6 +49,7 @@ u32 GetGekkoInputDelayForPing(u32 ping_ms, u32 reduction = 2);
 
 struct ManagedNetPlayConfig
 {
+  std::string game_name;
   std::string rendezvous_address;
   std::string match_id;
   std::string player_id;
@@ -58,6 +59,7 @@ struct ManagedNetPlayConfig
   bool coordinator = false;
   u32 input_delay_reduction = 2;
   bool auto_input_delay = true;
+  std::vector<Rollback::ControllerType> controller_types;
   Rollback::GekkoSessionOptions rollback_options;
 };
 

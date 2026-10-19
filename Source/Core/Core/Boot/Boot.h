@@ -18,6 +18,7 @@
 #include "DiscIO/RiivolutionParser.h"
 #include "DiscIO/VolumeDisc.h"
 #include "DiscIO/VolumeWad.h"
+#include "Core/Rollback/BrawlControllerProfile.h"
 
 class PPCSymbolDB;
 
@@ -92,6 +93,9 @@ public:
   const NetPlay::NetSettings* GetNetplaySettings() const;
   void SetNetplaySettings(std::unique_ptr<NetPlay::NetSettings> netplay_settings);
 
+  const std::vector<Rollback::BrawlControllerProfile>& GetBrawlControllerProfiles() const;
+  void SetBrawlControllerProfiles(std::vector<Rollback::BrawlControllerProfile> profiles);
+
   bool IsNetplayReplay() const;
   void SetNetplayReplay(bool netplay_replay);
 
@@ -105,6 +109,7 @@ private:
   WiiSyncCleanupFunction m_wii_sync_cleanup;
 
   std::unique_ptr<NetPlay::NetSettings> m_netplay_settings;
+  std::vector<Rollback::BrawlControllerProfile> m_brawl_controller_profiles;
   bool m_netplay_replay = false;
 };
 

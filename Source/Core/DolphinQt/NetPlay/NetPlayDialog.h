@@ -105,6 +105,8 @@ public:
   void SetHostWiiSyncData(std::vector<u64> titles, std::string redirect_folder) override;
 
 signals:
+  void PowerButtonReceived();
+
   void Stop();
   void ConnectionFailed(const QString& message);
 

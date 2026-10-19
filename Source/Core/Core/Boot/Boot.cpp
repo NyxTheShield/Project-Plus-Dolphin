@@ -181,6 +181,18 @@ void BootSessionData::SetNetplaySettings(std::unique_ptr<NetPlay::NetSettings> n
   m_netplay_settings = std::move(netplay_settings);
 }
 
+const std::vector<Rollback::BrawlControllerProfile>&
+BootSessionData::GetBrawlControllerProfiles() const
+{
+  return m_brawl_controller_profiles;
+}
+
+void BootSessionData::SetBrawlControllerProfiles(
+    std::vector<Rollback::BrawlControllerProfile> profiles)
+{
+  m_brawl_controller_profiles = std::move(profiles);
+}
+
 bool BootSessionData::IsNetplayReplay() const
 {
   return m_netplay_replay;

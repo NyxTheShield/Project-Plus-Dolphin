@@ -778,6 +778,26 @@ u32 VideoInterfaceManager::GetTicksPerField() const
   return GetTicksPerEvenField();
 }
 
+bool VideoInterfaceManager::IsNextHalfLineNewField() const
+{
+  return m_half_line_count == 0 || m_half_line_count == GetHalfLinesPerOddField();
+}
+
+bool VideoInterfaceManager::IsNextHalfLineFirstSIPollOfField() const
+{
+  if (m_half_line_count != m_half_line_of_next_si_poll)
+    return false;
+
+  // A game may request multiple SI polls per field. VI re-phases the first one a fixed distance
+  // after each field boundary; only that poll is suitable as a once-per-field rollback boundary.
+  // Deriving this from serialized VI state also keeps rollback loads deterministic without adding
+  // separate host-side cadence state.
+  const u32 field_begin = m_half_line_count < GetHalfLinesPerOddField() ?
+                              0 :
+                              GetHalfLinesPerOddField();
+  return m_half_line_of_next_si_poll == field_begin + NUM_HALF_LINES_FOR_SI_POLL;
+}
+
 void VideoInterfaceManager::LogField(FieldType field, u32 xfb_address) const
 {
   static constexpr std::array<const char*, 2> field_type_names{{"Odd", "Even"}};
@@ -1003,7 +1023,8 @@ void VideoInterfaceManager::Update(u64 ticks)
       m_half_line_count == m_odd_field_first_hl ||
           m_half_line_count == m_even_field_first_hl,
       m_half_line_count == m_odd_field_last_hl || m_half_line_count == m_even_field_last_hl,
-      m_half_line_count == odd_field_begin || m_half_line_count == even_field_begin);
+      m_half_line_count == odd_field_begin || m_half_line_count == even_field_begin,
+      IsNextHalfLineFirstSIPollOfField());
 
   if (!(m_half_line_count & 1))
   {
