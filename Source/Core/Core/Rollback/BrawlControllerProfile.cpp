@@ -42,6 +42,25 @@ u32 ReadBigEndianU32(const std::vector<u8>& bytes, std::size_t offset)
          static_cast<u32>(bytes[offset + 2]) << 8 |
          static_cast<u32>(bytes[offset + 3]);
 }
+
+constexpr u16 ToBrawlTagCodeUnit(char character)
+{
+  const u8 ascii = static_cast<u8>(character);
+  return ascii == ' ' ? 0x3000 : static_cast<u16>(ascii + 0xFEE0);
+}
+
+void WriteBigEndianU16(std::vector<u8>* bytes, std::size_t offset, u16 value)
+{
+  (*bytes)[offset] = static_cast<u8>(value >> 8);
+  (*bytes)[offset + 1] = static_cast<u8>(value);
+}
+
+static_assert(ToBrawlTagCodeUnit('A') == 0xFF21);
+static_assert(ToBrawlTagCodeUnit('1') == 0xFF11);
+static_assert(ToBrawlTagCodeUnit('.') == 0xFF0E);
+static_assert(ToBrawlTagCodeUnit('!') == 0xFF01);
+static_assert(ToBrawlTagCodeUnit(';') == 0xFF1B);
+static_assert(ToBrawlTagCodeUnit(':') == 0xFF1A);
 }  // namespace
 
 std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_view tag,
@@ -51,10 +70,9 @@ std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_vi
     return BrawlControllerProfile{};
   if (tag.empty() || tag.size() > TAG_CHARS || controls_hex.size() != BRAWL_CONTROLLER_PROFILE_SIZE * 2)
     return std::nullopt;
-  for (const char c : tag)
+  for (const unsigned char c : tag)
   {
-    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-          (c >= '0' && c <= '9') || c == '.' || c == '!' || c == '?' || c == '-'))
+    if (c < 0x20 || c > 0x7E)
       return std::nullopt;
   }
   BrawlControllerProfile profile;
@@ -115,13 +133,12 @@ bool ApplyBrawlControllerProfilesToSave(
       return false;
 
     const std::size_t offset = TAGS_OFFSET + output_slot * TAG_SIZE;
-    // Brawl reads the name as a zero-terminated UTF-16BE string. Orca's authoritative writer uses
-    // the same left-aligned layout; a leading zero makes the slot appear unused.
+    // Brawl's tag keyboard stores printable Latin characters as fullwidth UTF-16BE code units.
+    // Writing narrow ASCII produces proportional glyphs unlike tags created inside the game.
     for (std::size_t character = 0; character < profile.tag.size(); ++character)
     {
       const std::size_t glyph_offset = offset + TAG_NAME + character * 2;
-      (*save)[glyph_offset] = 0;
-      (*save)[glyph_offset + 1] = static_cast<u8>(profile.tag[character]);
+      WriteBigEndianU16(save, glyph_offset, ToBrawlTagCodeUnit(profile.tag[character]));
     }
     (*save)[offset + TAG_RUMBLE] = profile.controls[0] != 0 ? 1 : 0;
     WriteBigEndianU32(save, offset + TAG_TIMESTAMP, next_timestamp++);
@@ -142,9 +159,9 @@ bool ApplyBrawlControllerProfilesToSave(
     for (std::size_t character = 0; character < TAG_CHARS; ++character)
     {
       const bool occupied = character < profile.tag.size();
-      const char source = occupied ? profile.tag[character] : 0;
+      const u16 source = occupied ? ToBrawlTagCodeUnit(profile.tag[character]) : 0;
       const std::size_t glyph_offset = offset + TAG_NAME + character * 2;
-      if ((*save)[glyph_offset] != 0 ||
+      if ((*save)[glyph_offset] != static_cast<u8>(source >> 8) ||
           (*save)[glyph_offset + 1] != static_cast<u8>(source))
         return false;
     }
