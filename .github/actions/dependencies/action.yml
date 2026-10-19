@@ -1,0 +1,62 @@
+name: Prebuilt Dolphin dependencies
+description: Restore or build the pinned native libraries, then verify linking before caching them.
+outputs:
+  prefix:
+    description: Installed dependency prefix for DOLPHIN_DEPENDENCY_PREFIX
+    value: ${{ github.workspace }}/build-dependency-prefix
+runs:
+  using: composite
+  steps:
+    - name: Configure dependency bundle and record toolchain
+      id: configure
+      shell: bash
+      run: |
+        echo "image=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+        case "$RUNNER_OS" in
+          Windows) args+=(-G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl) ;;
+          macOS) args+=(-G Ninja -DCMAKE_OSX_ARCHITECTURES="$(uname -m)"
+                        -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+                        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON) ;;
+          Linux) args+=(-G Ninja -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13) ;;
+          *) echo "Unsupported runner: $RUNNER_OS"; exit 1 ;;
+        esac
+        cmake -S CMake/DependencyBundle -B build-dependency-work "${args[@]}" \
+          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/build-dependency-prefix"
+
+    - name: Restore prebuilt libraries
+      id: libraries
+      uses: actions/cache/restore@v4
+      with:
+        path: build-dependency-prefix
+        key: native-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.configure.outputs.image }}-${{ hashFiles('build-dependency-work/CMakeCache.txt', 'build-dependency-work/bundle-toolchain.txt', '.github/actions/dependencies/action.yml', 'CMake/DependencyBundle/**', 'CMake/FlagsOverride.cmake', 'CMake/DolphinDisableWarningsMSVC.cmake', 'CMake/RemoveCompileFlag.cmake', 'Externals/fmt/**', 'Externals/glslang/**', 'Externals/libusb/**', 'Externals/SDL/**', 'Externals/SFML/**', 'Externals/mbedtls/**') }}
+
+    - name: Build libraries on a cache miss
+      if: steps.libraries.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cmake --build build-dependency-work
+        cmake --install build-dependency-work
+
+    - name: Verify installed dependency libraries
+      shell: bash
+      run: |
+        args=(-DCMAKE_BUILD_TYPE=Release)
+        case "$RUNNER_OS" in
+          Windows) args+=(-G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl) ;;
+          macOS) args+=(-G Ninja -DCMAKE_OSX_ARCHITECTURES="$(uname -m)"
+                        -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+                        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON) ;;
+          Linux) args+=(-G Ninja -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13) ;;
+        esac
+        cmake -S CMake/DependencyBundle/Smoke -B build-dependency-smoke "${args[@]}" \
+          -DDOLPHIN_DEPENDENCY_PREFIX="$GITHUB_WORKSPACE/build-dependency-prefix"
+        cmake --build build-dependency-smoke
+        ctest --test-dir build-dependency-smoke --output-on-failure --no-tests=error
+
+    - name: Save prebuilt libraries
+      if: steps.libraries.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: build-dependency-prefix
+        key: ${{ steps.libraries.outputs.cache-primary-key }}
