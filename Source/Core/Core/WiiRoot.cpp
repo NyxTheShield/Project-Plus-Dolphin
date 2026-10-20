@@ -301,12 +301,14 @@ static void MoveToBackupIfExists(const std::string& path)
   }
 }
 
-void InitializeWiiRoot(bool use_temporary)
+void InitializeWiiRoot(bool use_temporary, const BootSessionData* boot_session_data)
 {
   ASSERT(!s_wii_root_initialized);
   s_initial_replay_names.clear();
 
-  const std::string replay_file = Config::Get(Config::MAIN_REPLAY_PLAYBACK_FILE);
+  const std::string replay_file = boot_session_data && !boot_session_data->GetBrawlReplayPath().empty() ?
+                                      boot_session_data->GetBrawlReplayPath() :
+                                      Config::Get(Config::MAIN_REPLAY_PLAYBACK_FILE);
   use_temporary = use_temporary || !replay_file.empty();
 
   if (use_temporary)
@@ -325,12 +327,21 @@ void InitializeWiiRoot(bool use_temporary)
 
     if (!replay_file.empty())
     {
+      NOTICE_LOG_FMT(IOS_FS, "Staging Brawl replay {} in the temporary NAND", replay_file);
       std::vector<u8> replay_bytes;
       File::IOFile source(replay_file, "rb");
-      if (source.IsOpen())
+      if (!source.IsOpen())
+      {
+        ERROR_LOG_FMT(IOS_FS, "Could not open Brawl replay {}", replay_file);
+      }
+      else
       {
         replay_bytes.resize(static_cast<size_t>(source.GetSize()));
-        if (source.ReadBytes(replay_bytes.data(), replay_bytes.size()))
+        if (!source.ReadBytes(replay_bytes.data(), replay_bytes.size()))
+        {
+          ERROR_LOG_FMT(IOS_FS, "Could not read Brawl replay {}", replay_file);
+        }
+        else
         {
           std::string replay_name = std::filesystem::path(replay_file).filename().string();
           const size_t native_name = replay_name.rfind("rp_");

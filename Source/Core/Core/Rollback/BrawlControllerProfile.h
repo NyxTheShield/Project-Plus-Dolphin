@@ -5,6 +5,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,6 +35,12 @@ struct BrawlControllerProfile
 std::optional<std::u16string> EncodeBrawlTag(std::string_view tag);
 std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_view tag,
                                                                   std::string_view controls_hex);
-bool ApplyBrawlControllerProfilesToSave(
-    std::vector<u8>* save, const std::vector<BrawlControllerProfile>& profiles);
+bool ApplyBrawlControllerProfilesToSave(std::vector<u8>* save,
+                                        const std::vector<BrawlControllerProfile>& profiles);
+
+// Stable metadata representation used by NPR files. Tags are stored as the exact UTF-16 code
+// units written to Brawl's save, so playback does not depend on a local profile database.
+std::vector<u8> SerializeBrawlControllerProfiles(std::span<const BrawlControllerProfile> profiles);
+std::optional<std::vector<BrawlControllerProfile>>
+DeserializeBrawlControllerProfiles(std::span<const u8> bytes);
 }  // namespace Rollback

@@ -26,6 +26,10 @@ constexpr std::size_t CONTROLS_LAYOUT_SIZE = 0x2D;
 constexpr std::size_t TAGS_END = 0xC5D8;
 constexpr std::size_t CHECKSUM_OFFSET = 0xC67C;
 constexpr std::size_t SAVE_SIZE = CHECKSUM_OFFSET + sizeof(u32);
+constexpr std::size_t SERIALIZED_TAG_CHARS = TAG_CHARS;
+constexpr std::size_t SERIALIZED_PROFILE_SIZE =
+    1 + SERIALIZED_TAG_CHARS * sizeof(u16) + BRAWL_CONTROLLER_PROFILE_SIZE;
+constexpr std::size_t MAX_SERIALIZED_PROFILES = 4;
 static_assert(TAGS_OFFSET + TAG_COUNT * TAG_SIZE == TAGS_END);
 
 void WriteBigEndianU32(std::vector<u8>* bytes, std::size_t offset, u32 value)
@@ -38,10 +42,8 @@ void WriteBigEndianU32(std::vector<u8>* bytes, std::size_t offset, u32 value)
 
 u32 ReadBigEndianU32(const std::vector<u8>& bytes, std::size_t offset)
 {
-  return static_cast<u32>(bytes[offset]) << 24 |
-         static_cast<u32>(bytes[offset + 1]) << 16 |
-         static_cast<u32>(bytes[offset + 2]) << 8 |
-         static_cast<u32>(bytes[offset + 3]);
+  return static_cast<u32>(bytes[offset]) << 24 | static_cast<u32>(bytes[offset + 1]) << 16 |
+         static_cast<u32>(bytes[offset + 2]) << 8 | static_cast<u32>(bytes[offset + 3]);
 }
 
 std::optional<char16_t> EncodeBrawlTagCharacter(char16_t character)
@@ -119,8 +121,7 @@ std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_vi
 {
   if (tag.empty() && controls_hex.empty())
     return BrawlControllerProfile{};
-  if (tag.empty() ||
-      controls_hex.size() != BRAWL_CONTROLLER_PROFILE_SIZE * 2)
+  if (tag.empty() || controls_hex.size() != BRAWL_CONTROLLER_PROFILE_SIZE * 2)
     return std::nullopt;
   const std::optional<std::u16string> encoded_tag = EncodeBrawlTag(tag);
   if (!encoded_tag)
@@ -128,9 +129,12 @@ std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_vi
   BrawlControllerProfile profile;
   profile.tag = *encoded_tag;
   const auto digit = [](char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
     return -1;
   };
   for (std::size_t i = 0; i < profile.controls.size(); ++i)
@@ -153,8 +157,8 @@ std::optional<BrawlControllerProfile> ParseBrawlControllerProfile(std::string_vi
   return profile;
 }
 
-bool ApplyBrawlControllerProfilesToSave(
-    std::vector<u8>* save, const std::vector<BrawlControllerProfile>& profiles)
+bool ApplyBrawlControllerProfilesToSave(std::vector<u8>* save,
+                                        const std::vector<BrawlControllerProfile>& profiles)
 {
   if (!save || save->size() != SAVE_SIZE)
     return false;
@@ -236,5 +240,70 @@ bool ApplyBrawlControllerProfilesToSave(
   const u32 checksum = Common::ComputeCRC32(save->data(), CHECKSUM_OFFSET);
   WriteBigEndianU32(save, CHECKSUM_OFFSET, checksum);
   return true;
+}
+
+std::vector<u8> SerializeBrawlControllerProfiles(std::span<const BrawlControllerProfile> profiles)
+{
+  if (profiles.size() > MAX_SERIALIZED_PROFILES)
+    return {};
+
+  std::vector<u8> bytes(1 + profiles.size() * SERIALIZED_PROFILE_SIZE, 0);
+  bytes[0] = static_cast<u8>(profiles.size());
+  std::size_t offset = 1;
+  for (const BrawlControllerProfile& profile : profiles)
+  {
+    if (profile.tag.size() > SERIALIZED_TAG_CHARS)
+      return {};
+
+    bytes[offset++] = static_cast<u8>(profile.tag.size());
+    for (std::size_t i = 0; i < SERIALIZED_TAG_CHARS; ++i)
+    {
+      const u16 character = i < profile.tag.size() ? profile.tag[i] : 0;
+      bytes[offset++] = static_cast<u8>(character >> 8);
+      bytes[offset++] = static_cast<u8>(character);
+    }
+    std::copy(profile.controls.begin(), profile.controls.end(), bytes.begin() + offset);
+    offset += profile.controls.size();
+  }
+  return bytes;
+}
+
+std::optional<std::vector<BrawlControllerProfile>>
+DeserializeBrawlControllerProfiles(std::span<const u8> bytes)
+{
+  if (bytes.empty() || bytes[0] > MAX_SERIALIZED_PROFILES ||
+      bytes.size() != 1 + static_cast<std::size_t>(bytes[0]) * SERIALIZED_PROFILE_SIZE)
+  {
+    return std::nullopt;
+  }
+
+  std::vector<BrawlControllerProfile> profiles(bytes[0]);
+  std::size_t offset = 1;
+  for (BrawlControllerProfile& profile : profiles)
+  {
+    const std::size_t tag_size = bytes[offset++];
+    if (tag_size > SERIALIZED_TAG_CHARS)
+      return std::nullopt;
+
+    profile.tag.reserve(tag_size);
+    for (std::size_t i = 0; i < SERIALIZED_TAG_CHARS; ++i)
+    {
+      const u16 character = static_cast<u16>(bytes[offset]) << 8 | bytes[offset + 1];
+      offset += sizeof(u16);
+      if (i < tag_size)
+      {
+        if (character == 0)
+          return std::nullopt;
+        profile.tag.push_back(static_cast<char16_t>(character));
+      }
+      else if (character != 0)
+      {
+        return std::nullopt;
+      }
+    }
+    std::copy_n(bytes.begin() + offset, profile.controls.size(), profile.controls.begin());
+    offset += profile.controls.size();
+  }
+  return profiles;
 }
 }  // namespace Rollback

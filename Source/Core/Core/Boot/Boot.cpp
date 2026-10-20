@@ -203,6 +203,22 @@ void BootSessionData::SetNetplayReplay(bool netplay_replay)
   m_netplay_replay = netplay_replay;
 }
 
+const std::string& BootSessionData::GetBrawlReplayPath() const
+{
+  return m_brawl_replay_path;
+}
+
+bool BootSessionData::IsProjectPlusReplay() const
+{
+  return m_project_plus_replay;
+}
+
+void BootSessionData::SetBrawlReplay(std::string replay_path, bool project_plus)
+{
+  m_brawl_replay_path = std::move(replay_path);
+  m_project_plus_replay = project_plus;
+}
+
 BootParameters::BootParameters(Parameters&& parameters_, BootSessionData boot_session_data_)
     : parameters(std::move(parameters_)), boot_session_data(std::move(boot_session_data_))
 {

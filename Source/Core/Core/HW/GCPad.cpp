@@ -3,6 +3,8 @@
 
 #include "Core/HW/GCPad.h"
 
+#include <atomic>
+
 #include "Common/Common.h"
 #include "Core/HW/GCPadEmu.h"
 #include "Core/Config/MainSettings.h"
@@ -16,6 +18,7 @@
 namespace Pad
 {
 static InputConfig s_config("GCPadNew", _trans("Pad"), "GCPad", "Pad");
+static std::atomic_bool s_replay_boot_input_enabled{false};
 InputConfig* GetConfig()
 {
   return &s_config;
@@ -64,6 +67,11 @@ GCPadStatus GetStatus(int pad_num)
   return status;
 }
 
+void SetReplayBootInputEnabled(bool enabled)
+{
+  s_replay_boot_input_enabled.store(enabled, std::memory_order_release);
+}
+
 void ApplyReplayBootInput(int pad_num, GCPadStatus* status)
 {
   if (!IsReplayBootInputActive(pad_num))
@@ -81,7 +89,7 @@ void ApplyReplayBootInput(int pad_num, GCPadStatus* status)
 
 bool IsReplayBootInputActive(int pad_num)
 {
-  if (pad_num != 0 || !Config::Get(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS))
+  if (pad_num != 0 || !s_replay_boot_input_enabled.load(std::memory_order_acquire))
     return false;
 
   auto& system = Core::System::GetInstance();

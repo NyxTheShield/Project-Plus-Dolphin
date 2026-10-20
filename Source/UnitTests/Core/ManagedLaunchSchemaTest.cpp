@@ -67,12 +67,42 @@ constexpr const char* VALID_TICKET = R"json({
   "gamecube_memory_card_path": "",
   "wii_nand_path": "fixtures/nand"
 })json";
+
+constexpr const char* VALID_REPLAY_TICKET = R"json({
+  "schema_version": 1,
+  "mode": "netplay_replay",
+  "match_id": "replay-fixture",
+  "game": "Project+",
+  "status_path": "fixture-status.json",
+  "brawl_iso_path": "fixtures/brawl.iso",
+  "project_plus_sd_path": "fixtures/sd.raw",
+  "sd_card_path": "",
+  "game_path": "",
+  "replay_path": "fixtures/replay.npr",
+  "aspect_ratio": 0,
+  "video_backend": "D3D",
+  "internal_resolution": 1,
+  "disable_project_plus_music": true,
+  "start_fullscreen": false,
+  "gamecube_memory_card_path": "",
+  "wii_nand_path": "",
+  "save_replays": false
+})json";
 }  // namespace
 
 TEST(ManagedLaunchSchema, AcceptsCanonicalNetplayTicket)
 {
   const ValidationResult result = ValidateTicket(Parse(VALID_TICKET));
   EXPECT_TRUE(result) << result.error;
+}
+
+TEST(ManagedLaunchSchema, ReplayRequiresExplicitMusicSetting)
+{
+  EXPECT_TRUE(ValidateTicket(Parse(VALID_REPLAY_TICKET)));
+
+  picojson::value missing_music = Parse(VALID_REPLAY_TICKET);
+  missing_music.get<picojson::object>().erase("disable_project_plus_music");
+  EXPECT_FALSE(ValidateTicket(missing_music));
 }
 
 TEST(ManagedLaunchSchema, NormalizedSummaryDoesNotExposeSecretsOrPaths)

@@ -23,7 +23,7 @@ enum class RestoreReason
   CrashRecovery,
 };
 
-void InitializeWiiRoot(bool use_temporary);
+void InitializeWiiRoot(bool use_temporary, const BootSessionData* boot_session_data = nullptr);
 void ShutdownWiiRoot();
 
 bool WiiRootIsInitialized();

@@ -26,6 +26,7 @@
 #include "Core/AchievementManager.h"
 #include "Core/ActionReplay.h"
 #include "Core/CheatCodes.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Config/SessionSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/ConfigManager.h"
@@ -112,10 +113,12 @@ static bool IsMusicCode(const Patch& patch)
 
 static bool IsEnabledMusicCode(const Patch& patch)
 {
-  if (NetPlay::IsNetPlayRunning() && !Rollback::IsGekkoSessionActive() && IsMusicCode(patch) &&
+  const bool is_project_plus_replay = Config::Get(Config::MAIN_REPLAY_PLAYBACK_PROJECT_PLUS);
+  if ((NetPlay::IsNetPlayRunning() || is_project_plus_replay) &&
+      !Rollback::IsGekkoSessionActive() && IsMusicCode(patch) &&
       Config::Get(Config::NETPLAY_BRAWL_MUSIC_OFF))
   {
-    return SConfig::GetInstance().bBrawlMusicOff;
+    return is_project_plus_replay || SConfig::GetInstance().bBrawlMusicOff;
   }
   else
   {
@@ -290,7 +293,8 @@ static void ApplyPatches(const Core::CPUThreadGuard& guard, const std::vector<Pa
 
 void ApplyNetplayMusicPatchAtRollbackBoundary(const Core::CPUThreadGuard& guard, bool enabled)
 {
-  if (!enabled || !Rollback::IsGekkoSessionActive() || !NetPlay::IsNetPlayRunning())
+  if (!enabled || !Rollback::IsGekkoSessionActive() ||
+      (!NetPlay::IsNetPlayRunning() && !Rollback::IsNetplayReplayPlaying()))
   {
     return;
   }

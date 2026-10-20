@@ -74,6 +74,33 @@ static bool IsHotkey(int id, bool held = false)
   return HotkeyManagerEmu::IsPressed(id, held);
 }
 
+static void HandleVolumeHotkeys(Core::System& system)
+{
+  auto show_volume = [] {
+    OSD::AddMessage(std::string("Volume: ") +
+                    (Config::Get(Config::MAIN_AUDIO_MUTED) ?
+                         "Muted" :
+                         fmt::format("{}%", Config::Get(Config::MAIN_AUDIO_VOLUME))));
+  };
+
+  auto& settings = Settings::Instance();
+  if (IsHotkey(HK_VOLUME_DOWN))
+  {
+    settings.DecreaseVolume(3);
+    show_volume();
+  }
+  if (IsHotkey(HK_VOLUME_UP))
+  {
+    settings.IncreaseVolume(3);
+    show_volume();
+  }
+  if (IsHotkey(HK_VOLUME_TOGGLE_MUTE))
+  {
+    AudioCommon::ToggleMuteVolume(system);
+    show_volume();
+  }
+}
+
 static void HandleFrameStepHotkeys()
 {
   constexpr int MAX_FRAME_STEP_DELAY = 60;
@@ -173,7 +200,7 @@ void HotkeyScheduler::Run()
       HotkeyManagerEmu::GetStatus(true);
 
       // Emulator hotkeys can alter state or pacing independently on each peer. During NetPlay,
-      // retain chat, fullscreen, and the explicit session-stop shortcut only.
+      // retain host-only controls plus the explicit session-stop shortcut.
       if (NetPlay::IsNetPlayRunning())
       {
         if (IsHotkey(HK_ACTIVATE_CHAT))
@@ -185,6 +212,7 @@ void HotkeyScheduler::Run()
           emit FullScreenHotkey();
           Common::SleepCurrentThread(100);
         }
+        HandleVolumeHotkeys(system);
         continue;
       }
 
@@ -260,8 +288,6 @@ void HotkeyScheduler::Run()
 
       if (IsHotkey(HK_CENTER_MOUSE, true))
         g_controller_interface.SetMouseCenteringRequested(true);
-
-      auto& settings = Settings::Instance();
 
       // Toggle Chat
       if (IsHotkey(HK_ACTIVATE_CHAT))
@@ -363,31 +389,7 @@ void HotkeyScheduler::Run()
       else if (IsHotkey(HK_NEXT_GAME_WIIMOTE_PROFILE_4))
         m_profile_cycler.NextWiimoteProfileForGame(3);
 
-      auto ShowVolume = [] {
-        OSD::AddMessage(std::string("Volume: ") +
-                        (Config::Get(Config::MAIN_AUDIO_MUTED) ?
-                             "Muted" :
-                             fmt::format("{}%", Config::Get(Config::MAIN_AUDIO_VOLUME))));
-      };
-
-      // Volume
-      if (IsHotkey(HK_VOLUME_DOWN))
-      {
-        settings.DecreaseVolume(3);
-        ShowVolume();
-      }
-
-      if (IsHotkey(HK_VOLUME_UP))
-      {
-        settings.IncreaseVolume(3);
-        ShowVolume();
-      }
-
-      if (IsHotkey(HK_VOLUME_TOGGLE_MUTE))
-      {
-        AudioCommon::ToggleMuteVolume(system);
-        ShowVolume();
-      }
+      HandleVolumeHotkeys(system);
 
       // Graphics
       const auto efb_scale = Config::Get(Config::GFX_EFB_SCALE);

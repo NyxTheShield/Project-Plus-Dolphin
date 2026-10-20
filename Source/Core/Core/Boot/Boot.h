@@ -99,6 +99,10 @@ public:
   bool IsNetplayReplay() const;
   void SetNetplayReplay(bool netplay_replay);
 
+  const std::string& GetBrawlReplayPath() const;
+  bool IsProjectPlusReplay() const;
+  void SetBrawlReplay(std::string replay_path, bool project_plus);
+
 private:
   std::optional<std::string> m_savestate_path;
   DeleteSavestateAfterBoot m_delete_savestate = DeleteSavestateAfterBoot::No;
@@ -111,6 +115,8 @@ private:
   std::unique_ptr<NetPlay::NetSettings> m_netplay_settings;
   std::vector<Rollback::BrawlControllerProfile> m_brawl_controller_profiles;
   bool m_netplay_replay = false;
+  std::string m_brawl_replay_path;
+  bool m_project_plus_replay = false;
 };
 
 struct BootParameters

@@ -413,13 +413,13 @@ void HotkeyManager::LoadDefaults(const ControllerInterface& ciface)
   set_key_expression(HK_PLAY_PAUSE, "F10");
   set_key_expression(HK_ACTIVATE_CHAT, "T");
 #ifdef _WIN32
-  set_key_expression(HK_VOLUME_DOWN, "DOWN");
-  set_key_expression(HK_VOLUME_UP, "UP");
+  set_key_expression(HK_VOLUME_DOWN, "NEXT");
+  set_key_expression(HK_VOLUME_UP, "PRIOR");
   set_key_expression(HK_STOP, "ESCAPE");
   set_key_expression(HK_FULLSCREEN, hotkey_string({"Alt", "RETURN"}));
 #else
-  set_key_expression(HK_VOLUME_DOWN, "Down");
-  set_key_expression(HK_VOLUME_UP, "Up");
+  set_key_expression(HK_VOLUME_DOWN, "PageDown");
+  set_key_expression(HK_VOLUME_UP, "PageUp");
   set_key_expression(HK_STOP, "Escape");
   set_key_expression(HK_FULLSCREEN, hotkey_string({"Alt", "Return"}));
 #endif

@@ -26,6 +26,7 @@ bool IsInitialized();
 InputConfig* GetConfig();
 
 GCPadStatus GetStatus(int pad_num);
+void SetReplayBootInputEnabled(bool enabled);
 bool IsReplayBootInputActive(int pad_num);
 void ApplyReplayBootInput(int pad_num, GCPadStatus* status);
 ControllerEmu::ControlGroup* GetGroup(int pad_num, PadGroup group);

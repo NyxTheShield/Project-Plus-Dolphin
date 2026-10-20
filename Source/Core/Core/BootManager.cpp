@@ -32,6 +32,7 @@
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/HW/EXI/EXI.h"
+#include "Core/HW/GCPad.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/Sram.h"
@@ -50,6 +51,8 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 {
   if (!boot)
     return false;
+
+  Pad::SetReplayBootInputEnabled(boot->boot_session_data.IsProjectPlusReplay());
 
   SConfig& StartUp = SConfig::GetInstance();
 
@@ -163,9 +166,11 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 
   ConfigLoaders::TransferSYSCONFControlToGuest();
 
-  if (system.IsWii())
+  // Project+ replay playback starts from a DOL, before the boot metadata identifies the title as
+  // Wii software. Initialize its temporary NAND here so IOS cannot later lose the replay payload.
+  if (system.IsWii() || !boot->boot_session_data.GetBrawlReplayPath().empty())
   {
-    Core::InitializeWiiRoot(Core::WantsDeterminism());
+    Core::InitializeWiiRoot(Core::WantsDeterminism(), &boot->boot_session_data);
 
     // Ensure any new settings are written to the SYSCONF
     if (!Core::WantsDeterminism())
@@ -203,6 +208,7 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 
 void RestoreConfig()
 {
+  Pad::SetReplayBootInputEnabled(false);
   Core::ShutdownWiiRoot();
 
   if (Core::WiiRootIsTemporary())

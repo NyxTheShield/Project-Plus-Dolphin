@@ -124,9 +124,14 @@ constexpr u32 BRAWL_FRAME_HOOK_ADDR = 0x80017504;
 constexpr u32 BRAWL_EXPECTED_OPCODE = 0x90170100;  // stw r0, 0x100(r23)
 constexpr std::array<u8, 4> RAM_DIAGNOSTIC_MAGIC{'R', 'M', 'D', 'G'};
 constexpr std::array<char, 8> NETPLAY_REPLAY_MAGIC{'B', 'B', 'N', 'P', 'R', '\0', '\r', '\n'};
-constexpr u32 NETPLAY_REPLAY_VERSION = 2;
+constexpr u32 NETPLAY_REPLAY_VERSION = 4;
+constexpr u32 NETPLAY_REPLAY_MIN_SUPPORTED_VERSION = 2;
 constexpr u8 NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES = 1;
 constexpr u8 NETPLAY_REPLAY_HAS_SYSCONF = 2;
+constexpr u8 NETPLAY_REPLAY_HAS_BRAWL_CONTROLLER_PROFILES = 4;
+constexpr u8 NETPLAY_REPLAY_KNOWN_FLAGS = NETPLAY_REPLAY_HAS_MEM1_PAGE_HASHES |
+                                          NETPLAY_REPLAY_HAS_SYSCONF |
+                                          NETPLAY_REPLAY_HAS_BRAWL_CONTROLLER_PROFILES;
 constexpr u8 NETPLAY_REPLAY_MEM1_PAGE_SHIFT = 12;
 constexpr std::size_t NETPLAY_REPLAY_MEM1_PAGE_SIZE = std::size_t{1}
                                                       << NETPLAY_REPLAY_MEM1_PAGE_SHIFT;
@@ -614,7 +619,8 @@ struct GekkoManager
   std::map<s32, std::vector<u8>> netplay_replay_frames;
   std::vector<std::pair<s32, std::vector<u8>>> netplay_replay_playback_frames;
   std::size_t netplay_replay_playback_index = 0;
-  std::vector<std::pair<s32, WirePad>> replay_local_inputs;
+  std::vector<std::pair<s32, WireInput>> replay_local_inputs;
+  std::vector<ControllerType> netplay_replay_controller_types;
   std::vector<std::pair<s32, std::vector<u8>>> replay_expected_inputs;
   bool replay_input_mismatch_reported = false;
   bool replay_input_environment_active = false;
@@ -623,6 +629,7 @@ struct GekkoManager
   bool netplay_replay_initial_digest_valid = false;
   std::vector<u64> netplay_replay_initial_mem1_page_hashes;
   std::vector<u8> netplay_replay_sysconf;
+  std::vector<BrawlControllerProfile> netplay_replay_brawl_controller_profiles;
 
   std::map<int, RamDigest> ram_digests;
   std::map<std::pair<int, int>, RamDigest> remote_ram_digests;
@@ -1912,8 +1919,7 @@ static WireInput EncodeWiimoteInput(const WiimoteEmu::SerializedWiimoteState& st
 {
   WireInput input{};
   input.controller_type = static_cast<u8>(ControllerType::Wiimote);
-  input.wiimote_length =
-      std::min<u8>(state.length, static_cast<u8>(input.wiimote_data.size()));
+  input.wiimote_length = std::min<u8>(state.length, static_cast<u8>(input.wiimote_data.size()));
   std::copy_n(state.data.begin(), input.wiimote_length, input.wiimote_data.begin());
   return input;
 }
@@ -1971,14 +1977,6 @@ bool BeginNetplayReplayRecording(const std::string& game_key)
   {
     return false;
   }
-  if (std::any_of(g_manager.controller_types.begin(),
-                  g_manager.controller_types.begin() + g_manager.players,
-                  [](ControllerType type) { return type == ControllerType::Wiimote; }))
-  {
-    WARN_LOG_FMT(CORE, "Netplay Replay: Wii Remote recording is not supported by NPR v2");
-    return false;
-  }
-
   g_manager.netplay_replay_frames.clear();
   g_manager.netplay_replay_players = g_manager.players;
   g_manager.netplay_replay_boundary = g_manager.frame_boundary;
@@ -1989,6 +1987,10 @@ bool BeginNetplayReplayRecording(const std::string& game_key)
   g_manager.netplay_replay_initial_digest_valid = false;
   g_manager.netplay_replay_initial_mem1_page_hashes.clear();
   g_manager.netplay_replay_sysconf.clear();
+  g_manager.netplay_replay_brawl_controller_profiles = g_manager.brawl_controller_profiles;
+  g_manager.netplay_replay_controller_types.assign(g_manager.controller_types.begin(),
+                                                    g_manager.controller_types.begin() +
+                                                        g_manager.players);
   g_manager.netplay_replay_recording = true;
   return true;
 }
@@ -2008,7 +2010,7 @@ bool SaveNetplayReplay(const std::string& path)
   header.magic = NETPLAY_REPLAY_MAGIC;
   header.players = static_cast<u32>(g_manager.netplay_replay_players);
   header.frame_boundary = static_cast<u32>(g_manager.netplay_replay_boundary);
-  header.bytes_per_frame = header.players * sizeof(WirePad);
+  header.bytes_per_frame = header.players * sizeof(WireInput);
   header.frame_count = g_manager.netplay_replay_frames.size();
   const std::string& game_id = g_manager.netplay_replay_game_id;
   std::memcpy(header.game_id.data(), game_id.data(),
@@ -2036,6 +2038,13 @@ bool SaveNetplayReplay(const std::string& path)
   }
   if (g_manager.netplay_replay_sysconf.size() == NETPLAY_REPLAY_SYSCONF_SIZE)
     header.reserved[0] |= NETPLAY_REPLAY_HAS_SYSCONF;
+  const std::vector<u8> controller_profiles =
+      SerializeBrawlControllerProfiles(g_manager.netplay_replay_brawl_controller_profiles);
+  if (!controller_profiles.empty() &&
+      g_manager.netplay_replay_brawl_controller_profiles.size() == header.players)
+  {
+    header.reserved[0] |= NETPLAY_REPLAY_HAS_BRAWL_CONTROLLER_PROFILES;
+  }
 
   if (!file.WriteArray(&header, 1))
     return false;
@@ -2058,6 +2067,15 @@ bool SaveNetplayReplay(const std::string& path)
       return false;
     }
   }
+  if ((header.reserved[0] & NETPLAY_REPLAY_HAS_BRAWL_CONTROLLER_PROFILES) != 0)
+  {
+    const u32 controller_profiles_size = static_cast<u32>(controller_profiles.size());
+    if (!file.WriteArray(&controller_profiles_size, 1) ||
+        !file.WriteBytes(controller_profiles.data(), controller_profiles.size()))
+    {
+      return false;
+    }
+  }
   for (const auto& [frame, inputs] : g_manager.netplay_replay_frames)
   {
     if (inputs.size() != header.bytes_per_frame || !file.WriteArray(&frame, 1) ||
@@ -2076,6 +2094,7 @@ struct ParsedNetplayReplay
   NetplayReplayHeader header;
   std::vector<u64> initial_mem1_page_hashes;
   std::vector<u8> sysconf;
+  std::vector<BrawlControllerProfile> brawl_controller_profiles;
   std::vector<std::pair<s32, std::vector<u8>>> frames;
 };
 
@@ -2084,10 +2103,14 @@ bool ReadNetplayReplay(const std::string& path, ParsedNetplayReplay* replay)
   File::IOFile file(path, "rb");
   NetplayReplayHeader& header = replay->header;
   if (!file || !file.ReadArray(&header, 1) || header.magic != NETPLAY_REPLAY_MAGIC ||
-      header.version != NETPLAY_REPLAY_VERSION || header.players < 1 ||
-      header.players > MAX_PORTS ||
+      header.version < NETPLAY_REPLAY_MIN_SUPPORTED_VERSION ||
+      header.version > NETPLAY_REPLAY_VERSION || header.players < 1 || header.players > MAX_PORTS ||
       header.frame_boundary > static_cast<u32>(FrameBoundary::VIPreSIPoll) ||
-      header.bytes_per_frame != header.players * sizeof(WirePad) || header.frame_count > 10'000'000)
+      header.bytes_per_frame !=
+          header.players * (header.version >= 4 ? sizeof(WireInput) : sizeof(WirePad)) ||
+      header.frame_count > 10'000'000 || (header.reserved[0] & ~NETPLAY_REPLAY_KNOWN_FLAGS) != 0 ||
+      (header.version < 3 &&
+       (header.reserved[0] & NETPLAY_REPLAY_HAS_BRAWL_CONTROLLER_PROFILES) != 0))
   {
     return false;
   }
@@ -2115,17 +2138,62 @@ bool ReadNetplayReplay(const std::string& path, ParsedNetplayReplay* replay)
       return false;
   }
 
+  if ((header.reserved[0] & NETPLAY_REPLAY_HAS_BRAWL_CONTROLLER_PROFILES) != 0)
+  {
+    u32 controller_profiles_size = 0;
+    constexpr u32 MAX_CONTROLLER_PROFILES_SIZE =
+        1 + MAX_PORTS * (1 + 5 * sizeof(u16) + BRAWL_CONTROLLER_PROFILE_SIZE);
+    if (!file.ReadArray(&controller_profiles_size, 1) || controller_profiles_size == 0 ||
+        controller_profiles_size > MAX_CONTROLLER_PROFILES_SIZE)
+    {
+      return false;
+    }
+    std::vector<u8> controller_profiles(controller_profiles_size);
+    if (!file.ReadBytes(controller_profiles.data(), controller_profiles.size()))
+      return false;
+    auto parsed_profiles = DeserializeBrawlControllerProfiles(controller_profiles);
+    if (!parsed_profiles || parsed_profiles->size() != header.players)
+      return false;
+    replay->brawl_controller_profiles = std::move(*parsed_profiles);
+  }
+
   replay->frames.reserve(static_cast<std::size_t>(header.frame_count));
   for (u64 i = 0; i < header.frame_count; ++i)
   {
     s32 frame = 0;
-    std::vector<u8> inputs(header.bytes_per_frame);
-    if (!file.ReadArray(&frame, 1) || !file.ReadBytes(inputs.data(), inputs.size()))
+    std::vector<u8> stored_inputs(header.bytes_per_frame);
+    if (!file.ReadArray(&frame, 1) || !file.ReadBytes(stored_inputs.data(), stored_inputs.size()))
       return false;
     if (!replay->frames.empty() && frame <= replay->frames.back().first)
       return false;
+
+    std::vector<u8> inputs(static_cast<std::size_t>(header.players) * sizeof(WireInput));
+    for (u32 port = 0; port < header.players; ++port)
+    {
+      WireInput wire{};
+      if (header.version >= 4)
+      {
+        std::memcpy(&wire, stored_inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput),
+                    sizeof(wire));
+        if (wire.controller_type > static_cast<u8>(ControllerType::Wiimote) ||
+            wire.wiimote_length > wire.wiimote_data.size())
+        {
+          return false;
+        }
+      }
+      else
+      {
+        WirePad pad{};
+        std::memcpy(&pad, stored_inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
+                    sizeof(pad));
+        wire = EncodeGameCubeInput(pad);
+      }
+      std::memcpy(inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput), &wire,
+                  sizeof(wire));
+    }
     replay->frames.emplace_back(frame, std::move(inputs));
   }
+  header.bytes_per_frame = header.players * sizeof(WireInput);
   return true;
 }
 
@@ -2162,6 +2230,20 @@ bool InstallNetplayReplay(ParsedNetplayReplay replay)
   g_manager.netplay_replay_initial_digest_valid = true;
   g_manager.netplay_replay_initial_mem1_page_hashes = std::move(replay.initial_mem1_page_hashes);
   g_manager.netplay_replay_sysconf = std::move(replay.sysconf);
+  g_manager.netplay_replay_brawl_controller_profiles = std::move(replay.brawl_controller_profiles);
+  g_manager.netplay_replay_controller_types.clear();
+  if (!g_manager.netplay_replay_playback_frames.empty())
+  {
+    const auto& inputs = g_manager.netplay_replay_playback_frames.front().second;
+    for (u32 port = 0; port < header.players; ++port)
+    {
+      WireInput wire{};
+      std::memcpy(&wire, inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput),
+                  sizeof(wire));
+      g_manager.netplay_replay_controller_types.push_back(
+          static_cast<ControllerType>(wire.controller_type));
+    }
+  }
   g_manager.latched_pads.fill(GCPadStatus{});
   g_manager.late_vi_guard = true;
   g_manager.vi_boundary_pending.store(false, std::memory_order_relaxed);
@@ -2198,6 +2280,12 @@ int GetNetplayReplayPlayerCount()
   return g_manager.netplay_replay_players;
 }
 
+std::vector<ControllerType> GetNetplayReplayControllerTypes()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_controller_types;
+}
+
 u64 GetNetplayReplayInitialRTC()
 {
   std::lock_guard lk(g_manager.mutex);
@@ -2208,6 +2296,12 @@ std::vector<u8> GetNetplayReplaySysconf()
 {
   std::lock_guard lk(g_manager.mutex);
   return g_manager.netplay_replay_sysconf;
+}
+
+std::vector<BrawlControllerProfile> GetNetplayReplayBrawlControllerProfiles()
+{
+  std::lock_guard lk(g_manager.mutex);
+  return g_manager.netplay_replay_brawl_controller_profiles;
 }
 
 bool IsNetplayReplayPlaying()
@@ -2235,6 +2329,8 @@ void StopNetplayReplay()
   g_manager.netplay_replay_initial_digest_valid = false;
   g_manager.netplay_replay_initial_mem1_page_hashes.clear();
   g_manager.netplay_replay_sysconf.clear();
+  g_manager.netplay_replay_brawl_controller_profiles.clear();
+  g_manager.netplay_replay_controller_types.clear();
   g_manager.netplay_replay_game_id.clear();
   g_manager.netplay_replay_game_key.clear();
 }
@@ -2341,7 +2437,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
     return false;
   }
 
-  std::vector<std::pair<s32, WirePad>> replay_local_inputs;
+  std::vector<std::pair<s32, WireInput>> replay_local_inputs;
   std::vector<std::pair<s32, std::vector<u8>>> replay_expected_inputs;
   u64 replay_input_initial_rtc = 0;
   std::vector<u8> replay_input_sysconf;
@@ -2356,7 +2452,7 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
       return false;
     }
 
-    const std::size_t input_offset = static_cast<std::size_t>(local_player - 1) * sizeof(WirePad);
+    const std::size_t input_offset = static_cast<std::size_t>(local_player - 1) * sizeof(WireInput);
     replay_local_inputs.reserve(replay.frames.size());
     replay_expected_inputs.reserve(replay.frames.size());
     replay_input_initial_rtc = replay.header.initial_rtc;
@@ -2365,27 +2461,16 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
     s32 logical_frame = 0;
     for (const auto& [frame, inputs] : replay.frames)
     {
-      if (frame != source_frame || inputs.size() < input_offset + sizeof(WirePad))
+      if (frame != source_frame || inputs.size() < input_offset + sizeof(WireInput))
       {
         ERROR_LOG_FMT(CORE, "GekkoNet: Local NPR input source is missing recorded frame {}",
                       source_frame);
         return false;
       }
-      WirePad wire{};
+      WireInput wire{};
       std::memcpy(&wire, inputs.data() + input_offset, sizeof(wire));
       replay_local_inputs.emplace_back(logical_frame, wire);
-      std::vector<u8> expanded_inputs(static_cast<std::size_t>(players) * sizeof(WireInput));
-      for (int port = 0; port < players; ++port)
-      {
-        WirePad recorded_pad{};
-        std::memcpy(&recorded_pad,
-                    inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
-                    sizeof(recorded_pad));
-        const WireInput expanded = EncodeGameCubeInput(recorded_pad);
-        std::memcpy(expanded_inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput),
-                    &expanded, sizeof(expanded));
-      }
-      replay_expected_inputs.emplace_back(logical_frame, std::move(expanded_inputs));
+      replay_expected_inputs.emplace_back(logical_frame, inputs);
       ++source_frame;
       ++logical_frame;
     }
@@ -2473,11 +2558,9 @@ static bool StartGekkoSessionImpl(const std::string& game_name, u32 session_id, 
   g_manager.local_player = local_player;
   g_manager.controller_types.fill(ControllerType::GameCube);
   g_manager.brawl_controller_profiles = options.brawl_controller_profiles;
-  if (!replay_playback)
-  {
+  if (!options.controller_types.empty())
     std::copy(options.controller_types.begin(), options.controller_types.end(),
               g_manager.controller_types.begin());
-  }
   // Capture the first local device before NetPlay's boot layer remaps local SI devices to their
   // in-game seats. This remains port 0 on every client regardless of its network player number.
   g_manager.local_uses_gc_adapter =
@@ -2801,10 +2884,12 @@ bool StartGekkoSession(const std::string& game_name, u32 session_id, int players
                                local_delay, prediction_window, options, false);
 }
 
-bool StartNetplayReplaySession()
+bool StartNetplayReplaySession(bool disable_project_plus_music)
 {
   int players = 0;
   FrameBoundary boundary = FrameBoundary::VIPreSIPoll;
+  std::vector<BrawlControllerProfile> controller_profiles;
+  std::vector<ControllerType> controller_types;
   {
     std::lock_guard lk(g_manager.mutex);
     if (!g_manager.netplay_replay_playing.load(std::memory_order_relaxed) ||
@@ -2814,11 +2899,16 @@ bool StartNetplayReplaySession()
     }
     players = g_manager.netplay_replay_players;
     boundary = g_manager.netplay_replay_boundary;
+    controller_profiles = g_manager.netplay_replay_brawl_controller_profiles;
+    controller_types = g_manager.netplay_replay_controller_types;
   }
 
   GekkoSessionOptions options{};
   options.frame_boundary = boundary;
   options.late_vi_guard = true;
+  options.disable_project_plus_music = disable_project_plus_music;
+  options.brawl_controller_profiles = std::move(controller_profiles);
+  options.controller_types = std::move(controller_types);
   return StartGekkoSessionImpl("Netplay Replay", 0, players, 1, {}, 0, 10, options, true);
 }
 
@@ -2980,7 +3070,7 @@ static bool SubmitLocalInput()
                     recorded_frame);
       return false;
     }
-    wire = EncodeGameCubeInput(recorded_wire);
+    wire = recorded_wire;
   }
   else if (g_manager.controller_types[g_manager.local_player - 1] == ControllerType::Wiimote)
   {
@@ -2995,8 +3085,7 @@ static bool SubmitLocalInput()
     constexpr int LOCAL_PAD = 0;
     GCPadStatus local_status =
         g_manager.local_uses_gc_adapter ? GCAdapter::Input(LOCAL_PAD) : Pad::GetStatus(LOCAL_PAD);
-    const bool legacy_input_spam_active =
-        g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
+    const bool legacy_input_spam_active = g_manager.local_input_frame >= P2_INPUT_SPAM_START_FRAME;
     if (g_manager.debug_p2_cstick && legacy_input_spam_active)
     {
       ApplyDebugCStickPattern(&local_status,
@@ -3011,8 +3100,8 @@ static bool SubmitLocalInput()
     wire = EncodeGameCubeInput(EncodePad(local_status));
   }
 
-  const bool sampled_start =
-      wire.controller_type == static_cast<u8>(ControllerType::GameCube) && WirePadHasStart(wire.pad);
+  const bool sampled_start = wire.controller_type == static_cast<u8>(ControllerType::GameCube) &&
+                             WirePadHasStart(wire.pad);
   if (sampled_start != g_manager.last_sampled_start)
   {
     if (g_manager.compare_confirmed_ram)
@@ -3199,11 +3288,13 @@ static void RecordNetplayReplayFrame(Core::System& system, s32 frame)
   }
 
   std::vector<u8> inputs(static_cast<std::size_t>(g_manager.netplay_replay_players) *
-                         sizeof(WirePad));
+                         sizeof(WireInput));
   for (int port = 0; port < g_manager.netplay_replay_players; ++port)
   {
-    const WirePad wire = EncodePad(g_manager.latched_pads[port]);
-    std::memcpy(inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad), &wire,
+    const WireInput wire = g_manager.controller_types[port] == ControllerType::Wiimote ?
+                               EncodeWiimoteInput(g_manager.latched_wiimotes[port]) :
+                               EncodeGameCubeInput(EncodePad(g_manager.latched_pads[port]));
+    std::memcpy(inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput), &wire,
                 sizeof(wire));
   }
 
@@ -3612,8 +3703,8 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.native_stress ? g_manager.stress_interval : STRESS_INPUT_PERIOD_FRAMES,
       g_manager.native_stress ? g_manager.stress_rollback_frames :
       g_manager.stress_test   ? s_stress_packet_delay_frames -
-                                  static_cast<u64>(g_manager.configured_local_delay) - 1 :
-                              0,
+                                    static_cast<u64>(g_manager.configured_local_delay) - 1 :
+                                0,
       g_manager.tracked_bitmap_clear, g_manager.full_scan_benchmark);
 
   NOTICE_LOG_FMT(
@@ -3642,40 +3733,40 @@ static void MaybeLogPerformance(Core::System& system)
       g_manager.perf_real_gaps_over_25_ms, g_manager.perf_real_gaps_over_33_ms,
       g_manager.perf_real_gaps_over_50_ms, gekko_frames_ahead(g_manager.session));
 
-  NOTICE_LOG_FMT(
-      CORE,
-      "GekkoNet resim transitions: enter SyncGPU {:.3f}/{:.3f} ms ({}); exit SyncGPU "
-      "{:.3f}/{:.3f} ms ({})",
-      average(g_manager.perf_resim_enter_sync_ms, g_manager.perf_resim_enter_sync_count),
-      g_manager.perf_resim_enter_sync_max_ms, g_manager.perf_resim_enter_sync_count,
-      average(g_manager.perf_resim_exit_sync_ms, g_manager.perf_resim_exit_sync_count),
-      g_manager.perf_resim_exit_sync_max_ms, g_manager.perf_resim_exit_sync_count);
+  NOTICE_LOG_FMT(CORE,
+                 "GekkoNet resim transitions: enter SyncGPU {:.3f}/{:.3f} ms ({}); exit SyncGPU "
+                 "{:.3f}/{:.3f} ms ({})",
+                 average(g_manager.perf_resim_enter_sync_ms, g_manager.perf_resim_enter_sync_count),
+                 g_manager.perf_resim_enter_sync_max_ms, g_manager.perf_resim_enter_sync_count,
+                 average(g_manager.perf_resim_exit_sync_ms, g_manager.perf_resim_exit_sync_count),
+                 g_manager.perf_resim_exit_sync_max_ms, g_manager.perf_resim_exit_sync_count);
 
   if (IsDetailedResimProfilingEnabled())
   {
     const auto event_ms = [&](ResimEventCategory category) {
-      return average(static_cast<double>(g_manager.perf_replay_events.nanoseconds[static_cast<
-                         std::size_t>(category)]) /
-                         1'000'000.0,
-                     g_manager.perf_replay_exec_count);
+      return average(
+          static_cast<double>(
+              g_manager.perf_replay_events.nanoseconds[static_cast<std::size_t>(category)]) /
+              1'000'000.0,
+          g_manager.perf_replay_exec_count);
     };
-    const u64 categorized_event_ns = std::accumulate(
-        g_manager.perf_replay_events.nanoseconds.begin(),
-        g_manager.perf_replay_events.nanoseconds.end(), u64{0});
+    const u64 categorized_event_ns =
+        std::accumulate(g_manager.perf_replay_events.nanoseconds.begin(),
+                        g_manager.perf_replay_events.nanoseconds.end(), u64{0});
     const double unaccounted_ms =
         average(std::max(0.0, g_manager.perf_replay_exec_ms -
                                   static_cast<double>(categorized_event_ns) / 1'000'000.0),
                 g_manager.perf_replay_exec_count);
-    NOTICE_LOG_FMT(
-        CORE,
-        "GekkoNet replay subsystem times: cpu_jit {:.3f}, fifo {:.3f}, vi {:.3f}, "
-        "scheduler {:.3f}, boundary_setup {:.3f}, dsp_audio {:.3f}, ios_ipc {:.3f}, "
-        "devices {:.3f}, events_other {:.3f}, unaccounted {:.3f} ms/frame",
-        event_ms(ResimEventCategory::GuestCpu), event_ms(ResimEventCategory::Fifo),
-        event_ms(ResimEventCategory::VideoInterface), event_ms(ResimEventCategory::CoreTiming),
-        event_ms(ResimEventCategory::FrameSetup), event_ms(ResimEventCategory::DspAudio),
-        event_ms(ResimEventCategory::IosIpc), event_ms(ResimEventCategory::Devices),
-        event_ms(ResimEventCategory::Other), unaccounted_ms);
+    NOTICE_LOG_FMT(CORE,
+                   "GekkoNet replay subsystem times: cpu_jit {:.3f}, fifo {:.3f}, vi {:.3f}, "
+                   "scheduler {:.3f}, boundary_setup {:.3f}, dsp_audio {:.3f}, ios_ipc {:.3f}, "
+                   "devices {:.3f}, events_other {:.3f}, unaccounted {:.3f} ms/frame",
+                   event_ms(ResimEventCategory::GuestCpu), event_ms(ResimEventCategory::Fifo),
+                   event_ms(ResimEventCategory::VideoInterface),
+                   event_ms(ResimEventCategory::CoreTiming),
+                   event_ms(ResimEventCategory::FrameSetup), event_ms(ResimEventCategory::DspAudio),
+                   event_ms(ResimEventCategory::IosIpc), event_ms(ResimEventCategory::Devices),
+                   event_ms(ResimEventCategory::Other), unaccounted_ms);
 
     const auto region_calls = [&](bool write, ResimJitMemoryRegion region) {
       const auto& calls = write ? jit_memory.write_region_calls : jit_memory.read_region_calls;
@@ -3694,16 +3785,13 @@ static void MaybeLogPerformance(Core::System& system)
         "GekkoNet replay slow-memory regions: writes calls/ms RAM {:.1f}/{:.3f}, gather "
         "{:.1f}/{:.3f}, MMIO {:.1f}/{:.3f}, other {:.1f}/{:.3f}; reads calls/ms RAM "
         "{:.1f}/{:.3f}, gather {:.1f}/{:.3f}, MMIO {:.1f}/{:.3f}, other {:.1f}/{:.3f} per frame",
-        region_calls(true, ResimJitMemoryRegion::Ram),
-        region_ms(true, ResimJitMemoryRegion::Ram),
+        region_calls(true, ResimJitMemoryRegion::Ram), region_ms(true, ResimJitMemoryRegion::Ram),
         region_calls(true, ResimJitMemoryRegion::GatherPipe),
         region_ms(true, ResimJitMemoryRegion::GatherPipe),
-        region_calls(true, ResimJitMemoryRegion::Mmio),
-        region_ms(true, ResimJitMemoryRegion::Mmio),
+        region_calls(true, ResimJitMemoryRegion::Mmio), region_ms(true, ResimJitMemoryRegion::Mmio),
         region_calls(true, ResimJitMemoryRegion::Other),
         region_ms(true, ResimJitMemoryRegion::Other),
-        region_calls(false, ResimJitMemoryRegion::Ram),
-        region_ms(false, ResimJitMemoryRegion::Ram),
+        region_calls(false, ResimJitMemoryRegion::Ram), region_ms(false, ResimJitMemoryRegion::Ram),
         region_calls(false, ResimJitMemoryRegion::GatherPipe),
         region_ms(false, ResimJitMemoryRegion::GatherPipe),
         region_calls(false, ResimJitMemoryRegion::Mmio),
@@ -4701,10 +4789,9 @@ static bool SubmitNetplayReplayInputs()
   }
   for (int port = 0; port < g_manager.netplay_replay_players; ++port)
   {
-    WirePad recorded_pad{};
-    std::memcpy(&recorded_pad, inputs.data() + static_cast<std::size_t>(port) * sizeof(WirePad),
-                sizeof(recorded_pad));
-    WireInput wire = EncodeGameCubeInput(recorded_pad);
+    WireInput wire{};
+    std::memcpy(&wire, inputs.data() + static_cast<std::size_t>(port) * sizeof(WireInput),
+                sizeof(wire));
     const int handle = g_manager.player_handles[port];
     if (handle < 0)
     {

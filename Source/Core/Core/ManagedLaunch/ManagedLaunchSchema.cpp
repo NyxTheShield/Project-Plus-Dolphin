@@ -257,6 +257,7 @@ ValidationResult ValidateTicket(const picojson::value& root)
         !HasString(ticket, "replay_path") || !HasInteger(ticket, "aspect_ratio", 0, 5) ||
         !HasString(ticket, "video_backend") ||
         !HasInteger(ticket, "internal_resolution", 1, 12) ||
+        !HasBool(ticket, "disable_project_plus_music") ||
         !HasBool(ticket, "start_fullscreen") ||
         !HasString(ticket, "gamecube_memory_card_path", true) ||
         !HasString(ticket, "wii_nand_path", true) || !HasBool(ticket, "save_replays"))

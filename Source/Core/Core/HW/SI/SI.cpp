@@ -203,6 +203,9 @@ void SerialInterfaceManager::RunSIBuffer(u64 user_data, s64 cycles_late)
 
 void SerialInterfaceManager::DoState(PointerWrap& p)
 {
+  const std::vector<Rollback::ControllerType> replay_controller_types =
+      Rollback::IsNetplayReplayPlaying() ? Rollback::GetNetplayReplayControllerTypes() :
+                                           std::vector<Rollback::ControllerType>{};
   for (int i = 0; i < MAX_SI_CHANNELS; i++)
   {
     p.Do(m_channel[i].in_hi.hex);
@@ -214,12 +217,13 @@ void SerialInterfaceManager::DoState(PointerWrap& p)
     SIDevices type = device->GetDeviceType();
     p.Do(type);
 
-    // A Netplay Replay supplies one virtual GC controller per recorded player. Do not let the
-    // companion savestate's host-side controller configuration remove a recorded player's port.
-    if (p.IsReadMode() && Rollback::IsNetplayReplayPlaying() &&
-        i < Rollback::GetNetplayReplayPlayerCount())
+    // A Netplay Replay restores each recorded controller kind. Do not let the companion
+    // savestate's host-side controller configuration change the recorded roster.
+    if (p.IsReadMode() && i < static_cast<int>(replay_controller_types.size()))
     {
-      type = SIDEVICE_GC_CONTROLLER;
+      type = replay_controller_types[i] == Rollback::ControllerType::GameCube ?
+                 SIDEVICE_GC_CONTROLLER :
+                 SIDEVICE_NONE;
     }
 
     if (type != device->GetDeviceType())
