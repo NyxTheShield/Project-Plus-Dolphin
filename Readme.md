@@ -93,6 +93,78 @@ Make sure to pull submodules before building:
 git submodule update --init --recursive
 ```
 
+### CI dependency builds
+
+The Windows, macOS, and Linux AppImage jobs build this repository's checked-out
+revision. They restore prebuilt Release libraries for fmt, glslang, libusb, SDL3,
+SFML's networking/system subset, and mbedTLS. The first run builds these libraries
+from the pinned `Externals` sources. Later runs reuse the installed headers,
+static libraries, and CMake package files. Application-only source changes do not
+invalidate the dependency bundle.
+
+The cache key includes the dependency sources and build recipe, the configured
+compiler and SDK, the runner image version, and architecture. Each restored bundle
+is checked by compiling, linking, and running a small consumer before Dolphin
+uses it. Successful bundles are saved immediately, so a later application build
+failure does not discard them. GitHub cache eviction or a toolchain/dependency
+change can still require rebuilding. The manually dispatched **Prepare Native
+Dependencies** workflow can populate the caches for all three platforms.
+
+macOS produces two separate native builds: `x86_64` on `macos-15-intel` and
+`arm64` on `macos-15` for Apple Silicon (M-series). Both use standard
+[GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The dependency workflow covers both runners, and their library, Qt, MoltenVK,
+and compiler caches are separate. The Intel Qt/MoltenVK/compiler cache keys are
+unchanged. Download the artifact containing `macOS-arm64` for an M-series Mac
+or `macOS-x86_64` for an Intel Mac; these are not universal app bundles.
+
+Both macOS jobs verify the architecture of Qt, MoltenVK, and every bundled
+Mach-O binary before uploading. The app is ad-hoc signed using Dolphin's existing
+JIT entitlements, then its signature and `--version` startup are checked on the
+native runner. No Apple signing certificate is required, but these builds are
+not notarized. These checks do not test gameplay or cross-architecture rollback
+determinism; those still require runtime testing.
+
+Qt is prebuilt on all three platforms: Windows uses its pinned Qt submodule,
+while macOS and Linux download and cache Qt binaries. macOS also caches the
+Dolphin-patched MoltenVK library separately. Other bundled dependencies continue
+to use the normal build. All three native jobs additionally cache compiled
+objects: Windows uses Ninja/MSVC with sccache, and Linux/macOS use ccache. Each
+has a 2 GB local compiler cache saved through Actions; Windows keeps the existing
+`/Z7` debug information and Release optimization flags. This does not change the
+compiler or disable release optimizations.
+
+Compiler-cache keys are platform/architecture-specific, with a snapshot per
+commit and retry. An unchanged rerun can restore an exact snapshot; a new commit
+restores the latest compatible-platform snapshot and lets the compiler cache
+validate each object. Exact hits are not uploaded again. Partial caches from a
+failed compilation are saved, but a failure before compilation does not save an
+empty compiler cache. Cache statistics appear in both the logs and job summary.
+
+To measure improvements, compare a cold build, an unchanged rerun, and a small
+C++-only change on the same runner/toolchain. Check cache hits as well as total
+job time: dependency setup, linking and packaging are not compiler-cache hits.
+The manual dependency workflow must use the same runner and MSVC environment as
+the application job. Run it on the default branch to seed caches for PRs; a cache
+created on an unrelated feature branch is not shared with every other branch.
+
+Local workflow checks: `actionlint .github/workflows/ci.yml .github/workflows/dependencies.yml`
+and `python3 .github/workflows/scripts/test_ci.py` (requires PyYAML; install `pwsh`
+to also check Windows script syntax, argument quoting, and failure propagation).
+With Clang and `lipo` or `llvm-lipo` installed, the tests also compile small
+Mach-O fixtures and execute the Qt architecture check with the real tool.
+These checks do not replace Windows/macOS hosted builds and artifact smoke tests.
+
+Flatpak downloads the prebuilt SDK selected by its manifest and reuses its own
+builder cache. It no longer installs an unrelated host toolchain or the old 5.15
+SDK. Its manifest is pinned to this repository and the workflow commit.
+
+To use an installed bundle manually, pass
+`-DDOLPHIN_DEPENDENCY_PREFIX=/path/to/bundle -DCMAKE_BUILD_TYPE=Release` to CMake.
+For Visual Studio, also pass `-DCMAKE_CONFIGURATION_TYPES=Release`. The bundle
+must match the target architecture and compiler version. Leaving the prefix
+unset preserves the ordinary source/system-library build.
+
 ### macOS Build Steps:
 
 A binary supporting a single architecture can be built using the following steps: 

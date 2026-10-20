@@ -2,25 +2,36 @@ name: Project+ Dolphin Builder
 
 on:
   push:
-    tags:
-      - 'v*'  # Triggers on tags starting with 'v' (e.g., v1.0)
+    branches:
+      - master
   pull_request:
     branches:
       - master
+  workflow_dispatch:
 
-jobs: 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
   build_windows_x86_64:
     name: Windows Build
-    runs-on: windows-latest
+    runs-on: windows-2025
+    env:
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache-windows
+      SCCACHE_CACHE_SIZE: 2G
+      NINJA_STATUS: '[%f/%t | %r running | %es] '
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        repository: Project-Plus-Development-Team/Project-Plus-Dolphin
         fetch-depth: 0
-        fetch-tags: true
+        persist-credentials: false
     - name: Setup Submodules
-      run: git config --global --add safe.directory . && git submodule update --init --recursive
+      run: git submodule update --init --recursive --depth 1 --jobs $env:NUMBER_OF_PROCESSORS
     - name: Set Version
       shell: pwsh
       run: |
@@ -31,69 +42,143 @@ jobs:
           $version = [regex]::Replace($describe, '(-0)?-[^-]+((-dirty)?)$', '$2')
         }
         "DOLPHINVER=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    - name: Setup MSVC for Ninja
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      with:
+        arch: x64
+    - name: Install compiler cache
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      with:
+        version: v0.16.0
+    - name: Restore compiled objects
+      id: cache-sccache
+      uses: actions/cache/restore@v4
+      with:
+        path: .sccache-windows
+        key: windows-2025-x64-sccache-v1-${{ github.sha }}-${{ github.run_attempt }}
+        restore-keys: windows-2025-x64-sccache-v1-
+    - name: Prepare prebuilt dependency libraries
+      id: dependencies
+      uses: ./.github/actions/dependencies
     - name: Configure CMake
-      run: cmake -S . -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=CMake/DolphinToolchain.cmake" -DARCH=x86_64
+      env:
+        DEPENDENCY_PREFIX: ${{ steps.dependencies.outputs.prefix }}
+      run: >-
+        cmake -S . -B build -G Ninja
+        -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+        -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        "-DCMAKE_TOOLCHAIN_FILE=CMake/DolphinToolchain.cmake" -DARCH=x86_64
+        "-DDOLPHIN_DEPENDENCY_PREFIX=$env:DEPENDENCY_PREFIX"
+        -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF
     - name: Build
-      run: cmake --build build --config Release --parallel
+      id: build
+      run: |
+        sccache --zero-stats
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cmake --build build
+    - name: Show compiler cache statistics
+      if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+      run: |
+        $stats = sccache --show-stats
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $stats
+        @('### Windows compiler cache', '', '```text') + $stats + '```' |
+          Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+    - name: Save compiled objects
+      if: ${{ !cancelled() && steps.cache-sccache.outcome == 'success' && steps.cache-sccache.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+      uses: actions/cache/save@v4
+      with:
+        path: .sccache-windows
+        key: ${{ steps.cache-sccache.outputs.cache-primary-key }}
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Project-Plus-Dolphin-Windows-${{ env.DOLPHINVER }}
         path: Binary/x64/
-        
+        if-no-files-found: error
+
   build_macos:
-    name: macOS Build
-    runs-on: macos-15-intel
+    name: macOS Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     env:
+      MACOS_ARCH: ${{ matrix.arch }}
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_COMPRESS: true
-      CCACHE_COMPRESSLEVEL: 9
-      CCACHE_MAXSIZE: 200M
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
+      NINJA_STATUS: '[%f/%t | %r running | %es] '
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: Project-Plus-Development-Team/Project-Plus-Dolphin
-          ref: master
-          submodules: recursive
           fetch-depth: 0
-          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify native runner
+        run: |
+          if [ "$(uname -m)" != "$MACOS_ARCH" ]; then
+            echo "::error::Expected a native $MACOS_ARCH runner, got $(uname -m)"
+            exit 1
+          fi
+
+      - name: Checkout Unix submodules
+        run: |
+          git -c submodule.Externals/Qt.update=none \
+              -c submodule.Externals/FFmpeg-bin.update=none \
+              -c submodule.Externals/wil.update=none \
+              submodule update --init --recursive --depth 1 --jobs "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Install Packages
         env:
           HOMEBREW_NO_INSTALL_CLEANUP: 1
           HOMEBREW_NO_ANALYTICS: 1
         run: |
-          brew install gnu-sed
-          if ! brew install ccache ninja libspng; then
+          if ! brew install ccache ninja; then
             brew update
-            brew install ccache ninja libspng
+            brew install ccache ninja
+          fi
+          if brew list --versions fmt >/dev/null; then
+            brew unlink fmt
           fi
 
-      - name: Cache Dependencies
-        id: cache-deps
-        uses: actions/cache@v4
-        with:
-          path: ~/deps
-          key: macOS deps ${{ hashFiles('.github/workflows/scripts/macos/build-dependencies.sh') }}
+      - name: Prepare prebuilt dependency libraries
+        id: dependencies
+        uses: ./.github/actions/dependencies
 
-      - name: Build Dependencies
-        if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: .github/workflows/scripts/macos/build-dependencies.sh
+      - name: Install cached Qt binaries
+        uses: jurplel/install-qt-action@bcb88e3bed2e992f5f9e24c0f9e364a231d278eb # v4.4.0
+        with:
+          version: '6.6.3'
+          host: mac
+          target: desktop
+          arch: clang_64
+          archives: qtbase qtsvg qttools qttranslations
+          cache: 'true'
+          cache-key-prefix: ${{ matrix.runner }}-qt-v1
+
+      - name: Verify Qt architecture
+        run: lipo "$QT_ROOT_DIR/lib/QtCore.framework/QtCore" -verify_arch "$MACOS_ARCH"
 
       - name: Cache MoltenVK
         id: cache-moltenvk
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/moltenvk
-          key: macOS MoltenVK ${{ hashFiles('Externals/MoltenVK') }}
+          key: ${{ matrix.runner }}-moltenvk-v2-${{ hashFiles('Externals/MoltenVK/**') }}
 
       - name: Build MoltenVK
         if: steps.cache-moltenvk.outputs.cache-hit != 'true'
         run: |
-          MVK_VER="$(sed -nr 's/^.*set\(MOLTENVK_VERSION "([^"]+)".*$/\1/p' Externals/MoltenVK/CMakeLists.txt)"
+          MVK_VER="$(sed -nE 's/^.*set\(MOLTENVK_VERSION "([^"]+)".*$/\1/p' Externals/MoltenVK/CMakeLists.txt)"
           if [ -z "$MVK_VER" ]; then
             echo "::error::Failed to parse MoltenVK version from CMakeLists"
             exit 1
@@ -110,71 +195,78 @@ jobs:
           popd
           rm -rf mvk-build
 
-      # -- SETUP CCACHE - https://cristianadam.eu/20200113/speeding-up-c-plus-plus-github-actions-using-ccache/
-      - name: Prepare ccache timestamp
-        id: ccache_cache_timestamp
-        run: echo "timestamp=$(date -u "+%Y-%m-%d-%H;%M;%S")" >> $GITHUB_OUTPUT
+      - name: Verify MoltenVK architecture
+        run: lipo "$HOME/moltenvk/lib/libMoltenVK.dylib" -verify_arch "$MACOS_ARCH"
 
-      - name: Cache ccache cache
-        uses: actions/cache@v4
+      - name: Save MoltenVK
+        if: steps.cache-moltenvk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/moltenvk
+          key: ${{ steps.cache-moltenvk.outputs.cache-primary-key }}
+
+      - name: Restore compiled objects
+        id: cache-ccache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: macOS ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-          restore-keys: macOS ccache
+          key: ${{ matrix.runner }}-ccache-v2-${{ github.sha }}-${{ github.run_attempt }}
+          restore-keys: ${{ matrix.runner }}-ccache-v2-
 
       - name: Generate CMake Files
+        env:
+          DEPENDENCY_PREFIX: ${{ steps.dependencies.outputs.prefix }}
         run: |
-          COMMON_ARGS=(
-            -DCMAKE_PREFIX_PATH="$HOME/deps;$HOME/moltenvk"
-            -DCMAKE_BUILD_TYPE=Release
-            -DUSE_BUNDLED_MOLTENVK=OFF
-            -DMACOS_CODE_SIGNING=OFF
-            -DPOSTPROCESS_BUNDLE=ON
-            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-            -DUSE_SYSTEM_LIBS=OFF
-            -DUSE_SYSTEM_BZIP2=ON
-            -DUSE_SYSTEM_CURL=ON
-            -DUSE_SYSTEM_ICONV=ON
-            -DUSE_SYSTEM_SDL3=OFF # we want to use SDL from Externals, anyways
-            -GNinja
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR;$HOME/moltenvk" \
+            -DDOLPHIN_DEPENDENCY_PREFIX="$DEPENDENCY_PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="$MACOS_ARCH" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DUSE_BUNDLED_MOLTENVK=OFF \
+            -DMACOS_CODE_SIGNING=ON -DMACOS_CODE_SIGNING_IDENTITY=- \
+            -DPOSTPROCESS_BUNDLE=ON \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DUSE_SYSTEM_LIBS=OFF \
+            -DUSE_SYSTEM_BZIP2=ON -DUSE_SYSTEM_CURL=ON -DUSE_SYSTEM_ICONV=ON \
+            -DENABLE_TESTS=OFF -DENABLE_NOGUI=OFF -DENABLE_CLI_TOOL=OFF
+      - name: Build Dolphin (${{ matrix.arch }})
+        id: build
+        run: |
+          ccache --zero-stats
+          cmake --build build --target project-plus-dolphin
+
+      - name: Show compiler cache statistics
+        if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        run: |
+          stats=$(ccache --show-stats)
+          printf '### macOS compiler cache\n```text\n%s\n```\n' "$stats" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save compiled objects
+        if: ${{ !cancelled() && steps.cache-ccache.outcome == 'success' && steps.cache-ccache.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ${{ steps.cache-ccache.outputs.cache-primary-key }}
+
+      - name: Verify macOS bundle
+        shell: bash
+        run: |
+          app=build/Binaries/DolphinQt.app
+          test "$(lipo -archs "$app/Contents/MacOS/DolphinQt")" = "$MACOS_ARCH"
+          while IFS= read -r -d '' binary; do
+            case "$(file -b "$binary")" in
+              *Mach-O*) lipo "$binary" -verify_arch "$MACOS_ARCH" ;;
+            esac
+          done < <(find "$app" -type f -print0)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          (
+            unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
+            "$app/Contents/MacOS/DolphinQt" --version
           )
-
-          cmake -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-                -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-                -DCMAKE_SYSTEM_NAME=Darwin \
-                -DCMAKE_OSX_DEPLOYMENT_TARGET=11.00 \
-                "${COMMON_ARGS[@]}" \
-                -B build .
-          cmake -DCMAKE_OSX_ARCHITECTURES=arm64 \
-                -DCMAKE_SYSTEM_PROCESSOR=arm64 \
-                -DCMAKE_SYSTEM_NAME=Darwin \
-                -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-                "${COMMON_ARGS[@]}" \
-                -B build-arm .
-
-      - name: Purge .git for space reasons
-        run: rm -rf /home/runner/work/Project-Plus-Dolphin-src/.git
-      - name: Build Dolphin (x86_64)
-        working-directory: build
-        run: |
-          ccache -p
-          ccache -s
-          ccache -z
-          ninja project-plus-dolphin
-          ccache -s
-
-      #- name: Build Dolphin (arm64)
-      #  working-directory: build-arm
-      #  run: |
-      #    ccache -p
-      #    ccache -s
-      #    ccache -z
-      #    ninja project-plus-dolphin
-      #    ccache -s 
 
       - name: Prepare Build Artifacts
         id: create-artifact
@@ -184,8 +276,6 @@ jobs:
           PR_NUM: ${{ github.event.pull_request.number }}
           PR_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          lipo -create build/Binaries/DolphinQt.app/Contents/MacOS/DolphinQt -o dolphin # build-arm/Binaries/DolphinQt.app/Contents/MacOS/DolphinQt
-          mv dolphin build/Binaries/DolphinQt.app/Contents/MacOS/DolphinQt
           TAG="$(git tag --points-at HEAD)"
           if [ ! -z "$TAG" ]; then
             SUFFIX="$TAG"
@@ -196,7 +286,7 @@ jobs:
           else
             SUFFIX="sha[$(git rev-parse --short HEAD)]"
           fi
-          APPNAME="Project-Plus-Dolphin-macOS-$SUFFIX"
+          APPNAME="Project-Plus-Dolphin-macOS-$MACOS_ARCH-$SUFFIX"
           mv build/Binaries/DolphinQt.app "$APPNAME.app"
           tar --options xz:compression-level=9 -cvJf "$APPNAME.tar.xz" "$APPNAME.app"
           echo "name=$APPNAME" >> "$GITHUB_OUTPUT"
@@ -206,7 +296,8 @@ jobs:
         with:
           name: ${{ steps.create-artifact.outputs.name }}
           path: "*.tar.xz"
-          
+          if-no-files-found: error
+
   build_flatpak:
     name: Flatpak Build
     runs-on: ubuntu-latest
@@ -217,7 +308,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        fetch-tags: true
+        persist-credentials: false
     - name: Set Version
       run: |
         if [ "$GITHUB_REF_TYPE" = "tag" ]; then
@@ -229,45 +320,43 @@ jobs:
           VERSION="sha-${GITHUB_SHA:0:7}"
         fi
         echo "DOLPHINVER=$VERSION" >> $GITHUB_ENV
-    - name: Purge .git for space reasons
-      run: rm -rf /home/runner/work/Project-Plus-Dolphin-src/.git && rm -rf /home/runner/actions-runner/cached/_diag/* && rm -rf /home/runner/actions-runner/_work/_temp/ && rm -rf /home/runner/actions-runner/_work/_tool/*
-    - name: Setup Packages
-      run: |
-        flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo && \
-        flatpak install org.kde.Sdk//5.15 org.kde.Platform//5.15 -y && \
-        dnf install libusb1-devel cmake git gcc-c++ libXext-devel libgudev qt6-qtbase-devel systemd-devel openal-soft-devel libevdev-devel libao-devel SOIL-devel libXrandr-devel pulseaudio-libs-devel bluez-libs-devel p7zip SDL2-devel make automake gcc gcc-c++ kernel-devel -y
+    - name: Register Flatpak dependency source
+      run: flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
     - name: Pin Flatpak manifest to workflow ref
       run: |
         sed -i '/^[[:space:]]*tag:[[:space:]]/d' Distribution/flatpak/flatpak.yml
         sed -i '/^[[:space:]]*commit:[[:space:]]/d' Distribution/flatpak/flatpak.yml
-        sed -i "/^[[:space:]]*url:[[:space:]]*https:\/\/github.com\/Project-Plus-Development-Team\/Project-Plus-Dolphin$/a\\        commit: ${GITHUB_SHA}" Distribution/flatpak/flatpak.yml
-        if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-          sed -i "/^[[:space:]]*url:[[:space:]]*https:\/\/github.com\/Project-Plus-Development-Team\/Project-Plus-Dolphin$/a\\        tag: ${GITHUB_REF_NAME}" Distribution/flatpak/flatpak.yml
-        fi
-        grep -n "^[[:space:]]*\(tag:\|commit:\)" Distribution/flatpak/flatpak.yml
+        sed -i "\|^[[:space:]]*url:[[:space:]]*https://github.com/Project-Plus-Development-Team/Project-Plus-Dolphin$|c\\        url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}\n        commit: ${GITHUB_SHA}" Distribution/flatpak/flatpak.yml
+        grep -n '^[[:space:]]*commit:' Distribution/flatpak/flatpak.yml
     - name: Run Flatpak Builder
       uses: flatpak/flatpak-github-actions/flatpak-builder@v6
       with:
         manifest-path: Distribution/flatpak/flatpak.yml
         bundle: Project-Plus-Dolphin-${{ env.DOLPHINVER }}.flatpak
-        
+        cache: 'true'
+
   build_appimage:
     name: AppImage Build
     runs-on: ubuntu-24.04
     env:
-      yaqti: 6.7.3
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-linux
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
+      NINJA_STATUS: '[%f/%t | %r running | %es] '
     steps:
-    - name: Checkout Upstream Repo
+    - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        repository: Project-Plus-Development-Team/Project-Plus-Dolphin
-        ref: master
         fetch-depth: 0
-        fetch-tags: true
+        persist-credentials: false
 
-    - name: Checkout Submodules
-      if: steps.cache-submodules.outputs.cache-hit != 'true'
-      run: git submodule update --init --recursive -j $(getconf _NPROCESSORS_ONLN)
+    - name: Checkout Unix submodules
+      run: |
+        git -c submodule.Externals/Qt.update=none \
+            -c submodule.Externals/FFmpeg-bin.update=none \
+            -c submodule.Externals/wil.update=none \
+            submodule update --init --recursive --depth 1 --jobs "$(getconf _NPROCESSORS_ONLN)"
 
     - name: Set Version
       run: |
@@ -279,77 +368,81 @@ jobs:
         fi
         echo "DOLPHINVER=$VERSION" >> $GITHUB_ENV
 
-    - name: Checkout AppImage Repo
-      uses: actions/checkout@v4
+    - name: Restore compiled objects
+      id: cache-ccache
+      uses: actions/cache/restore@v4
       with:
-          clean: false
-          path: ci
-
-    # Runs the Dolphin action
-    - name: Get Date
-      id: get-date
-      run: |
-        echo "date=$(/bin/date -u "+%Y%m%d")" >> $GITHUB_OUTPUT
-      shell: bash
-    - name: cache
-      uses: actions/cache@v4
-      with:
-        path: ~/.ccache
-        key: build-ccache-${{ steps.get-date.outputs.date }}
-        restore-keys: |
-          build-ccache-
-      env:
-        CCACHE_MAXSIZE: 200M
-    - name: Install Qt
-      run: |
-        curl -sLO https://files.pythonhosted.org/packages/47/42/351389ca36c7adfc5f4e92d086cdb2bdbde13f1b89ee882f4a1cab2183ac/yaqti-2021.7.29-py3-none-any.whl
-        python3 -m pip install yaqti-2021.7.29-py3-none-any.whl
-        pyver=$(python3 --version | awk '{print $2}')
-        curl -sL https://raw.githubusercontent.com/qurious-pixel/yaqti/fetch/yaqti/fetchers.py -o $HOME/.local/lib/python${pyver%.*}/site-packages/yaqti/fetchers.py
-        python -m yaqti install --os linux --platform desktop --version ${{ env.yaqti }} --modules linux_gcc_64 --set-envs --install-deps
+        path: .ccache-linux
+        key: ubuntu-24.04-x64-ccache-v2-${{ github.sha }}-${{ github.run_attempt }}
+        restore-keys: ubuntu-24.04-x64-ccache-v2-
     - name: Install Packages
       run: |
+        sudo apt-get update
         sudo apt-get install -y build-essential dialog dpkg libbluetooth-dev liblz4-dev liblzma-dev libssl-dev libopus-dev libpng-dev libsystemd-dev \
-        libzip-dev libzstd-dev zlib1g-dev libasound2-dev libpulse-dev pulseaudio p7zip p7zip-full libsfml-dev libminiupnpc-dev libmbedtls-dev libpugixml-dev \
+        libzip-dev libzstd-dev zlib1g-dev libasound2-dev libpulse-dev pulseaudio p7zip p7zip-full libminiupnpc-dev libpugixml-dev \
         libbz2-dev liblzo2-dev libxi-dev libavcodec-dev libudev-dev libusb-1.0-0-dev libevdev-dev libc6-dev libhidapi-dev libavformat-dev libavdevice-dev \
-        libfmt-dev libwayland-dev libxrandr-dev libglu1-mesa-dev libcurl4-openssl-dev x11-utils zenity wget curl git gettext ccache make cmake ninja-build \
-        libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-icccm4 libxcb-image0-dev libxcb-cursor-dev libspng-dev
-    - name: Purge .git for space reasons
-      run: rm -rf /home/runner/work/Project-Plus-Dolphin-src/.git
+        libwayland-dev libxrandr-dev libglu1-mesa-dev libcurl4-openssl-dev x11-utils zenity wget curl git gettext file ccache make cmake ninja-build \
+        libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-icccm4 libxcb-image0-dev libxcb-cursor-dev libxkbcommon-x11-0
+    - name: Prepare prebuilt dependency libraries
+      id: dependencies
+      uses: ./.github/actions/dependencies
+    - name: Install cached Qt binaries
+      uses: jurplel/install-qt-action@bcb88e3bed2e992f5f9e24c0f9e364a231d278eb # v4.4.0
+      with:
+        version: '6.7.3'
+        host: linux
+        target: desktop
+        arch: linux_gcc_64
+        archives: qtbase qtsvg qttools qttranslations qtwayland icu
+        cache: 'true'
+        cache-key-prefix: ubuntu-24.04-x64-qt-v1
     - name: Update Patchelf
       run: |
         PATCHELFVER=0.14.5
         curl -sL https://github.com/NixOS/patchelf/releases/download/${PATCHELFVER}/patchelf-${PATCHELFVER}-x86_64.tar.gz -o /tmp/patchelf.tar.gz
-        tar -xvf /tmp/patchelf.tar.gz --directory /tmp/ ./bin/patchelf --strip-components=2 
+        tar -xvf /tmp/patchelf.tar.gz --directory /tmp/ ./bin/patchelf --strip-components=2
         sudo mv /tmp/patchelf /usr/bin
         patchelf --version
-    - name: Build Dolphin
-      run: |
-        export Qt_DIR="${{github.workspace}}/qt/${{ env.yaqti }}/gcc_64/lib/cmake/Qt6"
-        mkdir -p "$HOME/.ccache"
-        mkdir build
-        cd build
-        cmake .. -GNinja -DCMAKE_C_COMPILER=/usr/lib/ccache/gcc-13 -DCMAKE_CXX_COMPILER=/usr/lib/ccache/g++-13 -DCMAKE_PREFIX_PATH="${{github.workspace}}/qt/${{ env.yaqti }}/gcc_64/" -Ddatadir:PATH="share/project-plus-dolphin" -DBIN_INSTALL_DIR="install/usr/bin" -DCMAKE_INSTALL_PREFIX="install/usr" -DINC_INSTALL_DIR="install/usr/include" -DLIB_INSTALL_DIR="install/usr/lib" -DPKGCONFIG_INSTALL_DIR="install/usr/lib/pkgconfig" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DENABLE_NOGUI=OFF
-        ninja
-    - name: Install Dolphin
-      run: |
-        cd build
-        ninja install
-    - name: Package Dolphin-Binary
-      run: |
-        mkdir -p $GITHUB_WORKSPACE/{artifacts,uploads}
-        cp -P build/install/usr/bin/project-plus-dolphin $GITHUB_WORKSPACE/artifacts
-    - name: Package Dolphin-AppImage
+    - name: Configure CMake
       env:
-        QT_BASE_DIR: /qt/${{ env.yaqti }}/gcc_64
-        QTDIR: $QT_BASE_DIR
+        DEPENDENCY_PREFIX: ${{ steps.dependencies.outputs.prefix }}
       run: |
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GITHUB_WORKSPACE}/qt/${{ env.yaqti }}/gcc_64/lib/
-        export PATH=$QT_BASE_DIR/bin:$PATH
-        echo "PATH $PATH"
-        sudo ln -s ${GITHUB_WORKSPACE}/$(find qt/ -name qmake) /usr/bin
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13 \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+          -DDOLPHIN_DEPENDENCY_PREFIX="$DEPENDENCY_PREFIX" \
+          -Ddatadir:PATH=share/project-plus-dolphin \
+          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/build/install/usr" \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          -DENABLE_NOGUI=OFF -DENABLE_CLI_TOOL=OFF -DENABLE_TESTS=OFF
+    - name: Build Dolphin
+      id: build
+      run: |
+        ccache --zero-stats
+        cmake --build build --target project-plus-dolphin
+    - name: Show compiler cache statistics
+      if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+      run: |
+        stats=$(ccache --show-stats)
+        printf '### Linux compiler cache\n```text\n%s\n```\n' "$stats" | tee -a "$GITHUB_STEP_SUMMARY"
+    - name: Save compiled objects
+      if: ${{ !cancelled() && steps.cache-ccache.outcome == 'success' && steps.cache-ccache.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+      uses: actions/cache/save@v4
+      with:
+        path: .ccache-linux
+        key: ${{ steps.cache-ccache.outputs.cache-primary-key }}
+    - name: Install Dolphin
+      run: cmake --install build
+    - name: Package Dolphin-AppImage
+      run: |
+        export QTDIR="$QT_ROOT_DIR"
+        export QMAKE="$QT_ROOT_DIR/bin/qmake"
+        export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:${LD_LIBRARY_PATH:-}"
+        export PATH="$QT_ROOT_DIR/bin:$PATH"
         qmake -v
-        cd /tmp 
+        cd /tmp
         curl -sSfLO "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
         curl -sSfLO "https://github.com/AppImage/AppImageUpdate/releases/download/continuous/AppImageUpdate-x86_64.AppImage"
         chmod a+x linuxdeploy*.AppImage
@@ -360,37 +453,29 @@ jobs:
         mv /tmp/squashfs-root/usr/bin/patchelf /tmp/squashfs-root/usr/bin/patchelf.orig
         sudo cp /usr/bin/patchelf /tmp/squashfs-root/usr/bin/patchelf
         cd $GITHUB_WORKSPACE
-        mkdir -p squashfs-root
+        mkdir -p squashfs-root uploads
         cp -a build/install/usr $GITHUB_WORKSPACE/squashfs-root/
         cp Data/project-plus-dolphin.svg ./squashfs-root/project-plus-dolphin.svg
         cp Data/project-plus-dolphin.desktop ./squashfs-root/project-plus-dolphin.desktop
         curl -sSfL https://github.com/AppImage/AppImageKit/releases/download/continuous/runtime-x86_64 -o ./squashfs-root/runtime
         curl -sSfL "https://github.com/RPCS3/AppImageKit-checkrt/releases/download/continuous2/AppRun-patched-x86_64" -o ./squashfs-root/AppRun-patched
-        cp ci/Distribution/appimage/{AppRun,update.sh} ./squashfs-root/
+        cp Distribution/appimage/{AppRun,update.sh} ./squashfs-root/
         mv /tmp/AppImageUpdate-x86_64.AppImage ./squashfs-root/usr/bin/AppImageUpdate
-        echo ${{ env.DOLPHINVER }} > ./squashfs-root/version.txt
+        echo "$DOLPHINVER" > ./squashfs-root/version.txt
         chmod a+x ./squashfs-root/AppRun
         chmod a+x ./squashfs-root/runtime
         chmod a+x ./squashfs-root/AppRun-patched
         chmod a+x ./squashfs-root/update.sh
         export UPD_INFO="gh-releases-zsync|Project-Plus-Development-Team|Project-Plus-Dolphin|continuous|Project+_Dolphin-x86_64.AppImage.zsync"
         /tmp/squashfs-root/AppRun --appdir="$GITHUB_WORKSPACE"/squashfs-root/ --plugin qt -d "$GITHUB_WORKSPACE"/squashfs-root/project-plus-dolphin.desktop -i "$GITHUB_WORKSPACE"/squashfs-root/project-plus-dolphin.svg \
-        --exclude-library=libglib* --output appimage
-        ls . | grep *.AppImage
-        mv $(ls . | grep *.AppImage) $GITHUB_WORKSPACE/artifacts
-        ls -al $GITHUB_WORKSPACE/artifacts
+        --exclude-library=libglib*
         sed -i 's/AppRun.wrapped/AppRun-patched/g' "$GITHUB_WORKSPACE"/squashfs-root/AppRun
         cat "$GITHUB_WORKSPACE"/squashfs-root/AppRun
         /tmp/squashfs-root/usr/bin/linuxdeploy-plugin-appimage --appdir="$GITHUB_WORKSPACE"/squashfs-root/
-        ls . | grep *.AppImage
-        mv Project+_Dolphin-x86_64.AppImage $GITHUB_WORKSPACE/uploads/Dolphin_${DOLPHINVER}.AppImage
-        ls -al $GITHUB_WORKSPACE/uploads
-      continue-on-error: true
+        mv Project+_Dolphin-x86_64.AppImage "$GITHUB_WORKSPACE/uploads/Dolphin_${DOLPHINVER}.AppImage"
     - name: Upload Static Build
       uses: actions/upload-artifact@v4
       with:
         name: Project-Plus-Dolphin-AppImage-${{ env.DOLPHINVER }}
         path: uploads/
-      env:
-        DEFAULT_BRANCH: git-actions
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if-no-files-found: error

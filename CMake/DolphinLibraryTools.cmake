@@ -1,5 +1,6 @@
 include(CheckCXXSourceCompiles)
 include(CheckCXXSymbolExists)
+include(DolphinPrebuiltDependencies)
 
 # like add_library(new ALIAS old) but avoids add_library cannot create ALIAS target "new" because target "old" is imported but not globally visible. on older cmake
 # This can be replaced with a direct alias call once our minimum is cmake 3.18
@@ -65,6 +66,11 @@ function(dolphin_set_library_type library type)
 endfunction()
 
 function(dolphin_find_optional_system_library library bundled_path)
+  if(library IN_LIST DOLPHIN_PREBUILT_LIBRARIES)
+    dolphin_set_library_type(${library} "Prebuilt")
+    message(STATUS "Using prebuilt ${library} from ${DOLPHIN_DEPENDENCY_PREFIX}")
+    return()
+  endif()
   dolphin_optional_system_library(use_system ${library})
   string(TOUPPER ${library} upperlib)
   if(use_system)
@@ -124,6 +130,11 @@ function(dolphin_find_optional_system_library library bundled_path)
 endfunction()
 
 function(dolphin_find_optional_system_library_pkgconfig library search alias bundled_path)
+  if(library IN_LIST DOLPHIN_PREBUILT_LIBRARIES)
+    dolphin_set_library_type(${library} "Prebuilt")
+    message(STATUS "Using prebuilt ${library} from ${DOLPHIN_DEPENDENCY_PREFIX}")
+    return()
+  endif()
   dolphin_optional_system_library(use_system ${library})
   string(TOUPPER ${library} upperlib)
   if(use_system)

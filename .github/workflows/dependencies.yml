@@ -1,0 +1,43 @@
+name: Prepare Native Dependencies
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Dependencies (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, macos-15-intel, macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned dependency sources
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 4 -- \
+            Externals/fmt/fmt Externals/glslang/glslang Externals/libusb/libusb \
+            Externals/SDL/SDL Externals/SFML/SFML
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential gcc-13 g++-13 cmake ninja-build pkg-config \
+            libudev-dev libevdev-dev libusb-1.0-0-dev libsystemd-dev
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - name: Setup MSVC for Ninja
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - name: Build or restore dependency bundle
+        uses: ./.github/actions/dependencies
